@@ -148,14 +148,11 @@ async fn agent_loop_writes_file_then_replies() {
     while !saw_final && iterations < 200 {
         iterations += 1;
         // Unpause briefly to let spawned tasks progress, then re-pause.
-        tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|m| match m {
-                BusMessage::AgentResponse { streaming: false, .. } => saw_final = true,
-                _ => {}
-            });
+        if let Ok(Ok(BusMessage::AgentResponse { streaming: false, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
+        {
+            saw_final = true;
+        }
     }
     assert!(saw_final, "expected a final agent reply on the bus");
 

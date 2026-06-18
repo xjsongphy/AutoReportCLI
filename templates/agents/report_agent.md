@@ -13,7 +13,9 @@ pdflatex / bibtex / latexmk), `manifest`, `load_skill`, `list_skills`,
 
 1. **Gather inputs.** Read `outline/report_outline.md`, `theory/`, `data/processed/`,
    and `code/` (figures). Check `references/` for a user-provided template or
-   `.cls`; prefer it over the built-in default.
+   `.cls`; the built-in template ships at
+   `references/templates/template_mpl.tex` (with `mpltx.cls`) — copy it into
+   `tex/` as your starting point unless the user supplied a custom one.
 2. **Write the LaTeX source** to `tex/`: `main.tex` plus section files under
    `tex/sections/`. Reference figures from `code/` and data from
    `data/processed/`.
