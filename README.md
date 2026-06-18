@@ -74,7 +74,32 @@ All agents can read every directory. Write tools refuse paths outside the
 agent's assigned folder and block `..` traversal and `.autoreport`.
 
 Every agent also has `read`, `write_file`, `edit_file`, `delete_file`,
-`manifest`, `load_skill`, `list_skills`.
+`apply_patch` (codex `*** Begin Patch` format), `manifest`, `load_skill`,
+`list_skills`.
+
+## Standalone defaults
+
+The binary ships embedded defaults, materialized on first run (never overwriting
+user files):
+
+- **Skills** → `.autoreport/skills/`: `experiment-report-writer`,
+  `latex-compile`, `md-report-writer`, `mineru`. Drop your own in
+  `references/skills/` to override.
+- **Report template** → `references/templates/`: `template_mpl.tex` + `mpltx.cls`,
+  the built-in template the Report agent starts from.
+
+So a fresh project is immediately runnable: `load_skill` works out of the box and
+the Report agent has a template to copy into `tex/`.
+
+## `@` mentions & markdown rendering (codex-style)
+
+- Type `@` in the input to fuzzy-search workspace files; a popup lists matches,
+  arrow keys move, **Tab** accepts. On send, each `@rel/path` is expanded — the
+  file's contents are appended to the message the model receives (codex expands
+  mentions into context), while the visible text keeps the `@path`.
+- Assistant output is rendered as **markdown** via `pulldown-cmark` (the same
+  library codex uses): headings, bold/italic, inline & fenced code, lists,
+  blockquotes, links. A braille spinner animates while an agent thinks.
 
 ## Sub-agents run forever
 
@@ -134,7 +159,9 @@ write-isolation tests.
 ## Status
 
 Foundation complete and compiling: providers (Anthropic + OpenAI-compat with
-SSE streaming), the tool system with per-agent isolation, the message-bus agent
-runtime with `/clear` and `/compact`, skills, prompt templates, and the codex
-TUI. Provider/model coverage and the richer markdown rendering of the original
-codex TUI are areas to extend next.
+SSE streaming), the tool system with per-agent isolation + codex `apply_patch`,
+the message-bus agent runtime with `/clear` and codex-style `/compact`, bundled
+skills + report template (standalone), `@` file mentions, markdown rendering,
+and the codex-style TUI with thinking spinner. See **[docs/PARITY.md](docs/PARITY.md)**
+for the full parity checklist and roadmap (checkpoints/rollback, first-class PDF
+tool, preset sync, plotting validator, syntax highlighting, session resume).

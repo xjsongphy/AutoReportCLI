@@ -1,8 +1,8 @@
 [package]
 name = "autoreport-cli"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.82"
+edition = "2024"
+rust-version = "1.85"
 description = "AutoReportCLI — a codex-style multi-agent CLI for automated physics experiment report writing"
 license = "MIT"
 default-run = "autoreport"
@@ -41,6 +41,14 @@ clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 pulldown-cmark = { version = "0.12", default-features = false }
+# codex display stack (vendored from codex-rs/tui)
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+textwrap = "0.16"
+url = "2"
+urlencoding = "2.1"
+regex-lite = "0.1"
+tracing = "0.1"
 
 # misc
 uuid = { version = "1", features = ["v4"] }
