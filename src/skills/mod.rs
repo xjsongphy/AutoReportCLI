@@ -149,3 +149,32 @@ fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
     }
     (None, raw)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_skills_load_after_materialize() {
+        let dir = std::env::temp_dir().join(format!("skills-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::bundled::materialize(&dir);
+        let loader = SkillLoader::new(&dir);
+        let names: Vec<String> = loader.list().into_iter().map(|s| s.name).collect();
+        assert!(names.iter().any(|n| n == "latex-compile"), "names: {names:?}");
+        assert!(names.iter().any(|n| n == "experiment-report-writer"));
+        // load returns a body.
+        let sk = loader.load("latex-compile").expect("latex-compile skill");
+        assert!(!sk.body.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn stamp() -> String {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
+    }
+}

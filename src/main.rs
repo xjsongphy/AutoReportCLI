@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
 
     // 4) Run the codex-style TUI.
     let manager = Arc::new(manager);
-    let tui = Tui::new(manager, bus, workspace.display().to_string(), provider_id);
+    let tui = Tui::new(manager, bus, workspace, provider_id);
     tui.run().await?;
 
     Ok(())

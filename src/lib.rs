@@ -4,8 +4,10 @@
 #![allow(dead_code)]
 
 pub mod bus;
+pub mod bundled;
+pub mod codex_render;
 pub mod config;
-pub mod markdown;
+pub mod file_search;
 pub mod provider;
 pub mod prompts;
 pub mod runtime;

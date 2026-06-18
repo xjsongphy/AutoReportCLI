@@ -131,9 +131,12 @@ impl LoopManager {
         let ctx = FsCtx::new(self.workspace.clone(), Some(self.write_dir(agent)));
 
         // File tools (read anywhere, write confined).
-        for t in file_tools::bundle(ctx) {
+        for t in file_tools::bundle(ctx.clone()) {
             registry.register(t);
         }
+
+        // codex-compatible multi-edit patch tool (same write isolation).
+        registry.register(crate::tools::apply_patch::make(ctx));
 
         // Exec for compute/build agents.
         if matches!(agent, AgentType::Main | AgentType::DataAnalysis | AgentType::Plotting | AgentType::Report) {

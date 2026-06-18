@@ -27,6 +27,8 @@ pub fn ensure_workspace(workspace: &Path) -> Result<()> {
             log::info!("created missing directory {}", path.display());
         }
     }
+    // Materialize bundled skills + report template (standalone defaults).
+    crate::bundled::materialize(workspace);
     Ok(())
 }
 

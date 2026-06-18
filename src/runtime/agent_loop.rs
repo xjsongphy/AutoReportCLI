@@ -327,12 +327,20 @@ impl AgentLoop {
         let recent: Vec<Message> = snapshot[keep..].to_vec();
 
         let summary_prompt = format!(
-            "Summarize the conversation below into a concise context note: key decisions, \
-             facts, file paths produced, and open tasks. Be terse.\n\n---\n{transcript}"
+            "You are summarizing the conversation so far to compact its context.\n\
+             Write a concise context note that preserves everything needed to continue the task:\n\
+             - the user's goal and any constraints\n\
+             - key decisions and reasoning so far\n\
+             - file paths produced or modified (with their purpose)\n\
+             - current sub-task and what remains\n\
+             - any open questions or blockers\n\
+             Be terse and factual. Do not invent details.\n\n---\n{transcript}"
         );
 
         let req = vec![
-            Message::system("You are a context-summarization assistant. Reply with only the summary."),
+            Message::system(
+                "You are a context-compaction assistant. Reply with only the compacted summary."
+            ),
             Message::user(summary_prompt),
         ];
         let resp = self
@@ -357,7 +365,8 @@ impl AgentLoop {
 
         let mut new_history = Vec::new();
         new_history.push(Message::user(format!(
-            "## Prior context (compacted)\n{summary}"
+            "[This conversation was compacted. The following is a summary of the prior \
+             context; continue the task from here.]\n\n{summary}"
         )));
         new_history.extend(recent);
         *self.history.lock().await = new_history;

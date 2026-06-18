@@ -1,29 +1,31 @@
 //! Codex-style terminal UI.
 //!
-//! Layout: a top status bar (workspace / provider / focused agent / per-agent
-//! statuses), a scrolling history of user turns, assistant streams and tool
-//! calls, and a bottom input box. Built on ratatui + crossterm. The agent loops
+//! Layout: top status bar, scrolling markdown-rendered history, bottom input
+//! box, and an `@` file-mention popup. Built on ratatui + crossterm. Agent loops
 //! run in background tasks; the TUI subscribes to the bus to render their
-//! output as it streams.
+//! streamed output.
 
 use crate::bus::Bus;
+use crate::codex_render::markdown_render;
+use crate::file_search::FileIndex;
 use crate::runtime::LoopManager;
 use crate::types::{AgentStatus, AgentType, BusMessage};
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Terminal;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::{Frame, Terminal};
 use std::collections::HashMap;
-use std::io::{self, Stdout};
+use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
-
-type Term = Terminal<CrosstermBackend<Stdout>>;
 
 /// One rendered history entry.
 enum Cell {
@@ -45,30 +47,52 @@ enum SysKind {
     Error,
 }
 
+/// Active `@`-mention completion state.
+struct Mention {
+    /// Byte index of the `@` in the input.
+    start: usize,
+    /// Cursor byte index at the time of capture.
+    cursor: usize,
+    matches: Vec<String>,
+    selected: usize,
+}
+
+const MENTION_LIMIT: usize = 8;
+
 pub struct Tui {
     manager: Arc<LoopManager>,
-    workspace: String,
+    workspace: PathBuf,
+    workspace_display: String,
     provider_id: String,
     history: Vec<Cell>,
     statuses: HashMap<AgentType, AgentStatus>,
     focused: AgentType,
     input: String,
     cursor: usize,
-    scroll: usize, // lines scrolled from the bottom
+    scroll: usize,
     rx: tokio::sync::broadcast::Receiver<BusMessage>,
+    index: FileIndex,
+    mention: Option<Mention>,
+    tick: usize,
 }
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl Tui {
     pub fn new(
         manager: Arc<LoopManager>,
         bus: Bus,
-        workspace: String,
+        workspace: PathBuf,
         provider_id: String,
     ) -> Self {
+        let workspace_display = workspace.display().to_string();
+        let index = FileIndex::new(&workspace);
+        index.refresh();
         Self {
             manager,
             rx: bus.subscribe(),
             workspace,
+            workspace_display,
             provider_id,
             history: Vec::new(),
             statuses: HashMap::new(),
@@ -76,10 +100,12 @@ impl Tui {
             input: String::new(),
             cursor: 0,
             scroll: 0,
+            index,
+            mention: None,
+            tick: 0,
         }
     }
 
-    /// Run the UI to completion (until the user quits).
     pub async fn run(mut self) -> io::Result<()> {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
@@ -87,11 +113,13 @@ impl Tui {
         let mut terminal = Terminal::new(backend)?;
 
         self.system(
-            "AutoReportCLI ready. Type your request; Tab switches agent. /help for commands.",
+            "AutoReportCLI ready. Type @ to mention a file, Tab switches agent, /help for commands.",
             SysKind::Info,
         );
 
         let mut events = EventStream::new();
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             terminal.draw(|f| self.draw(f))?;
 
@@ -106,6 +134,9 @@ impl Tui {
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,
                     }
+                }
+                _ = interval.tick() => {
+                    self.tick = self.tick.wrapping_add(1);
                 }
             }
         }
@@ -126,7 +157,9 @@ impl Tui {
         match msg {
             BusMessage::AgentResponse { agent_type, content, streaming } => {
                 if !content.is_empty() && streaming {
-                    if let Some(Cell::Assistant { agent, text, streaming: true }) = self.history.last_mut() {
+                    if let Some(Cell::Assistant { agent, text, streaming: true }) =
+                        self.history.last_mut()
+                    {
                         if *agent == agent_type {
                             text.push_str(&content);
                             return;
@@ -138,7 +171,6 @@ impl Tui {
                         streaming: true,
                     });
                 } else if !streaming {
-                    // finalize the most recent streaming assistant cell of this agent
                     for cell in self.history.iter_mut().rev() {
                         if let Cell::Assistant { agent, streaming, .. } = cell {
                             if *agent == agent_type {
@@ -183,44 +215,174 @@ impl Tui {
         let Event::Key(key) = ev else {
             return true;
         };
+
+        // While the mention popup is open, intercept navigation keys.
+        if self.mention.is_some() {
+            match key.code {
+                KeyCode::Down => {
+                    self.move_mention(1);
+                    return true;
+                }
+                KeyCode::Up => {
+                    self.move_mention(-1);
+                    return true;
+                }
+                KeyCode::Tab | KeyCode::Enter => {
+                    self.accept_mention();
+                    return true;
+                }
+                KeyCode::Esc => {
+                    self.mention = None;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Enter => self.submit(),
             KeyCode::Tab => self.cycle_agent(),
             KeyCode::BackTab => self.cycle_agent_back(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
-            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {}
             KeyCode::Backspace => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
+                    // step back one char
+                    let prev = self.input[..self.cursor].chars().last().unwrap();
+                    self.cursor -= prev.len_utf8();
                     self.input.remove(self.cursor);
                 }
             }
             KeyCode::Left => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
+                    let prev = self.input[..self.cursor].chars().last().unwrap();
+                    self.cursor -= prev.len_utf8();
                 }
             }
             KeyCode::Right => {
                 if self.cursor < self.input.len() {
-                    self.cursor += 1;
+                    let next = self.input[self.cursor..].chars().next().unwrap();
+                    self.cursor += next.len_utf8();
                 }
             }
             KeyCode::Up => self.scroll = self.scroll.saturating_add(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            KeyCode::Esc => self.mention = None,
             KeyCode::Char(c) => {
                 self.input.insert(self.cursor, c);
-                self.cursor += 1;
+                self.cursor += c.len_utf8();
             }
             _ => {}
         }
-        // any input resets manual scroll
-        if !matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown) {
+
+        // Any input that wasn't intercepted resets manual scroll.
+        if !matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+        ) {
             self.scroll = 0;
         }
+
+        // Recompute the mention popup based on the token under the cursor.
+        self.recompute_mention();
         true
+    }
+
+    fn move_mention(&mut self, dir: i32) {
+        if let Some(m) = self.mention.as_mut() {
+            if m.matches.is_empty() {
+                return;
+            }
+            let n = m.matches.len() as i32;
+            let mut s = m.selected as i32 + dir;
+            if s < 0 {
+                s = n - 1;
+            } else if s >= n {
+                s = 0;
+            }
+            m.selected = s as usize;
+        }
+    }
+
+    fn accept_mention(&mut self) {
+        let Some(m) = self.mention.take() else {
+            return;
+        };
+        let Some(path) = m.matches.get(m.selected).cloned() else {
+            return;
+        };
+        // Replace the query (between @ and cursor) with the chosen path.
+        let at = m.start; // index of '@'
+        let after_at = at + 1;
+        let end = m.cursor.min(self.input.len());
+        let mut new_input = String::new();
+        new_input.push_str(&self.input[..after_at]);
+        new_input.push_str(&path);
+        let tail_start = end;
+        new_input.push_str(&self.input[tail_start..]);
+        new_input.push(' ');
+        let new_cursor = after_at + path.len() + 1;
+        self.input = new_input;
+        self.cursor = new_cursor;
+    }
+
+    /// Detect an open `@token` under the cursor and (re)build the popup.
+    fn recompute_mention(&mut self) {
+        let bytes = self.input.as_bytes();
+        if self.cursor == 0 || self.cursor > bytes.len() {
+            self.mention = None;
+            return;
+        }
+        // Walk back from cursor collecting mention-name chars until we hit '@'.
+        let mut i = self.cursor;
+        let mut query_len = 0usize;
+        while i > 0 {
+            let prev = &bytes[i - 1..i];
+            let Ok(s) = std::str::from_utf8(prev) else {
+                break;
+            };
+            let c = s.chars().next().unwrap();
+            if c == '@' {
+                break;
+            } else if is_mention_char(c) {
+                i -= c.len_utf8();
+                query_len += 1;
+                continue;
+            } else {
+                // whitespace or punctuation closes the token
+                self.mention = None;
+                return;
+            }
+        }
+        if i == 0 || bytes[i - 1] != b'@' {
+            self.mention = None;
+            return;
+        }
+        // The '@' must be at start or preceded by whitespace (avoid emails).
+        let at_idx = i - 1;
+        let prev_ok = at_idx == 0 || {
+            let prev = &bytes[at_idx - 1..at_idx];
+            std::str::from_utf8(prev)
+                .ok()
+                .and_then(|s| s.chars().next())
+                .map(|c| c.is_whitespace())
+                .unwrap_or(true)
+        };
+        if !prev_ok {
+            self.mention = None;
+            return;
+        }
+        let query = &self.input[at_idx + 1..at_idx + 1 + query_len];
+        let matches = self.index.search(query, MENTION_LIMIT);
+        let selected = 0;
+        self.mention = Some(Mention {
+            start: at_idx,
+            cursor: self.cursor,
+            matches,
+            selected,
+        });
     }
 
     fn cycle_agent(&mut self) {
@@ -235,14 +397,14 @@ impl Tui {
     }
 
     fn submit(&mut self) {
-        let text = std::mem::take(&mut self.input);
+        self.mention = None;
+        let raw = std::mem::take(&mut self.input);
         self.cursor = 0;
-        let text = text.trim().to_string();
+        let text = raw.trim().to_string();
         if text.is_empty() {
             return;
         }
 
-        // Slash commands.
         if let Some(cmd) = text.strip_prefix('/') {
             self.run_command(cmd.trim());
             return;
@@ -252,7 +414,38 @@ impl Tui {
             agent: self.focused,
             text: text.clone(),
         });
-        self.manager.submit(self.focused, text, crate::types::MessageSource::User);
+        let expanded = self.expand_mentions(&text);
+        self.manager
+            .submit(self.focused, expanded, crate::types::MessageSource::User);
+    }
+
+    /// Expand `@rel/path` references: the visible text is unchanged, but the
+    /// message handed to the agent has each referenced file's contents appended
+    /// so the model can see them (codex expands mentions into context).
+    fn expand_mentions(&self, text: &str) -> String {
+        let refs = extract_mentions(text);
+        if refs.is_empty() {
+            return text.to_string();
+        }
+        let mut out = text.to_string();
+        out.push_str("\n\n# Referenced files");
+        for rel in refs {
+            let path = self.workspace.join(&rel);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let truncated = if content.len() > 16_000 {
+                        format!("{}\n…(truncated)", &content[..16_000])
+                    } else {
+                        content
+                    };
+                    out.push_str(&format!("\n\n## @{rel}\n```\n{truncated}\n```"));
+                }
+                Err(_) => {
+                    out.push_str(&format!("\n\n## @{rel}\n(not found)"));
+                }
+            }
+        }
+        out
     }
 
     fn run_command(&mut self, cmd: &str) {
@@ -260,12 +453,10 @@ impl Tui {
         let name = parts.next().unwrap_or("");
         let rest: String = parts.collect::<Vec<_>>().join(" ");
         match name {
-            "help" | "h" | "?" => {
-                self.system(
-                    "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /quit             exit",
-                    SysKind::Info,
-                );
-            }
+            "help" | "h" | "?" => self.system(
+                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /quit             exit",
+                SysKind::Info,
+            ),
             "agents" => {
                 let mut s = String::from("Agents:\n");
                 for a in AgentType::ALL {
@@ -280,7 +471,10 @@ impl Tui {
                     self.focused = a;
                     self.system(&format!("focused: {}", a.label()), SysKind::Info);
                 } else {
-                    self.system("usage: /switch <main|data_analysis|plotting|theory|report>", SysKind::Error);
+                    self.system(
+                        "usage: /switch <main|data_analysis|plotting|theory|report>",
+                        SysKind::Error,
+                    );
                 }
             }
             "clear" => {
@@ -294,6 +488,10 @@ impl Tui {
             "new" => {
                 self.manager.clear_context(self.focused);
                 self.system(&format!("reset {}", self.focused.label()), SysKind::Info);
+            }
+            "index" => {
+                self.index.refresh();
+                self.system("@ file index rebuilt", SysKind::Info);
             }
             "manifest" => {
                 let snap = self.manager.manifest_snapshot(None);
@@ -310,27 +508,36 @@ impl Tui {
         }
     }
 
-    fn draw(&self, f: &mut ratatui::Frame<'_>) {
+    fn draw(&self, f: &mut Frame<'_>) {
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(5), Constraint::Length(3), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(5),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         self.draw_status(f, chunks[0]);
         self.draw_history(f, chunks[1]);
         self.draw_input(f, chunks[2]);
         self.draw_hints(f, chunks[3]);
+
+        if self.mention.is_some() {
+            self.draw_mention_popup(f, chunks[2]);
+        }
     }
 
-    fn draw_status(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
+    fn draw_status(&self, f: &mut Frame<'_>, area: Rect) {
         let mut spans = vec![
             Span::styled(
                 " AutoReportCLI ",
                 Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
             ),
             Span::raw(" "),
-            Span::styled(self.workspace.clone(), Style::default().fg(Color::DarkGray)),
+            Span::styled(self.workspace_display.clone(), Style::default().fg(Color::DarkGray)),
             Span::raw("  "),
             Span::styled(self.provider_id.clone(), Style::default().fg(Color::Yellow)),
             Span::raw("  focused: "),
@@ -341,10 +548,9 @@ impl Tui {
         ];
         for a in AgentType::ALL {
             let st = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
-            let mark = status_mark(st);
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
-                format!("{} {}", mark, a.label()),
+                format!("{} {}", status_mark(st), a.label()),
                 Style::default().fg(status_color(st)),
             ));
         }
@@ -353,11 +559,11 @@ impl Tui {
         f.render_widget(para, area);
     }
 
-    fn draw_history(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
-        let lines = self.render_history_lines(area.width as usize);
+    fn draw_history(&self, f: &mut Frame<'_>, area: Rect) {
+        let width = area.width as usize;
+        let lines = self.render_history_lines(width);
         let total = lines.len();
         let visible = area.height as usize;
-        // anchor to bottom unless scrolled up
         let start = if total > visible {
             total.saturating_sub(visible + self.scroll)
         } else {
@@ -366,25 +572,21 @@ impl Tui {
         let start = start.min(total);
         let end = (start + visible).min(total);
         let shown: Vec<Line> = lines.into_iter().skip(start).take(end.saturating_sub(start)).collect();
-        let block = Block::default().borders(Borders::empty());
-        let para = Paragraph::new(shown).block(block);
+        let para = Paragraph::new(shown);
         f.render_widget(para, area);
     }
 
-    fn render_history_lines<'a>(&'a self, width: usize) -> Vec<Line<'a>> {
-        let mut out: Vec<Line> = Vec::new();
-        let w = width.max(20);
+    fn render_history_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut out: Vec<Line<'static>> = Vec::new();
         for cell in &self.history {
             match cell {
                 Cell::User { agent, text } => {
-                    out.push(Line::from(vec![
-                        Span::styled(
-                            format!("▸ {}", agent.label()),
-                            Style::default().add_modifier(Modifier::BOLD).fg(Color::Blue),
-                        ),
-                    ]));
-                    for l in wrap(text, w) {
-                        out.push(Line::from(Span::styled(l, Style::default().fg(Color::Gray))));
+                    out.push(Line::from(vec![Span::styled(
+                        format!("▸ {}", agent.label()),
+                        Style::default().add_modifier(Modifier::BOLD).fg(Color::Blue),
+                    )]));
+                    for line in render_user_text(text) {
+                        out.push(line);
                     }
                     out.push(Line::from(""));
                 }
@@ -395,40 +597,50 @@ impl Tui {
                     );
                     if text.is_empty() {
                         if *streaming {
+                            let frame = SPINNER[self.tick % SPINNER.len()];
                             out.push(Line::from(vec![
                                 label,
-                                Span::styled("thinking…", Style::default().fg(Color::DarkGray)),
+                                Span::styled(frame, Style::default().fg(Color::Yellow)),
+                                Span::styled(" thinking…", Style::default().fg(Color::DarkGray)),
                             ]));
                         }
                         out.push(Line::from(""));
                         continue;
                     }
-                    let lines = wrap(text, w);
-                    for (i, l) in lines.iter().enumerate() {
-                        if i == 0 {
-                            out.push(Line::from(vec![label.clone(), Span::raw(l.clone())]));
-                        } else {
-                            out.push(Line::from(l.clone()));
-                        }
+                    let mut md =
+                        markdown_render::render_markdown_text_with_width(text, Some(width)).lines;
+                    if let Some(first) = md.first_mut() {
+                        // Prefix the very first rendered line with the agent label.
+                        let mut spans = vec![label];
+                        spans.append(&mut first.spans);
+                        first.spans = spans;
+                    } else {
+                        out.push(Line::from(label));
                     }
                     if *streaming {
-                        if let Some(last) = out.last_mut() {
-                            last.spans
-                                .push(Span::styled("▍", Style::default().fg(Color::Yellow)));
+                        if let Some(last) = md.last_mut() {
+                            last.spans.push(Span::styled("▍", Style::default().fg(Color::Yellow)));
                         }
                     }
+                    out.extend(md);
                     out.push(Line::from(""));
                 }
                 Cell::Tool { agent, name, args, result, error } => {
                     let title = format!("  ⚒ {} · {}({})", agent.label(), name, truncate(args, 60));
                     out.push(Line::from(Span::styled(title, Style::default().fg(Color::Yellow))));
                     if let Some(err) = error {
-                        for l in wrap(&format!("    error: {err}"), w) {
-                            out.push(Line::from(Span::styled(l, Style::default().fg(Color::Red))));
+                        for l in err.lines() {
+                            out.push(Line::from(Span::styled(
+                                format!("    error: {l}"),
+                                Style::default().fg(Color::Red),
+                            )));
                         }
                     } else if let Some(res) = result {
-                        for l in wrap(&format!("    {}", truncate(res, 300)), w) {
-                            out.push(Line::from(Span::styled(l, Style::default().fg(Color::DarkGray))));
+                        for l in truncate(res, 400).lines() {
+                            out.push(Line::from(Span::styled(
+                                format!("    {l}"),
+                                Style::default().fg(Color::DarkGray),
+                            )));
                         }
                     }
                     out.push(Line::from(""));
@@ -448,14 +660,13 @@ impl Tui {
         out
     }
 
-    fn draw_input(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
+    fn draw_input(&self, f: &mut Frame<'_>, area: Rect) {
         let title = format!(" message to {} ", self.focused.label());
-        let block = Block::default().borders(Borders::ALL).title(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD).fg(Color::Green),
-        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD).fg(Color::Green)));
         let prompt = if self.input.is_empty() {
-            "  /help for commands, then describe what you need…".to_string()
+            "  /help for commands, @ to mention a file, then describe what you need…".to_string()
         } else {
             format!("  {}", self.input)
         };
@@ -468,16 +679,122 @@ impl Tui {
         f.render_widget(para, area);
     }
 
-    fn draw_hints(&self, f: &mut ratatui::Frame<'_>, area: Rect) {
-        let hint = " Tab: switch agent   Enter: send   ↑/↓: scroll   /help   Ctrl+C: quit";
+    fn draw_hints(&self, f: &mut Frame<'_>, area: Rect) {
+        let hint = " Tab: switch agent   Enter: send   ↑/↓: scroll   @: mention   /help   Ctrl+C: quit";
         let para = Paragraph::new(hint)
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Left);
         f.render_widget(para, area);
     }
+
+    fn draw_mention_popup(&self, f: &mut Frame<'_>, anchor: Rect) {
+        let Some(m) = self.mention.as_ref() else {
+            return;
+        };
+        let count = m.matches.len().min(MENTION_LIMIT).clamp(1, MENTION_LIMIT);
+        let height = (count + 2) as u16;
+        let width = 60u16.min(anchor.width);
+        let popup_area = Rect {
+            x: anchor.x,
+            y: anchor.y.saturating_sub(height),
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" @ files ", Style::default().fg(Color::Cyan)));
+        let mut lines: Vec<Line> = Vec::new();
+        if m.matches.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  no matching files",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for (i, p) in m.matches.iter().enumerate() {
+                let style = if i == m.selected {
+                    Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan)
+                };
+                let mark = if i == m.selected { "▶ " } else { "  " };
+                lines.push(Line::from(Span::styled(format!("{mark}{p}"), style)));
+            }
+        }
+        let para = Paragraph::new(lines).block(block);
+        f.render_widget(para, popup_area);
+    }
 }
 
 // --- helpers ---
+
+fn render_user_text(text: &str) -> Vec<Line<'static>> {
+    // Render the user's text with @mentions highlighted.
+    let mut out = Vec::new();
+    for paragraph in text.split('\n') {
+        let chars: Vec<char> = paragraph.chars().collect();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut buf = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '@' && i + 1 < chars.len() && is_mention_char(chars[i + 1]) {
+                if !buf.is_empty() {
+                    spans.push(Span::raw(std::mem::take(&mut buf)));
+                }
+                let mut run = String::from("@");
+                i += 1;
+                while i < chars.len() && is_mention_char(chars[i]) {
+                    run.push(chars[i]);
+                    i += 1;
+                }
+                spans.push(Span::styled(
+                    run,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                ));
+            } else {
+                buf.push(chars[i]);
+                i += 1;
+            }
+        }
+        if !buf.is_empty() {
+            spans.push(Span::raw(buf));
+        }
+        out.push(Line::from(spans));
+    }
+    out
+}
+
+fn is_mention_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')
+}
+
+/// Pull `@rel/path` tokens out of arbitrary text (for expansion).
+fn extract_mentions(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@'
+            && i + 1 < chars.len()
+            && is_mention_char(chars[i + 1])
+            && (i == 0 || chars[i - 1].is_whitespace())
+        {
+            let mut run = String::new();
+            let mut j = i + 1;
+            while j < chars.len() && is_mention_char(chars[j]) {
+                run.push(chars[j]);
+                j += 1;
+            }
+            if !run.is_empty() {
+                out.push(run);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
 
 fn status_mark(s: AgentStatus) -> &'static str {
     match s {
@@ -511,33 +828,6 @@ fn agent_color(a: AgentType) -> Color {
     }
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for paragraph in text.split('\n') {
-        if paragraph.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut line = String::new();
-        for word in paragraph.split(' ') {
-            if line.is_empty() {
-                line.push_str(word);
-            } else if line.len() + 1 + word.len() <= width {
-                line.push(' ');
-                line.push_str(word);
-            } else {
-                out.push(std::mem::take(&mut line));
-                line.push_str(word);
-            }
-        }
-        out.push(line);
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
-}
-
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -553,4 +843,15 @@ fn pretty(v: &serde_json::Value) -> String {
         return s.to_string();
     }
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_mentions_skipping_emails() {
+        let m = extract_mentions("see @data/raw.csv and contact me@example.com and @tex/main.tex");
+        assert_eq!(m, vec!["data/raw.csv".to_string(), "tex/main.tex".to_string()]);
+    }
 }
