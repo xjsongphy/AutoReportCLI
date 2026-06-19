@@ -102,6 +102,7 @@ fn try_register(
                 model: String::new(), // factory picks a default per kind
                 api_key: None,
                 api_base: api_base.map(String::from),
+                api_key_env: None,
                 temperature: 0.1,
                 max_tokens: 8192,
             },
@@ -109,11 +110,22 @@ fn try_register(
     }
 }
 
-/// Resolve the effective API key for a provider: YAML value → env var.
+/// Resolve the effective API key for a provider: YAML value → preset env var →
+/// kind default env var.
 pub fn resolve_api_key(provider: &crate::config::schema::ProviderConfig) -> Result<String> {
     if let Some(k) = &provider.api_key {
         if !k.is_empty() {
             return Ok(k.clone());
+        }
+    }
+    // Env var named explicitly by a synced cc-switch preset, if any.
+    if let Some(env_name) = provider.api_key_env.as_deref() {
+        if !env_name.is_empty() {
+            if let Ok(k) = std::env::var(env_name) {
+                if !k.is_empty() {
+                    return Ok(k);
+                }
+            }
         }
     }
     if let Some(env_name) = provider.env_key() {
@@ -126,7 +138,11 @@ pub fn resolve_api_key(provider: &crate::config::schema::ProviderConfig) -> Resu
     Err(anyhow!(
         "no API key for provider kind '{}' — set {} in the environment or config",
         provider.kind,
-        provider.env_key().unwrap_or("the relevant key env var")
+        provider
+            .api_key_env
+            .as_deref()
+            .or_else(|| provider.env_key())
+            .unwrap_or("the relevant key env var")
     ))
 }
 

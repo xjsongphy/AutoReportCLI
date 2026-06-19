@@ -46,6 +46,10 @@ pub struct ProviderConfig {
     /// Optional base URL override.
     #[serde(default)]
     pub api_base: Option<String>,
+    /// Optional explicit env-var name holding the API key (from a synced
+    /// cc-switch preset). Falls back to the kind's default when unset.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
     #[serde(default = "default_max_tokens")]
