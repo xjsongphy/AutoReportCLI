@@ -10,6 +10,7 @@ pub mod config;
 pub mod file_search;
 pub mod provider;
 pub mod prompts;
+pub mod sync;
 pub mod runtime;
 pub mod skills;
 pub mod taskboard;

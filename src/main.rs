@@ -30,6 +30,14 @@ struct Cli {
     #[arg(long, value_name = "KEY")]
     provider: Option<String>,
 
+    /// Force a full re-sync of the cc-switch presets and skills repos, then exit.
+    #[arg(long)]
+    sync_presets: bool,
+
+    /// Skip the startup repository sync (use cached skills/presets only).
+    #[arg(long)]
+    no_sync: bool,
+
     /// Increase logging verbosity.
     #[arg(short, long)]
     verbose: bool,
@@ -53,11 +61,61 @@ async fn main() -> Result<()> {
     // 1) Make sure the required project folders exist.
     config::ensure_workspace(&workspace)?;
 
-    // 2) Load config + pick the active provider.
+    // 2) Load config.
     let mut settings = config::load_settings(&workspace)?;
     if let Some(key) = &cli.provider {
         settings.active_provider = Some(key.clone());
     }
+
+    // 3) Sync the two upstream repositories (cc-switch presets + skills), like
+    //    AutoReport does on startup. Best-effort: network failure keeps the
+    //    existing cache and continues. `--no-sync` skips the fetch; use the
+    //    existing cache instead. `--sync-presets` forces a full fetch + exits.
+    if !cli.no_sync {
+        let report = autoreport_cli::sync::sync_all(&workspace, std::time::Duration::from_secs(20)).await;
+        if report.total() > 0 {
+            eprintln!(
+                "synced {} preset(s) and {} skill(s) from cc-switch + skills repos",
+                report.presets_fetched,
+                report.skills_fetched.len()
+            );
+        } else if !report.errors.is_empty() {
+            eprintln!(
+                "repo sync unavailable (using cache); {} fetch(es) failed",
+                report.errors.len()
+            );
+        }
+    }
+
+    if cli.sync_presets {
+        return Ok(());
+    }
+
+    // Always register providers from the (now possibly refreshed) preset cache.
+    // cc-switch's real shape: each entry's `settingsConfig.env` block carries
+    // the base URL, auth-token env var, and default model.
+    let cfg_dir = autoreport_cli::sync::external_dir(&workspace)
+        .join("cc-switch")
+        .join("src")
+        .join("config");
+    for file in [
+        "claudeProviderPresets.ts",
+        "codexProviderPresets.ts",
+        "geminiProviderPresets.ts",
+        "openaiProviderPresets.ts",
+        "opencodeProviderPresets.ts",
+        "openclawProviderPresets.ts",
+        "hermesProviderPresets.ts",
+        "universalProviderPresets.ts",
+    ] {
+        let path = cfg_dir.join(file);
+        if let Ok(body) = std::fs::read_to_string(&path) {
+            let kind = autoreport_cli::sync::file_kind(file).map(|(k, _)| k).unwrap_or("openai");
+            let presets = autoreport_cli::sync::parse_presets(&body, kind);
+            autoreport_cli::sync::register_providers(&mut settings, &presets);
+        }
+    }
+
     let active_key = settings
         .active_provider
         .clone()
