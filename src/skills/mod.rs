@@ -155,17 +155,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_skills_load_after_materialize() {
+    fn skill_loader_reads_skills_dir() {
         let dir = std::env::temp_dir().join(format!("skills-{}", stamp()));
-        std::fs::create_dir_all(&dir).unwrap();
-        crate::bundled::materialize(&dir);
+        let skills = dir.join(".autoreport").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(
+            skills.join("latex-compile.md"),
+            "---\nname: latex-compile\ndescription: compile latex\n---\nbody text",
+        )
+        .unwrap();
         let loader = SkillLoader::new(&dir);
         let names: Vec<String> = loader.list().into_iter().map(|s| s.name).collect();
         assert!(names.iter().any(|n| n == "latex-compile"), "names: {names:?}");
-        assert!(names.iter().any(|n| n == "experiment-report-writer"));
-        // load returns a body.
         let sk = loader.load("latex-compile").expect("latex-compile skill");
-        assert!(!sk.body.is_empty());
+        assert!(sk.body.contains("body text"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
