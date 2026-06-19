@@ -49,6 +49,9 @@ url = "2"
 urlencoding = "2.1"
 regex-lite = "0.1"
 tracing = "0.1"
+# fuzzy @ file search — same engine codex uses (nucleo) + gitignore-aware walker
+nucleo = "0.5"
+ignore = "0.4"
 
 # misc
 uuid = { version = "1", features = ["v4"] }
