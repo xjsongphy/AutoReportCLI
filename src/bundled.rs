@@ -1,35 +1,17 @@
-//! Bundled, compile-time-embedded defaults so the binary runs standalone:
-//! the AutoReport agent skills and the default LaTeX report template. On
-//! workspace init these are materialized to disk (only when absent, so user
-//! overrides always win) so `load_skill` finds them and the Report agent has a
-//! template to start from.
+//! Compile-time-embedded *report template* so the binary can seed a new
+//! project's LaTeX without any network access. Skills are intentionally NOT
+//! bundled here: like AutoReport, they are pulled from the `xjsongphy/skills`
+//! repository at startup (see `sync.rs`), and the cc-switch provider presets
+//! from the `farion1231/cc-switch` repository.
 
 use std::path::Path;
 
 struct Bundled {
-    /// Path under the workspace to write to.
     rel: &'static str,
-    /// Embedded file contents.
     content: &'static str,
 }
 
 const BUNDLED: &[Bundled] = &[
-    Bundled {
-        rel: ".autoreport/skills/experiment-report-writer.md",
-        content: include_str!("../templates/skills/experiment-report-writer.md"),
-    },
-    Bundled {
-        rel: ".autoreport/skills/latex-compile.md",
-        content: include_str!("../templates/skills/latex-compile.md"),
-    },
-    Bundled {
-        rel: ".autoreport/skills/md-report-writer.md",
-        content: include_str!("../templates/skills/md-report-writer.md"),
-    },
-    Bundled {
-        rel: ".autoreport/skills/mineru.md",
-        content: include_str!("../templates/skills/mineru.md"),
-    },
     Bundled {
         rel: "references/templates/template_mpl.tex",
         content: include_str!("../templates/reports/template_mpl.tex"),
