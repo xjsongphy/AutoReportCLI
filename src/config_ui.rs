@@ -5,7 +5,8 @@
 //! overlay (driven by `tui.rs`).
 
 use crate::config::schema::{ProviderConfig, Settings};
-use crate::config::resolve_api_key;
+use crate::config::{resolve_api_key, save_settings};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -351,6 +352,161 @@ impl ConfigScreen {
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Left);
         f.render_widget(para, area);
+    }
+}
+
+impl ConfigScreen {
+    /// Drive one key event. Returns `Some(Outcome)` when the session is done.
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        // Ctrl+C cancels from anywhere.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Some(Outcome::Cancelled);
+        }
+
+        if self.editing {
+            return self.handle_editing_key(key);
+        }
+
+        match self.step {
+            Step::Select => self.handle_select_key(key),
+            Step::Edit => self.handle_edit_key(key),
+            Step::Preview => self.handle_preview_key(key),
+        }
+    }
+
+    fn handle_select_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        match key.code {
+            KeyCode::Up => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                }
+                None
+            }
+            KeyCode::Down => {
+                if self.selected + 1 < self.keys.len() {
+                    self.selected += 1;
+                }
+                None
+            }
+            KeyCode::Enter => {
+                self.step = Step::Edit;
+                self.field = Field::Model;
+                None
+            }
+            KeyCode::Esc => Some(Outcome::Cancelled),
+            _ => None,
+        }
+    }
+
+    fn handle_edit_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        match key.code {
+            KeyCode::Up => {
+                let idx = Field::ALL.iter().position(|&f| f == self.field).unwrap_or(0);
+                self.field = Field::ALL[(idx + Field::ALL.len() - 1) % Field::ALL.len()];
+                None
+            }
+            KeyCode::Down => {
+                let idx = Field::ALL.iter().position(|&f| f == self.field).unwrap_or(0);
+                self.field = Field::ALL[(idx + 1) % Field::ALL.len()];
+                None
+            }
+            KeyCode::Enter => match self.field {
+                Field::Model | Field::ApiBase | Field::ApiKey => {
+                    self.begin_edit();
+                    None
+                }
+                Field::Active => {
+                    self.toggle_active();
+                    None
+                }
+                Field::Save => {
+                    self.step = Step::Preview;
+                    None
+                }
+                Field::Cancel => Some(Outcome::Cancelled),
+            },
+            KeyCode::Esc => {
+                self.step = Step::Select;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        match key.code {
+            KeyCode::Enter => match save_settings(&self.workspace, &self.settings) {
+                Ok(()) => Some(Outcome::Saved),
+                Err(e) => {
+                    self.error = Some(format!("save failed: {e}"));
+                    None
+                }
+            },
+            KeyCode::Esc => {
+                self.step = Step::Edit;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    // --- text entry for the currently focused field ---
+
+    fn begin_edit(&mut self) {
+        let cur = match self.field {
+            Field::Model => self.selected_provider().map(|p| p.model.clone()),
+            Field::ApiBase => self.selected_provider().and_then(|p| p.api_base.clone()),
+            Field::ApiKey => self.selected_provider().and_then(|p| p.api_key.clone()),
+            _ => None,
+        };
+        self.input = cur.unwrap_or_default();
+        self.cursor = self.input.len();
+        self.editing = true;
+    }
+
+    fn handle_editing_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        match key.code {
+            KeyCode::Esc => {
+                self.editing = false;
+                None
+            }
+            KeyCode::Enter => {
+                let value = std::mem::take(&mut self.input);
+                self.cursor = 0;
+                self.editing = false;
+                let field = self.field;
+                let _ = self.commit(field, value); // error surfaces via self.error
+                None
+            }
+            KeyCode::Backspace => {
+                if self.cursor > 0 {
+                    let prev = self.input[..self.cursor].chars().last().unwrap();
+                    self.cursor -= prev.len_utf8();
+                    self.input.remove(self.cursor);
+                }
+                None
+            }
+            KeyCode::Left => {
+                if self.cursor > 0 {
+                    let prev = self.input[..self.cursor].chars().last().unwrap();
+                    self.cursor -= prev.len_utf8();
+                }
+                None
+            }
+            KeyCode::Right => {
+                if self.cursor < self.input.len() {
+                    let next = self.input[self.cursor..].chars().next().unwrap();
+                    self.cursor += next.len_utf8();
+                }
+                None
+            }
+            KeyCode::Char(c) => {
+                self.input.insert(self.cursor, c);
+                self.cursor += c.len_utf8();
+                None
+            }
+            _ => None,
+        }
     }
 }
 
