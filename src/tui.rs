@@ -7,6 +7,8 @@
 
 use crate::bus::Bus;
 use crate::codex_render::markdown_render;
+use crate::config::{load_settings, save_settings};
+use crate::config_ui::{ConfigScreen, Outcome};
 use crate::file_search::FileIndex;
 use crate::runtime::LoopManager;
 use crate::types::{AgentStatus, AgentType, BusMessage};
@@ -73,6 +75,8 @@ pub struct Tui {
     rx: tokio::sync::broadcast::Receiver<BusMessage>,
     index: FileIndex,
     mention: Option<Mention>,
+    overlay: Option<ConfigScreen>,
+    want_config: bool,
     tick: usize,
 }
 
@@ -102,6 +106,8 @@ impl Tui {
             scroll: 0,
             index,
             mention: None,
+            overlay: None,
+            want_config: false,
             tick: 0,
         }
     }
@@ -121,6 +127,11 @@ impl Tui {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            if self.want_config {
+                self.want_config = false;
+                let settings = load_settings(&self.workspace).unwrap_or_default();
+                self.overlay = Some(ConfigScreen::new(settings, self.workspace.clone()));
+            }
             terminal.draw(|f| self.draw(f))?;
 
             tokio::select! {
@@ -216,6 +227,29 @@ impl Tui {
             return true;
         };
 
+        // While the /config overlay is open, route all keys to it.
+        if let Some(screen) = self.overlay.as_mut() {
+            if let Some(outcome) = screen.handle_key(key) {
+                match outcome {
+                    Outcome::Saved => {
+                        if let Err(e) = save_settings(&self.workspace, &screen.settings) {
+                            self.system(&format!("config save failed: {e}"), SysKind::Error);
+                        } else {
+                            self.system(
+                                "config saved to autoreport.config.yaml — restart to apply",
+                                SysKind::Info,
+                            );
+                        }
+                    }
+                    Outcome::Cancelled => {
+                        self.system("config unchanged", SysKind::Info);
+                    }
+                }
+                self.overlay = None;
+            }
+            return true;
+        }
+
         // While the mention popup is open, intercept navigation keys.
         if self.mention.is_some() {
             match key.code {
@@ -269,7 +303,15 @@ impl Tui {
             KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
-            KeyCode::Esc => self.mention = None,
+            KeyCode::Esc => {
+                // ESC: close the mention popup if open, otherwise interrupt the
+                // focused agent's active turn (codex semantics).
+                if self.mention.is_some() {
+                    self.mention = None;
+                } else {
+                    self.manager.interrupt(self.focused);
+                }
+            }
             KeyCode::Char(c) => {
                 self.input.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
@@ -454,9 +496,12 @@ impl Tui {
         let rest: String = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /quit             exit",
+                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit provider settings\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /quit             exit",
                 SysKind::Info,
             ),
+            "config" => {
+                self.want_config = true;
+            }
             "agents" => {
                 let mut s = String::from("Agents:\n");
                 for a in AgentType::ALL {
@@ -508,7 +553,7 @@ impl Tui {
         }
     }
 
-    fn draw(&self, f: &mut Frame<'_>) {
+    fn draw(&mut self, f: &mut Frame<'_>) {
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -527,6 +572,10 @@ impl Tui {
 
         if self.mention.is_some() {
             self.draw_mention_popup(f, chunks[2]);
+        }
+
+        if let Some(screen) = self.overlay.as_mut() {
+            screen.draw(f);
         }
     }
 
