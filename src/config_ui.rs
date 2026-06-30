@@ -5,7 +5,12 @@
 //! overlay (driven by `tui.rs`).
 
 use crate::config::schema::{ProviderConfig, Settings};
-use crate::config::{needs_config, resolve_api_key};
+use crate::config::resolve_api_key;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::Frame;
 use std::path::PathBuf;
 
 /// Result of a completed config screen session.
@@ -174,10 +179,185 @@ impl ConfigScreen {
     }
 }
 
+impl ConfigScreen {
+    pub fn draw(&mut self, f: &mut Frame<'_>) {
+        let area = f.area();
+        // Clear the background (full-screen overlay like codex's centered dialog).
+        f.render_widget(Clear, area);
+
+        let title = " AutoReportCLI · provider setup ";
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+            ));
+        f.render_widget(block, area);
+
+        let inner = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(2)])
+            .margin(1)
+            .split(area);
+        let body = inner[0];
+        let footer = inner[1];
+
+        match self.step {
+            Step::Select => self.draw_select(f, body),
+            Step::Edit => self.draw_edit(f, body),
+            Step::Preview => self.draw_preview(f, body),
+        }
+
+        self.draw_footer(f, footer);
+    }
+
+    fn draw_select(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let items: Vec<ListItem> = self
+            .keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let active = self.settings.active_provider.as_deref() == Some(k.as_str());
+                let ok = self
+                    .settings
+                    .providers
+                    .get(k)
+                    .map(|p| resolve_api_key(p).is_ok())
+                    .unwrap_or(false);
+                let _ = i;
+                let mark = if active { "●" } else { "○" };
+                let key_icon = if ok { "✔" } else { "✘" };
+                let style = if ok {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                };
+                let line = Line::from(vec![
+                    Span::styled(format!("{mark} "), Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("{k:<16}"), Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(format!(" kind={} ", self.settings.providers[k].kind)),
+                    Span::styled(format!("{key_icon} key"), style),
+                ]);
+                ListItem::new(line)
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(self.selected));
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .title(Span::styled(" Providers ", Style::default().fg(Color::Cyan))),
+            );
+        f.render_stateful_widget(list, area, &mut state);
+    }
+
+    fn draw_edit(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let provider = match self.selected_provider() {
+            Some(p) => p,
+            None => return,
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            format!("Editing provider: {}", self.selected_key().unwrap_or("?")),
+            Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow),
+        )));
+        lines.push(Line::raw(""));
+
+        for field in Field::ALL {
+            let value: String = match field {
+                Field::Model => provider.model.clone(),
+                Field::ApiBase => provider.api_base.clone().unwrap_or_default(),
+                Field::ApiKey => provider
+                    .api_key
+                    .clone()
+                    .map(|k| format!("{}••••", &k[..k.len().min(4)]))
+                    .unwrap_or_else(|| "(env)".into()),
+                Field::Active => {
+                    if self.settings.active_provider.as_deref() == self.selected_key() {
+                        "[X]".into()
+                    } else {
+                        "[ ]".into()
+                    }
+                }
+                Field::Save | Field::Cancel => String::new(),
+            };
+
+            let focused = self.field == field;
+            let marker = if focused { "▶" } else { " " };
+            let mut spans = vec![Span::styled(
+                format!("{marker} "),
+                Style::default().fg(Color::Green),
+            )];
+            spans.push(Span::styled(
+                format!("{:<14}", field.label()),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+
+            if focused && self.editing {
+                // Show the live input buffer + a block cursor.
+                let before: String = self.input[..self.cursor].chars().collect();
+                let cur: String = self.input[self.cursor..].chars().take(1).collect();
+                let after: String = self.input[self.cursor + cur.len()..].chars().collect();
+                spans.push(Span::raw(before));
+                spans.push(Span::styled(
+                    if cur.is_empty() { " ".into() } else { cur },
+                    Style::default().bg(Color::DarkGray),
+                ));
+                spans.push(Span::raw(after));
+            } else {
+                spans.push(Span::raw(value));
+            }
+            lines.push(Line::from(spans));
+        }
+
+        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+        f.render_widget(para, area);
+    }
+
+    fn draw_preview(&self, f: &mut Frame<'_>, area: Rect) {
+        let yaml = serde_yaml::to_string(&self.settings).unwrap_or_default();
+        let para = Paragraph::new(yaml)
+            .style(Style::default().fg(Color::Gray))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .title(Span::styled(
+                        " Preview (Enter=save) ",
+                        Style::default().fg(Color::Cyan),
+                    )),
+            );
+        f.render_widget(para, area);
+    }
+
+    fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
+        let hint = match (self.step, self.editing) {
+            (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
+            (Step::Select, _) => " ↑/↓: choose   Enter: edit   Esc: cancel".to_string(),
+            (Step::Edit, _) => " ↑/↓: field   Enter: edit/toggle   Esc: back".to_string(),
+            (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
+        };
+        let mut text = hint;
+        if let Some(err) = &self.error {
+            text = format!("{text}   ⚠ {err}");
+        }
+        let para = Paragraph::new(text)
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Left);
+        f.render_widget(para, area);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::save_settings;
+    use crate::config::{needs_config, save_settings};
 
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();
