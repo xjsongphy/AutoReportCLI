@@ -7,5 +7,5 @@
 pub mod loader;
 pub mod schema;
 
-pub use loader::{ensure_workspace, load_settings, resolve_api_key};
-pub use schema::AgentDefaults;
+pub use loader::{ensure_workspace, load_settings, needs_config, resolve_api_key, save_settings};
+pub use schema::{AgentDefaults, Settings};

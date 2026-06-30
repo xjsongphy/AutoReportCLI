@@ -1,5 +1,7 @@
 # AutoReportCLI
 
+> English | [简体中文](README_zh.md)
+
 A **codex-style, multi-agent command-line tool** for automatically writing
 physics-experiment reports in LaTeX. It is a Rust rewrite of the
 [AutoReport](../AutoReport) desktop app — no GUI, no MCP, no image recognition.
@@ -22,27 +24,54 @@ The terminal is the interface; the working directory is the project.
 
 ## Why
 
-AutoReport coordinates several specialized agents (Main, Theory, Data Analysis,
-Plotting, Report) that collaborate to produce a complete LaTeX report from raw
-data and references. AutoReportCLI keeps that agent model and its proprietary
-prompts, but swaps the PyQt GUI for a fast, codex-like terminal UI and ports the
-runtime to Rust.
+AutoReport coordinates several specialized agents (Main, Theory, Data Analysis, Plotting, Report) that collaborate to produce a complete LaTeX report from raw data and references. AutoReportCLI keeps that agent model and its proprietary prompts, but swaps the PyQt GUI for a fast, codex-like terminal UI and ports the runtime to Rust.
 
 ## Quick start
 
+### 1. Build
+
 ```bash
-# 1. Build
-cargo build --release
-
-# 2. Configure a provider (env var is enough for a quick start)
-export ANTHROPIC_API_KEY=sk-ant-...
-
-# 3. Run inside an experiment folder (the working directory *is* the project)
-cd my-experiment
-/path/to/autoreport
+git clone <this-repo> AutoReportCLI && cd AutoReportCLI
+cargo build --release        # binary: target/release/autoreport
+# optional: ln -s "$PWD/target/release/autoreport" /usr/local/bin/autoreport
 ```
 
-On first run AutoReportCLI creates the fixed project layout if any are missing:
+### 2. Configure a provider (any one of these works)
+
+- **Env var** (simplest): `export ANTHROPIC_API_KEY=sk-ant-...`
+  (or `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`).
+- **Config file**: copy `autoreport.config.example.yaml` to
+  `autoreport.config.yaml` in your project and edit `providers` /
+  `active_provider`. See `autoreport.config.example.yaml`.
+- **Nothing**: on first run AutoReportCLI pulls the **cc-switch** preset catalog
+  and the **skills** repo (see *Startup sync* below); the synced presets become
+  selectable providers — you then only need to set the matching env var, e.g.
+  `export ANTHROPIC_AUTH_TOKEN=...` for a cc-switch Claude preset.
+- **Interactive (codex-style)**: if no `autoreport.config.yaml` exists and no
+  provider key is resolvable, AutoReportCLI opens a full-screen provider-setup
+  screen on launch (like codex's login page). Pick a provider, set its
+  model / API base / API key, mark it active, and save. From inside the running
+  TUI, `/config` reopens the same screen to view or edit providers; changes are
+  written to `autoreport.config.yaml` and apply on the next start.
+
+### 3. Create / enter a project folder and run
+
+The working directory **is** the project — each experiment lives in its own
+folder with the fixed layout below.
+
+```bash
+mkdir ~/my-experiment && cd ~/my-experiment
+# drop raw data into data/, references into references/, then:
+autoreport                     # or: /path/to/AutoReportCLI/target/release/autoreport
+```
+
+On launch AutoReportCLI:
+1. Creates any missing project folders (`data/`, `references/`, `theory/`,
+   `code/`, `tex/`, `outline/`, `.autoreport/`).
+2. Materializes the bundled report template into `references/templates/`.
+3. Syncs the two upstream repos (cc-switch presets + skills) — needs network on
+   first run; thereafter the cache under `.autoreport/external` is reused.
+4. Starts one persistent agent loop per agent type and opens the TUI.
 
 ```
 .
@@ -52,13 +81,37 @@ On first run AutoReportCLI creates the fixed project layout if any are missing:
 ├── code/            Plotting agent scripts + figures
 ├── tex/             Report agent LaTeX + compiled PDF
 ├── outline/         Main agent's report outline
-└── .autoreport/     manifests + internal metadata
+└── .autoreport/     manifests, synced skills/presets, internal metadata
 ```
 
+### 4. Drive it (in the TUI)
+
+| Key / command | Effect |
+|---|---|
+| type, **Enter** | send a message to the focused agent |
+| **Tab** / **BackTab** | cycle focus across agents |
+| **`@`** | mention a workspace file (fuzzy popup, **Tab** to accept) |
+| **Esc** | interrupt the focused agent's running turn (codex-style) |
+| **↑/↓**, **PgUp/PgDn** | scroll history |
+| `/agents` | list agents + live status |
+| `/switch <agent>` | focus `main|data_analysis|plotting|theory|report` |
+| `/clear` | clear the focused agent's context (it keeps running) |
+| `/compact` | compact the focused agent's context |
+| `/manifest` | show files each agent has produced |
+| `/help`, `/quit` | help, exit |
+
+CLI flags: `--workspace <dir>` (default: cwd), `--provider <key>`,
+`--sync-presets` (force a full repo fetch then exit), `--no-sync` (use cache
+only), `-v` (verbose logging).
+
+Env vars (besides API keys): `ANTHROPIC_BASE_URL` etc. are honored when set
+via a cc-switch preset's `api_key_env`; you can also pin `active_provider` with
+`--provider`.
+
 Configure providers in `autoreport.config.yaml` (see
-`autoreport.config.example.yaml`). Env vars (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) override empty YAML
-fields, and providers auto-register from env vars when no config file exists.
+`autoreport.config.example.yaml`). Env vars override empty YAML fields, and
+providers auto-register from env vars when no config file exists.
+
 
 ## Agents & permissions
 
@@ -105,7 +158,13 @@ the Report agent has a template to copy into `tex/`.
 
 Agents are persistent for the life of the process — you don't open or close
 them. Use **Tab** (or `/switch <agent>`) to focus one, and clear its memory
-without stopping it:
+without stopping it. The agent runtime follows codex's session design:
+conversation items are codex `ResponseItem`s, the prompt is assembled as
+`instructions + items`, input is queued through a codex-style `Op`/mailbox
+channel (new input interrupts the active turn), and **every item is appended to
+a rollout file** (`.autoreport/sessions/rollout-*.jsonl`) so each agent resumes
+its last conversation on the next launch. **Esc** interrupts the focused
+agent's running turn.
 
 | Command            | Effect                                            |
 |--------------------|---------------------------------------------------|
@@ -135,9 +194,12 @@ src/
   config/            schema, YAML + env loading, workspace auto-init
   provider/          LLMProvider trait; Anthropic + OpenAI-compat (streaming)
   tools/             file / exec / task / agent-comm / manifest / skill tools
-  runtime/           LoopManager + AgentLoop (stream + tool-call iteration)
+  runtime/           LoopManager + AgentLoop (codex session: Op queue, ResponseItem
+                     history, instructions+items prompt, interrupt, rollout resume)
   bus.rs             broadcast message bus (pub/sub spine)
   taskboard.rs       shared coordination task board
+  rollout.rs         codex-format conversation persistence (ResponseItem JSONL + resume)
+  codex_render/      vendored codex markdown/wrapping/highlight (pulldown-cmark + syntect)
   skills/  prompts/  skill + prompt loaders
   tui.rs             codex-style ratatui/crossterm interface
 templates/agents/    built-in agent prompts (the proprietary prompts)

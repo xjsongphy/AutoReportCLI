@@ -6,11 +6,20 @@
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use autoreport_cli::bus::Bus;
 use autoreport_cli::config;
+use autoreport_cli::config::Settings;
+use autoreport_cli::config_ui::{ConfigScreen, Outcome};
 use autoreport_cli::provider::build_provider;
 use autoreport_cli::runtime::LoopManager;
 use autoreport_cli::tui::Tui;
@@ -116,6 +125,19 @@ async fn main() -> Result<()> {
         }
     }
 
+    // First-run wizard: no config file and no resolvable provider key.
+    if config::needs_config(&workspace, &settings) {
+        match run_wizard(&workspace, settings.clone()) {
+            Outcome::Saved => {
+                // Re-read the just-written config and continue startup.
+                settings = config::load_settings(&workspace)?;
+            }
+            Outcome::Cancelled => {
+                log::info!("config wizard cancelled; continuing with env/config defaults");
+            }
+        }
+    }
+
     let active_key = settings
         .active_provider
         .clone()
@@ -147,4 +169,24 @@ async fn main() -> Result<()> {
     tui.run().await?;
 
     Ok(())
+}
+
+/// Open the full-screen config wizard. Owns terminal setup/teardown.
+fn run_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
+    enable_raw_mode().ok();
+    let _ = execute!(io::stdout(), EnterAlternateScreen);
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Outcome::Cancelled;
+        }
+    };
+    let mut screen = ConfigScreen::new(settings, workspace.to_path_buf());
+    let outcome = screen.run_fullscreen(&mut terminal).unwrap_or(Outcome::Cancelled);
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    outcome
 }
