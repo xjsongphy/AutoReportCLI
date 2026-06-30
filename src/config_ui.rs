@@ -6,12 +6,15 @@
 
 use crate::config::schema::{ProviderConfig, Settings};
 use crate::config::{resolve_api_key, save_settings};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use ratatui::Terminal;
+use std::io;
 use std::path::PathBuf;
 
 /// Result of a completed config screen session.
@@ -506,6 +509,25 @@ impl ConfigScreen {
                 None
             }
             _ => None,
+        }
+    }
+}
+
+impl ConfigScreen {
+    /// Blocking full-screen loop for the first-run wizard. The caller owns
+    /// raw-mode/alternate-screen setup. Returns the session outcome.
+    pub fn run_fullscreen(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> io::Result<Outcome> {
+        loop {
+            terminal.draw(|f| self.draw(f))?;
+            // Blocking read: nothing else streams during the wizard.
+            if let event::Event::Key(key) = event::read()? {
+                if let Some(outcome) = self.handle_key(key) {
+                    return Ok(outcome);
+                }
+            }
         }
     }
 }
