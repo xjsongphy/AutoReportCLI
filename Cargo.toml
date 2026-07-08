@@ -1,6 +1,6 @@
 [package]
 name = "autoreport-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "AutoReportCLI — a codex-style multi-agent CLI for automated physics experiment report writing"
