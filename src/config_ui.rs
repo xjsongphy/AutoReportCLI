@@ -88,15 +88,65 @@ impl Field {
     }
 }
 
-/// Ordered provider keys for the Select list.
-fn provider_keys(settings: &Settings) -> Vec<String> {
-    settings.providers.keys().cloned().collect()
+#[derive(Debug, Clone)]
+struct ProviderGroup {
+    kind: String,
+    label: String,
+    keys: Vec<String>,
+}
+
+fn kind_rank(kind: &str) -> usize {
+    match kind {
+        "anthropic" => 0,
+        "openai" => 1,
+        "google" => 2,
+        "deepseek" => 3,
+        "openrouter" => 4,
+        _ => 99,
+    }
+}
+
+fn kind_label(kind: &str) -> String {
+    match kind {
+        "anthropic" => "Anthropic".to_string(),
+        "openai" => "OpenAI-Compatible".to_string(),
+        "google" => "Google".to_string(),
+        "deepseek" => "DeepSeek".to_string(),
+        "openrouter" => "OpenRouter".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Ordered provider groups for the Select list.
+fn provider_groups(settings: &Settings) -> Vec<ProviderGroup> {
+    let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for (key, provider) in &settings.providers {
+        grouped
+            .entry(provider.kind.clone())
+            .or_default()
+            .push(key.clone());
+    }
+    let mut groups: Vec<ProviderGroup> = grouped
+        .into_iter()
+        .map(|(kind, keys)| ProviderGroup {
+            label: kind_label(&kind),
+            kind,
+            keys,
+        })
+        .collect();
+    groups.sort_by(|a, b| {
+        kind_rank(&a.kind)
+            .cmp(&kind_rank(&b.kind))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    groups
 }
 
 pub struct ConfigScreen {
     pub settings: Settings,
-    pub keys: Vec<String>,
-    pub selected: usize,
+    groups: Vec<ProviderGroup>,
+    pub group_selected: usize,
+    pub selected_in_group: usize,
     pub step: Step,
     pub field: Field,
     /// True while typing into `field` (the input buffer is live).
@@ -109,16 +159,28 @@ pub struct ConfigScreen {
 
 impl ConfigScreen {
     pub fn new(settings: Settings, workspace: PathBuf) -> Self {
-        let keys = provider_keys(&settings);
-        let selected = settings
+        let groups = provider_groups(&settings);
+        let active = settings
             .active_provider
-            .as_ref()
-            .and_then(|a| keys.iter().position(|k| k == a))
-            .unwrap_or(0);
+            .clone()
+            .or_else(|| groups.first().and_then(|g| g.keys.first().cloned()));
+        let (group_selected, selected_in_group) = active
+            .as_deref()
+            .and_then(|active_key| {
+                groups.iter().enumerate().find_map(|(gi, group)| {
+                    group
+                        .keys
+                        .iter()
+                        .position(|k| k == active_key)
+                        .map(|pi| (gi, pi))
+                })
+            })
+            .unwrap_or((0, 0));
         Self {
             settings,
-            keys,
-            selected,
+            groups,
+            group_selected,
+            selected_in_group,
             step: Step::Select,
             field: Field::Model,
             editing: false,
@@ -130,7 +192,10 @@ impl ConfigScreen {
     }
 
     pub fn selected_key(&self) -> Option<&str> {
-        self.keys.get(self.selected).map(|s| s.as_str())
+        self.groups
+            .get(self.group_selected)
+            .and_then(|group| group.keys.get(self.selected_in_group))
+            .map(|s| s.as_str())
     }
 
     pub fn selected_provider(&self) -> Option<&ProviderConfig> {
@@ -147,6 +212,35 @@ impl ConfigScreen {
         self.selected_provider()
             .map(|p| resolve_api_key(p).is_ok())
             .unwrap_or(false)
+    }
+
+    fn current_group(&self) -> Option<&ProviderGroup> {
+        self.groups.get(self.group_selected)
+    }
+
+    fn group_summary(&self) -> String {
+        self.current_group()
+            .map(|g| format!("{} ({})", g.label, g.keys.len()))
+            .unwrap_or_else(|| "No providers".to_string())
+    }
+
+    fn select_provider_key(&mut self, selected_key: Option<&str>) {
+        self.groups = provider_groups(&self.settings);
+        let fallback = self
+            .groups
+            .first()
+            .and_then(|g| g.keys.first())
+            .map(|s| s.as_str());
+        let target = selected_key.or(fallback);
+        let (group_selected, selected_in_group) = target
+            .and_then(|target_key| {
+                self.groups.iter().enumerate().find_map(|(gi, group)| {
+                    group.keys.iter().position(|k| k == target_key).map(|pi| (gi, pi))
+                })
+            })
+            .unwrap_or((0, 0));
+        self.group_selected = group_selected;
+        self.selected_in_group = selected_in_group;
     }
 
     /// Toggle the selected provider as the active one.
@@ -186,9 +280,9 @@ impl ConfigScreen {
 impl ConfigScreen {
     pub fn draw(&mut self, f: &mut Frame<'_>) {
         let area = f.area();
-        // Clear the background (full-screen overlay like codex's centered dialog).
         f.render_widget(Clear, area);
 
+        let dialog = centered_rect(area, 92, 82);
         let title = " AutoReportCLI · provider setup ";
         let block = Block::default()
             .borders(Borders::ALL)
@@ -196,15 +290,22 @@ impl ConfigScreen {
                 title,
                 Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
             ));
-        f.render_widget(block, area);
+        f.render_widget(block, dialog);
 
         let inner = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(2)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(2),
+            ])
             .margin(1)
-            .split(area);
-        let body = inner[0];
-        let footer = inner[1];
+            .split(dialog);
+        let header = inner[0];
+        let body = inner[1];
+        let footer = inner[2];
+
+        self.draw_header(f, header);
 
         match self.step {
             Step::Select => self.draw_select(f, body),
@@ -215,9 +316,45 @@ impl ConfigScreen {
         self.draw_footer(f, footer);
     }
 
+    fn draw_header(&self, f: &mut Frame<'_>, area: Rect) {
+        let provider_line = Line::from(vec![
+            Span::styled(">_ ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "AutoReportCLI Provider Setup",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let meta_line = Line::from(vec![
+            Span::styled("group ", Style::default().fg(Color::Gray)),
+            Span::styled(self.group_summary(), Style::default().fg(Color::Cyan)),
+            Span::raw("    "),
+            Span::styled("provider ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                self.selected_key().unwrap_or("-"),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]);
+        let para = Paragraph::new(vec![provider_line, meta_line]);
+        f.render_widget(para, area);
+    }
+
     fn draw_select(&mut self, f: &mut Frame<'_>, area: Rect) {
-        let items: Vec<ListItem> = self
-            .keys
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(3)])
+            .split(area);
+        self.draw_group_tabs(f, chunks[0]);
+
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+            .split(chunks[1]);
+
+        let group_keys = self
+            .current_group()
+            .map(|g| g.keys.clone())
+            .unwrap_or_default();
+        let items: Vec<ListItem> = group_keys
             .iter()
             .enumerate()
             .map(|(i, k)| {
@@ -228,25 +365,34 @@ impl ConfigScreen {
                     .get(k)
                     .map(|p| resolve_api_key(p).is_ok())
                     .unwrap_or(false);
-                let _ = i;
-                let mark = if active { "●" } else { "○" };
-                let key_icon = if ok { "✔" } else { "✘" };
-                let style = if ok {
+                let selected = i == self.selected_in_group;
+                let mark = if selected { "›" } else { " " };
+                let active_mark = if active { "*" } else { " " };
+                let key_icon = if ok { "key" } else { "no-key" };
+                let key_style = if ok {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
                 let line = Line::from(vec![
-                    Span::styled(format!("{mark} "), Style::default().fg(Color::Cyan)),
-                    Span::styled(format!("{k:<16}"), Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(format!(" kind={} ", self.settings.providers[k].kind)),
-                    Span::styled(format!("{key_icon} key"), style),
+                    Span::styled(format!("{mark}"), Style::default().fg(Color::Cyan)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{active_mark}"),
+                        Style::default().fg(Color::LightGreen),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{k:<20}"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("{key_icon:>8}"), key_style),
                 ]);
                 ListItem::new(line)
             })
             .collect();
         let mut state = ListState::default();
-        state.select(Some(self.selected));
+        state.select(Some(self.selected_in_group));
         let list = List::new(items)
             .highlight_style(
                 Style::default()
@@ -257,9 +403,89 @@ impl ConfigScreen {
             .block(
                 Block::default()
                     .borders(Borders::TOP)
-                    .title(Span::styled(" Providers ", Style::default().fg(Color::Cyan))),
+                    .title(Span::styled(
+                        format!(" {} ", self.group_summary()),
+                        Style::default().fg(Color::Cyan),
+                    )),
             );
-        f.render_stateful_widget(list, area, &mut state);
+        f.render_stateful_widget(list, columns[0], &mut state);
+
+        self.draw_provider_details(f, columns[1]);
+    }
+
+    fn draw_group_tabs(&self, f: &mut Frame<'_>, area: Rect) {
+        let mut spans = vec![Span::styled("groups  ", Style::default().fg(Color::Gray))];
+        for (idx, group) in self.groups.iter().enumerate() {
+            if idx == self.group_selected {
+                spans.push(Span::styled("[", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    format!("{} ({})", group.label, group.keys.len()),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled("]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+            } else {
+                spans.push(Span::styled(
+                    format!("{} ({})", group.label, group.keys.len()),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+            spans.push(Span::raw(" "));
+        }
+        let para = Paragraph::new(Line::from(spans))
+            .block(Block::default().borders(Borders::BOTTOM));
+        f.render_widget(para, area);
+    }
+
+    fn draw_provider_details(&self, f: &mut Frame<'_>, area: Rect) {
+        let Some(provider) = self.selected_provider() else {
+            return;
+        };
+        let key_name = self.selected_key().unwrap_or("-");
+        let api_key_env = provider
+            .api_key_env
+            .clone()
+            .or_else(|| provider.env_key().map(ToString::to_string))
+            .unwrap_or_else(|| "-".to_string());
+        let api_base = provider.api_base.as_deref().unwrap_or("(default)");
+        let key_state = if self.key_resolvable() {
+            "resolved"
+        } else if provider.api_key.is_some() {
+            "inline only"
+        } else {
+            "missing"
+        };
+        let lines = vec![
+            Line::from(Span::styled(
+                key_name,
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
+            detail_line("kind", &provider.kind),
+            detail_line("model", &provider.model),
+            detail_line("api_base", api_base),
+            detail_line("api_key_env", &api_key_env),
+            detail_line("key", key_state),
+            detail_line(
+                "active",
+                if self.settings.active_provider.as_deref() == Some(key_name) {
+                    "yes"
+                } else {
+                    "no"
+                },
+            ),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("Enter", Style::default().fg(Color::White)),
+                Span::styled(" to edit selected provider", Style::default().fg(Color::Gray)),
+            ]),
+        ];
+        let para = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::TOP).title(Span::styled(
+                " Details ",
+                Style::default().fg(Color::Cyan),
+            )))
+            .wrap(Wrap { trim: false });
+        f.render_widget(para, area);
     }
 
     fn draw_edit(&mut self, f: &mut Frame<'_>, area: Rect) {
@@ -343,7 +569,7 @@ impl ConfigScreen {
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
         let hint = match (self.step, self.editing) {
             (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
-            (Step::Select, _) => " ↑/↓: choose   Enter: edit   Esc: cancel".to_string(),
+            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: provider   Enter: edit   Esc: cancel".to_string(),
             (Step::Edit, _) => " ↑/↓: field   Enter: edit/toggle   Esc: back".to_string(),
             (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
         };
@@ -379,15 +605,32 @@ impl ConfigScreen {
 
     fn handle_select_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Up => {
-                if self.selected > 0 {
-                    self.selected -= 1;
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.group_selected > 0 {
+                    self.group_selected -= 1;
+                    let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
+                    self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
                 }
                 None
             }
-            KeyCode::Down => {
-                if self.selected + 1 < self.keys.len() {
-                    self.selected += 1;
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.group_selected + 1 < self.groups.len() {
+                    self.group_selected += 1;
+                    let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
+                    self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
+                }
+                None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.selected_in_group > 0 {
+                    self.selected_in_group -= 1;
+                }
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
+                if self.selected_in_group + 1 < len {
+                    self.selected_in_group += 1;
                 }
                 None
             }
@@ -479,6 +722,8 @@ impl ConfigScreen {
                 self.editing = false;
                 let field = self.field;
                 let _ = self.commit(field, value); // error surfaces via self.error
+                let selected = self.selected_key().map(str::to_string);
+                self.select_provider_key(selected.as_deref());
                 None
             }
             KeyCode::Backspace => {
@@ -511,6 +756,33 @@ impl ConfigScreen {
             _ => None,
         }
     }
+}
+
+fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn detail_line<'a>(label: &'a str, value: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!("{label:<11}"), Style::default().fg(Color::Gray)),
+        Span::raw(" "),
+        Span::styled(value.to_string(), Style::default().fg(Color::White)),
+    ])
 }
 
 impl ConfigScreen {
@@ -577,12 +849,27 @@ mod tests {
     #[test]
     fn set_active_mutates_settings() {
         let mut s = settings_with("a", provider("m-a"));
-        s.providers.insert("b".into(), provider("m-b"));
+        let mut b = provider("m-b");
+        b.kind = "google".into();
+        s.providers.insert("b".into(), b);
         let mut screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
         assert_eq!(screen.settings.active_provider.as_deref(), Some("a"));
-        screen.selected = 1; // "b"
+        screen.group_selected = 1;
+        screen.selected_in_group = 0;
         screen.toggle_active();
         assert_eq!(screen.settings.active_provider.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn groups_are_built_by_provider_kind() {
+        let mut s = settings_with("a", provider("m-a"));
+        let mut b = provider("m-b");
+        b.kind = "google".into();
+        s.providers.insert("b".into(), b);
+        let screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
+        assert_eq!(screen.groups.len(), 2);
+        assert_eq!(screen.groups[0].kind, "anthropic");
+        assert_eq!(screen.groups[1].kind, "google");
     }
 
     #[test]
