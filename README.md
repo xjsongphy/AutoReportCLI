@@ -1,6 +1,16 @@
-# AutoReportCLI
+<div align="center">
 
-> English | [简体中文](README_zh.md)
+![title](https://github.com/xjsongphy/AutoReport/blob/master/assets/screenshots/title.png?raw=1)
+
+### A Codex-Style Multi-Agent CLI for Automated Physics Experiment Report Writing
+
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/xjsongphy/AutoreportCLI/blob/master/LICENSE)
+
+English | [中文](README_zh.md)
+
+</div>
 
 A **codex-style, multi-agent command-line tool** for automatically writing
 physics-experiment reports in LaTeX. It is a Rust rewrite of the
@@ -22,208 +32,102 @@ The terminal is the interface; the working directory is the project.
 └ Tab: switch agent   Enter: send   ↑/↓: scroll   /help   Ctrl+C ┘
 ```
 
-## Why
+## Overview
 
-AutoReport coordinates several specialized agents (Main, Theory, Data Analysis, Plotting, Report) that collaborate to produce a complete LaTeX report from raw data and references. AutoReportCLI keeps that agent model and its proprietary prompts, but swaps the PyQt GUI for a fast, codex-like terminal UI and ports the runtime to Rust.
+AutoReportCLI keeps the multi-agent workflow of [AutoReport](../AutoReport), but
+rebuilds it as a terminal-first tool in Rust. You work inside an experiment
+folder, feed in raw data and references, and coordinate five agents from a
+single codex-style TUI.
 
-## Quick start
+## Features
 
-### 1. Build
+### Core Capabilities
+- **Multi-Agent Collaboration** — Main, Theory, Data Analysis, Plotting, and Report agents work on the same experiment with separate responsibilities
+- **Project-Oriented Workspace** — each run operates on the current folder and creates the standard report layout automatically
+- **Provider Flexibility** — supports Anthropic and OpenAI-compatible providers, with config-file, env-var, and first-run interactive setup
+- **Built-In Defaults** — ships bundled report templates and default skills so a fresh workspace can run immediately
+
+### TUI Experience
+- **Codex-Style Interface** — full-screen terminal UI with agent panes, streaming output, markdown rendering, and keyboard-first navigation
+- **Persistent Agent Sessions** — each agent keeps its own conversation history and resumes on the next launch
+- **`@` File Mentions** — fuzzy-search workspace files and inject them into prompts directly from the input box
+- **Slash Commands** — `/agents`, `/switch`, `/config`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
+
+## Quick Start
+
+**Prerequisites:** Rust 1.85+, a TeX distribution, and at least one LLM provider API key.
+
+Build from source:
 
 ```bash
 git clone <this-repo> AutoReportCLI && cd AutoReportCLI
-cargo build --release        # binary: target/release/autoreport
-# optional: ln -s "$PWD/target/release/autoreport" /usr/local/bin/autoreport
+cargo build --release
 ```
 
-### 2. Configure a provider (any one of these works)
+Install globally if you want `autoreport` available from any directory:
 
-- **Env var** (simplest): `export ANTHROPIC_API_KEY=sk-ant-...`
-  (or `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`).
-- **Config file**: copy `autoreport.config.example.yaml` to
-  `autoreport.config.yaml` in your project and edit `providers` /
-  `active_provider`. See `autoreport.config.example.yaml`.
-- **Nothing**: on first run AutoReportCLI pulls the **cc-switch** preset catalog
-  and the **skills** repo (see *Startup sync* below); the synced presets become
-  selectable providers — you then only need to set the matching env var, e.g.
-  `export ANTHROPIC_AUTH_TOKEN=...` for a cc-switch Claude preset.
-- **Interactive (codex-style)**: if no `autoreport.config.yaml` exists and no
-  provider key is resolvable, AutoReportCLI opens a full-screen provider-setup
-  screen on launch (like codex's login page). Pick a provider, set its
-  model / API base / API key, mark it active, and save. From inside the running
-  TUI, `/config` reopens the same screen to view or edit providers; changes are
-  written to `autoreport.config.yaml` and apply on the next start.
+```bash
+cargo install --path .
+```
 
-### 3. Create / enter a project folder and run
+Or run the built binary directly:
 
-The working directory **is** the project — each experiment lives in its own
-folder with the fixed layout below.
+```bash
+./target/release/autoreport
+```
+
+Create a project folder and start:
 
 ```bash
 mkdir ~/my-experiment && cd ~/my-experiment
-# drop raw data into data/, references into references/, then:
-autoreport                     # or: /path/to/AutoReportCLI/target/release/autoreport
+autoreport
 ```
 
-On launch AutoReportCLI:
-1. Creates any missing project folders (`data/`, `references/`, `theory/`,
-   `code/`, `tex/`, `outline/`, `.autoreport/`).
-2. Materializes the bundled report template into `references/templates/`.
-3. Syncs the two upstream repos (cc-switch presets + skills) — needs network on
-   first run; thereafter the cache under `.autoreport/external` is reused.
-4. Starts one persistent agent loop per agent type and opens the TUI.
+If `autoreport` is not in your `PATH`, use the binary path instead:
 
+```bash
+/path/to/AutoReportCLI/target/release/autoreport
 ```
+
+On first launch, AutoReportCLI creates the workspace folders, materializes the
+built-in template, syncs external presets and skills, and opens the TUI.
+
+## Configuration
+
+Configure a provider in any of these ways:
+
+- Set an API key environment variable such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`
+- Create `autoreport.config.yaml` from `autoreport.config.example.yaml`
+- Let the first-run full-screen setup page guide you through provider selection and saving
+
+Useful CLI flags:
+
+- `--workspace <dir>` to run on a different project folder
+- `--provider <key>` to override the active provider
+- `--no-sync` to skip startup sync and use cache only
+- `--sync-presets` to force a refresh and exit
+- `-v` for verbose logs
+
+## Workspace Layout
+
+```text
 .
-├── data/            raw data (+ data/processed/ analysis output)
-├── references/      reference PDFs/images, custom templates, skills
-├── theory/          Theory agent output
-├── code/            Plotting agent scripts + figures
-├── tex/             Report agent LaTeX + compiled PDF
-├── outline/         Main agent's report outline
-└── .autoreport/     manifests, synced skills/presets, internal metadata
+├── data/            raw data and processed results
+├── references/      papers, images, templates, custom skills
+├── theory/          theory agent output
+├── code/            plotting scripts and figures
+├── tex/             LaTeX sources and compiled PDF
+├── outline/         main agent planning output
+└── .autoreport/     sessions, synced assets, internal metadata
 ```
 
-### 4. Drive it (in the TUI)
+## Development
 
-| Key / command | Effect |
-|---|---|
-| type, **Enter** | send a message to the focused agent |
-| **Tab** / **BackTab** | cycle focus across agents |
-| **`@`** | mention a workspace file (fuzzy popup, **Tab** to accept) |
-| **Esc** | interrupt the focused agent's running turn (codex-style) |
-| **↑/↓**, **PgUp/PgDn** | scroll history |
-| `/agents` | list agents + live status |
-| `/switch <agent>` | focus `main|data_analysis|plotting|theory|report` |
-| `/clear` | clear the focused agent's context (it keeps running) |
-| `/compact` | compact the focused agent's context |
-| `/manifest` | show files each agent has produced |
-| `/help`, `/quit` | help, exit |
-
-CLI flags: `--workspace <dir>` (default: cwd), `--provider <key>`,
-`--sync-presets` (force a full repo fetch then exit), `--no-sync` (use cache
-only), `-v` (verbose logging).
-
-Env vars (besides API keys): `ANTHROPIC_BASE_URL` etc. are honored when set
-via a cc-switch preset's `api_key_env`; you can also pin `active_provider` with
-`--provider`.
-
-Configure providers in `autoreport.config.yaml` (see
-`autoreport.config.example.yaml`). Env vars override empty YAML fields, and
-providers auto-register from env vars when no config file exists.
-
-
-## Agents & permissions
-
-| Agent          | Writes to          | Extra tools                                   |
-|----------------|--------------------|-----------------------------------------------|
-| Main           | `outline/`         | `send_to_agent`, `manage_tasks`, exec         |
-| Theory         | `theory/`          | `manage_tasks`, `report_issue`                |
-| Data Analysis  | `data/processed/`  | `manage_tasks`, `report_issue`, exec          |
-| Plotting       | `code/`            | `manage_tasks`, `report_issue`, exec          |
-| Report         | `tex/`             | `manage_tasks`, `report_issue`, exec (LaTeX)  |
-
-All agents can read every directory. Write tools refuse paths outside the
-agent's assigned folder and block `..` traversal and `.autoreport`.
-
-Every agent also has `read`, `write_file`, `edit_file`, `delete_file`,
-`apply_patch` (codex `*** Begin Patch` format), `manifest`, `load_skill`,
-`list_skills`.
-
-## Standalone defaults
-
-The binary ships embedded defaults, materialized on first run (never overwriting
-user files):
-
-- **Skills** → `.autoreport/skills/`: `experiment-report-writer`,
-  `latex-compile`, `md-report-writer`, `mineru`. Drop your own in
-  `references/skills/` to override.
-- **Report template** → `references/templates/`: `template_mpl.tex` + `mpltx.cls`,
-  the built-in template the Report agent starts from.
-
-So a fresh project is immediately runnable: `load_skill` works out of the box and
-the Report agent has a template to copy into `tex/`.
-
-## `@` mentions & markdown rendering (codex-style)
-
-- Type `@` in the input to fuzzy-search workspace files; a popup lists matches,
-  arrow keys move, **Tab** accepts. On send, each `@rel/path` is expanded — the
-  file's contents are appended to the message the model receives (codex expands
-  mentions into context), while the visible text keeps the `@path`.
-- Assistant output is rendered as **markdown** via `pulldown-cmark` (the same
-  library codex uses): headings, bold/italic, inline & fenced code, lists,
-  blockquotes, links. A braille spinner animates while an agent thinks.
-
-## Sub-agents run forever
-
-Agents are persistent for the life of the process — you don't open or close
-them. Use **Tab** (or `/switch <agent>`) to focus one, and clear its memory
-without stopping it. The agent runtime follows codex's session design:
-conversation items are codex `ResponseItem`s, the prompt is assembled as
-`instructions + items`, input is queued through a codex-style `Op`/mailbox
-channel (new input interrupts the active turn), and **every item is appended to
-a rollout file** (`.autoreport/sessions/rollout-*.jsonl`) so each agent resumes
-its last conversation on the next launch. **Esc** interrupts the focused
-agent's running turn.
-
-| Command            | Effect                                            |
-|--------------------|---------------------------------------------------|
-| `/agents`          | list agents + live statuses                       |
-| `/switch <agent>`  | focus an agent                                    |
-| `/clear`           | clear the focused agent's context (agent keeps running) |
-| `/compact`         | compact the focused agent's context               |
-| `/new`             | reset the focused agent                            |
-| `/manifest`        | show produced files per agent                     |
-| `/help`            | command list                                      |
-| `/quit`            | exit                                              |
-
-## Skills
-
-Drop Markdown skill files (with `name` / `description` YAML frontmatter) into
-`references/skills/` (or `.autoreport/skills/`). Agents discover them via
-`list_skills` and load full instructions with `load_skill`. Built-in agent
-prompts live in `templates/agents/` and can be overridden by placing a file of
-the same name in `references/agents/`.
-
-## Architecture
-
-```
-src/
-  main.rs            CLI entry: config → folder init → LoopManager → TUI
-  lib.rs             public modules
-  config/            schema, YAML + env loading, workspace auto-init
-  provider/          LLMProvider trait; Anthropic + OpenAI-compat (streaming)
-  tools/             file / exec / task / agent-comm / manifest / skill tools
-  runtime/           LoopManager + AgentLoop (codex session: Op queue, ResponseItem
-                     history, instructions+items prompt, interrupt, rollout resume)
-  bus.rs             broadcast message bus (pub/sub spine)
-  taskboard.rs       shared coordination task board
-  rollout.rs         codex-format conversation persistence (ResponseItem JSONL + resume)
-  codex_render/      vendored codex markdown/wrapping/highlight (pulldown-cmark + syntect)
-  skills/  prompts/  skill + prompt loaders
-  tui.rs             codex-style ratatui/crossterm interface
-templates/agents/    built-in agent prompts (the proprietary prompts)
-```
-
-The bus broadcasts every [`BusMessage`](src/types.rs) to all agent loops and the
-TUI; each agent filters messages addressed to it. Tool calls iterate up to
-`max_tool_iterations`, streaming each model turn to the UI.
-
-## Tests
+Run tests with:
 
 ```bash
 cargo test
 ```
 
-Includes an end-to-end test (mock provider → tool call → file write → reply) and
-write-isolation tests.
-
-## Status
-
-Foundation complete and compiling: providers (Anthropic + OpenAI-compat with
-SSE streaming), the tool system with per-agent isolation + codex `apply_patch`,
-the message-bus agent runtime with `/clear` and codex-style `/compact`, bundled
-skills + report template (standalone), `@` file mentions, markdown rendering,
-and the codex-style TUI with thinking spinner. See **[docs/PARITY.md](docs/PARITY.md)**
-for the full parity checklist and roadmap (checkpoints/rollback, first-class PDF
-tool, preset sync, plotting validator, syntax highlighting, session resume).
+For implementation status and parity notes, see
+**[docs/PARITY.md](docs/PARITY.md)**.
