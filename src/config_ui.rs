@@ -250,6 +250,10 @@ impl ConfigScreen {
         }
     }
 
+    fn selected_is_active(&self) -> bool {
+        self.settings.active_provider.as_deref() == self.selected_key()
+    }
+
     /// Validate and write a field's value into the selected provider. Returns
     /// Err(message) (also stored in `self.error`) on validation failure.
     pub fn commit(&mut self, field: Field, value: String) -> Result<(), String> {
@@ -333,6 +337,12 @@ impl ConfigScreen {
                 self.selected_key().unwrap_or("-"),
                 Style::default().fg(Color::Yellow),
             ),
+            Span::raw("    "),
+            Span::styled("startup ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                self.settings.active_provider.as_deref().unwrap_or("-"),
+                Style::default().fg(Color::LightGreen),
+            ),
         ]);
         let para = Paragraph::new(vec![provider_line, meta_line]);
         f.render_widget(para, area);
@@ -357,7 +367,7 @@ impl ConfigScreen {
         let items: Vec<ListItem> = group_keys
             .iter()
             .enumerate()
-            .map(|(i, k)| {
+            .map(|(_, k)| {
                 let active = self.settings.active_provider.as_deref() == Some(k.as_str());
                 let ok = self
                     .settings
@@ -365,29 +375,33 @@ impl ConfigScreen {
                     .get(k)
                     .map(|p| resolve_api_key(p).is_ok())
                     .unwrap_or(false);
-                let selected = i == self.selected_in_group;
-                let mark = if selected { "›" } else { " " };
-                let active_mark = if active { "*" } else { " " };
                 let key_icon = if ok { "key" } else { "no-key" };
                 let key_style = if ok {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
-                let line = Line::from(vec![
-                    Span::styled(format!("{mark}"), Style::default().fg(Color::Cyan)),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("{active_mark}"),
-                        Style::default().fg(Color::LightGreen),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("{k:<20}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("{key_icon:>8}"), key_style),
-                ]);
+                let name_style = if active {
+                    Style::default()
+                        .fg(Color::LightGreen)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().add_modifier(Modifier::BOLD)
+                };
+                let mut spans = vec![Span::styled(format!("{k:<20}"), name_style)];
+                if active {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        "startup",
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(format!("{key_icon:>8}"), key_style));
+                let line = Line::from(spans);
                 ListItem::new(line)
             })
             .collect();
@@ -466,14 +480,18 @@ impl ConfigScreen {
             detail_line("api_key_env", &api_key_env),
             detail_line("key", key_state),
             detail_line(
-                "active",
+                "startup",
                 if self.settings.active_provider.as_deref() == Some(key_name) {
-                    "yes"
+                    "enabled"
                 } else {
-                    "no"
+                    "inactive"
                 },
             ),
             Line::raw(""),
+            Line::from(vec![
+                Span::styled("Space", Style::default().fg(Color::White)),
+                Span::styled(" to set as startup provider", Style::default().fg(Color::Gray)),
+            ]),
             Line::from(vec![
                 Span::styled("Enter", Style::default().fg(Color::White)),
                 Span::styled(" to edit selected provider", Style::default().fg(Color::Gray)),
@@ -520,15 +538,11 @@ impl ConfigScreen {
             };
 
             let focused = self.field == field;
-            let marker = if focused { "▶" } else { " " };
             let mut spans = vec![Span::styled(
-                format!("{marker} "),
-                Style::default().fg(Color::Green),
-            )];
-            spans.push(Span::styled(
                 format!("{:<14}", field.label()),
                 Style::default().add_modifier(Modifier::BOLD),
-            ));
+            )];
+            spans.push(Span::raw(" "));
 
             if focused && self.editing {
                 // Show the live input buffer + a block cursor.
@@ -544,7 +558,16 @@ impl ConfigScreen {
             } else {
                 spans.push(Span::raw(value));
             }
-            lines.push(Line::from(spans));
+            let mut line = Line::from(spans);
+            if focused {
+                line = line.style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+            lines.push(line);
         }
 
         let para = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -569,7 +592,7 @@ impl ConfigScreen {
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
         let hint = match (self.step, self.editing) {
             (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
-            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: provider   Enter: edit   Esc: cancel".to_string(),
+            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: provider   Space: set startup   Enter: edit   Esc: cancel".to_string(),
             (Step::Edit, _) => " ↑/↓: field   Enter: edit/toggle   Esc: back".to_string(),
             (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
         };
@@ -631,6 +654,12 @@ impl ConfigScreen {
                 let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
                 if self.selected_in_group + 1 < len {
                     self.selected_in_group += 1;
+                }
+                None
+            }
+            KeyCode::Char(' ') | KeyCode::Char('a') => {
+                if !self.selected_is_active() {
+                    self.toggle_active();
                 }
                 None
             }
@@ -870,6 +899,19 @@ mod tests {
         assert_eq!(screen.groups.len(), 2);
         assert_eq!(screen.groups[0].kind, "anthropic");
         assert_eq!(screen.groups[1].kind, "google");
+    }
+
+    #[test]
+    fn select_page_can_activate_provider_directly() {
+        let mut s = settings_with("a", provider("m-a"));
+        let mut b = provider("m-b");
+        b.kind = "google".into();
+        s.providers.insert("b".into(), b);
+        let mut screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
+        screen.group_selected = 1;
+        screen.selected_in_group = 0;
+        screen.handle_select_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(screen.settings.active_provider.as_deref(), Some("b"));
     }
 
     #[test]
