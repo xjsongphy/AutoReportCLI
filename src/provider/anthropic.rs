@@ -2,10 +2,10 @@
 
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE: &str = "https://api.anthropic.com";
@@ -149,8 +149,15 @@ impl LLMProvider for AnthropicProvider {
     ) -> Result<LLMResponse> {
         let (system, msgs) = convert_messages(messages);
         let tools_j = tools_to_json(tools);
-        let body =
-            build_body(&system, &msgs, &tools_j, &self.model, temperature, max_tokens, false);
+        let body = build_body(
+            &system,
+            &msgs,
+            &tools_j,
+            &self.model,
+            temperature,
+            max_tokens,
+            false,
+        );
 
         let resp = self
             .client
@@ -180,8 +187,15 @@ impl LLMProvider for AnthropicProvider {
     ) -> Result<tokio::sync::mpsc::Receiver<Result<LLMStreamChunk>>> {
         let (system, msgs) = convert_messages(messages);
         let tools_j = tools_to_json(tools);
-        let body =
-            build_body(&system, &msgs, &tools_j, &self.model, temperature, max_tokens, true);
+        let body = build_body(
+            &system,
+            &msgs,
+            &tools_j,
+            &self.model,
+            temperature,
+            max_tokens,
+            true,
+        );
 
         let resp = self
             .client
@@ -224,14 +238,22 @@ fn parse_final(v: &Value) -> LLMResponse {
                     }
                 }
                 Some("tool_use") => {
-                    let id = b.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let id = b
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let name = b
                         .get("name")
                         .and_then(|x| x.as_str())
                         .unwrap_or("")
                         .to_string();
                     let input = b.get("input").cloned().unwrap_or(Value::Null);
-                    tool_calls.push(ToolCall { id, name, arguments: input });
+                    tool_calls.push(ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    });
                 }
                 _ => {}
             }
@@ -242,7 +264,11 @@ fn parse_final(v: &Value) -> LLMResponse {
         output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
     });
     LLMResponse {
-        content: if content.is_empty() { None } else { Some(content) },
+        content: if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        },
         tool_calls,
         thinking: None,
         usage,
@@ -287,11 +313,27 @@ async fn run_stream(
                     "content_block_start" => {
                         let block = ev.pointer("/content_block").cloned().unwrap_or(Value::Null);
                         match block.get("type").and_then(|t| t.as_str()) {
-                            Some("text") => current = Some(BlockState { text: Some(String::new()), tool: None }),
+                            Some("text") => {
+                                current = Some(BlockState {
+                                    text: Some(String::new()),
+                                    tool: None,
+                                })
+                            }
                             Some("tool_use") => {
-                                let id = block.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                                let name = block.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                                current = Some(BlockState { text: None, tool: Some((id, name, String::new())) });
+                                let id = block
+                                    .get("id")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = block
+                                    .get("name")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                current = Some(BlockState {
+                                    text: None,
+                                    tool: Some((id, name, String::new())),
+                                });
                             }
                             _ => {}
                         }
@@ -313,9 +355,10 @@ async fn run_stream(
                                 }
                             }
                             Some("input_json_delta") => {
-                                if let (Some(s), Some((_, _, acc))) =
-                                    (delta.get("partial_json").and_then(|x| x.as_str()), current.as_mut().and_then(|c| c.tool.as_mut()))
-                                {
+                                if let (Some(s), Some((_, _, acc))) = (
+                                    delta.get("partial_json").and_then(|x| x.as_str()),
+                                    current.as_mut().and_then(|c| c.tool.as_mut()),
+                                ) {
                                     acc.push_str(s);
                                 }
                             }
@@ -343,15 +386,25 @@ async fn run_stream(
                                 } else {
                                     serde_json::from_str(&json_str).unwrap_or(Value::Null)
                                 };
-                                tool_calls.push(ToolCall { id, name, arguments: args });
+                                tool_calls.push(ToolCall {
+                                    id,
+                                    name,
+                                    arguments: args,
+                                });
                             }
                         }
                     }
                     "message_delta" => {
                         if let Some(u) = ev.pointer("/usage") {
                             usage = Some(Usage {
-                                input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-                                output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                                input_tokens: u
+                                    .get("input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0),
+                                output_tokens: u
+                                    .get("output_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0),
                             });
                         }
                     }
@@ -374,7 +427,11 @@ async fn run_stream(
         .send(Ok(LLMStreamChunk {
             delta: None,
             thinking_delta: None,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             done: true,
             usage,
         }))

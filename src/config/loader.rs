@@ -1,7 +1,7 @@
 //! Settings loading, API-key resolution and workspace folder creation.
 
 use crate::config::schema::Settings;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
 /// The fixed directories every AutoReport project owns.
@@ -39,8 +39,8 @@ pub fn load_settings(workspace: &Path) -> Result<Settings> {
     if path.exists() {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let mut settings: Settings = serde_yaml::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let mut settings: Settings =
+            serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         apply_env_overrides(&mut settings);
         Ok(settings)
     } else {
@@ -59,7 +59,13 @@ pub fn load_settings(workspace: &Path) -> Result<Settings> {
 fn apply_env_overrides(settings: &mut Settings) {
     if settings.providers.is_empty() {
         // Auto-register providers from well-known env vars.
-        try_register(settings, "anthropic", "anthropic", "ANTHROPIC_API_KEY", None);
+        try_register(
+            settings,
+            "anthropic",
+            "anthropic",
+            "ANTHROPIC_API_KEY",
+            None,
+        );
         try_register(
             settings,
             "openai",
@@ -87,13 +93,7 @@ fn apply_env_overrides(settings: &mut Settings) {
     }
 }
 
-fn try_register(
-    settings: &mut Settings,
-    key: &str,
-    kind: &str,
-    env: &str,
-    api_base: Option<&str>,
-) {
+fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_base: Option<&str>) {
     if let Ok(_k) = std::env::var(env) {
         settings.providers.insert(
             key.to_string(),
@@ -154,10 +154,8 @@ pub fn metadata_dir(workspace: &Path) -> PathBuf {
 /// Serialize settings to `autoreport.config.yaml` in `workspace`.
 pub fn save_settings(workspace: &Path, settings: &Settings) -> Result<()> {
     let path = workspace.join("autoreport.config.yaml");
-    let raw = serde_yaml::to_string(settings)
-        .with_context(|| "serializing settings to YAML")?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("writing {}", path.display()))?;
+    let raw = serde_yaml::to_string(settings).with_context(|| "serializing settings to YAML")?;
+    std::fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -170,7 +168,10 @@ pub fn needs_config(workspace: &Path, settings: &Settings) -> bool {
     if settings.providers.is_empty() {
         return true;
     }
-    settings.providers.values().all(|p| resolve_api_key(p).is_err())
+    settings
+        .providers
+        .values()
+        .all(|p| resolve_api_key(p).is_err())
 }
 
 #[cfg(test)]
@@ -219,7 +220,11 @@ mod tests {
     #[test]
     fn needs_config_false_when_file_exists() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("autoreport.config.yaml"), "active_provider: x\n").unwrap();
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "active_provider: x\n",
+        )
+        .unwrap();
         let settings = Settings::default();
         assert!(!needs_config(dir.path(), &settings));
     }

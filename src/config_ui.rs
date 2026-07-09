@@ -7,13 +7,15 @@
 use crate::config::schema::{ProviderConfig, Settings};
 use crate::config::{resolve_api_key, save_settings};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::Frame;
-use ratatui::Terminal;
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use std::io;
 use std::path::PathBuf;
 
@@ -119,7 +121,8 @@ fn kind_label(kind: &str) -> String {
 
 /// Ordered provider groups for the Select list.
 fn provider_groups(settings: &Settings) -> Vec<ProviderGroup> {
-    let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for (key, provider) in &settings.providers {
         grouped
             .entry(provider.kind.clone())
@@ -199,7 +202,8 @@ impl ConfigScreen {
     }
 
     pub fn selected_provider(&self) -> Option<&ProviderConfig> {
-        self.selected_key().and_then(|k| self.settings.providers.get(k))
+        self.selected_key()
+            .and_then(|k| self.settings.providers.get(k))
     }
 
     pub fn selected_provider_mut(&mut self) -> Option<&mut ProviderConfig> {
@@ -235,7 +239,11 @@ impl ConfigScreen {
         let (group_selected, selected_in_group) = target
             .and_then(|target_key| {
                 self.groups.iter().enumerate().find_map(|(gi, group)| {
-                    group.keys.iter().position(|k| k == target_key).map(|pi| (gi, pi))
+                    group
+                        .keys
+                        .iter()
+                        .position(|k| k == target_key)
+                        .map(|pi| (gi, pi))
                 })
             })
             .unwrap_or((0, 0));
@@ -290,9 +298,12 @@ impl ConfigScreen {
         let title = " AutoReportCLI · provider setup ";
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title(Span::styled(
                 title,
-                Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Cyan),
             ));
         f.render_widget(block, dialog);
 
@@ -321,30 +332,29 @@ impl ConfigScreen {
     }
 
     fn draw_header(&self, f: &mut Frame<'_>, area: Rect) {
-        let provider_line = Line::from(vec![
-            Span::styled(">_ ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                "AutoReportCLI Provider Setup",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ]);
         let meta_line = Line::from(vec![
-            Span::styled("group ", Style::default().fg(Color::Gray)),
-            Span::styled(self.group_summary(), Style::default().fg(Color::Cyan)),
+            kv_label("group"),
+            kv_value(&self.group_summary(), Color::Cyan),
             Span::raw("    "),
-            Span::styled("provider ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                self.selected_key().unwrap_or("-"),
-                Style::default().fg(Color::Yellow),
-            ),
+            kv_label("provider"),
+            kv_value(self.selected_key().unwrap_or("-"), Color::Yellow),
             Span::raw("    "),
-            Span::styled("startup ", Style::default().fg(Color::Gray)),
-            Span::styled(
+            kv_label("startup"),
+            kv_value(
                 self.settings.active_provider.as_deref().unwrap_or("-"),
-                Style::default().fg(Color::LightGreen),
+                Color::LightGreen,
             ),
         ]);
-        let para = Paragraph::new(vec![provider_line, meta_line]);
+        let groups_line = Line::from(vec![
+            kv_label("groups"),
+            Span::styled(
+                format!("[{}]", self.group_summary()),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let para = Paragraph::new(vec![meta_line, Line::raw(""), groups_line]);
         f.render_widget(para, area);
     }
 
@@ -414,29 +424,37 @@ impl ConfigScreen {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .title(Span::styled(
-                        format!(" {} ", self.group_summary()),
-                        Style::default().fg(Color::Cyan),
-                    )),
-            );
+            .block(Block::default().borders(Borders::TOP).title(Span::styled(
+                format!(" {} ", self.group_summary()),
+                Style::default().fg(Color::Cyan),
+            )));
         f.render_stateful_widget(list, columns[0], &mut state);
 
         self.draw_provider_details(f, columns[1]);
     }
 
     fn draw_group_tabs(&self, f: &mut Frame<'_>, area: Rect) {
-        let mut spans = vec![Span::styled("groups  ", Style::default().fg(Color::Gray))];
+        let mut spans = vec![Span::styled("tabs  ", Style::default().fg(Color::DarkGray))];
         for (idx, group) in self.groups.iter().enumerate() {
             if idx == self.group_selected {
-                spans.push(Span::styled("[", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    "[",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
                 spans.push(Span::styled(
                     format!("{} ({})", group.label, group.keys.len()),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ));
-                spans.push(Span::styled("]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    "]",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
             } else {
                 spans.push(Span::styled(
                     format!("{} ({})", group.label, group.keys.len()),
@@ -445,8 +463,8 @@ impl ConfigScreen {
             }
             spans.push(Span::raw(" "));
         }
-        let para = Paragraph::new(Line::from(spans))
-            .block(Block::default().borders(Borders::BOTTOM));
+        let para =
+            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM));
         f.render_widget(para, area);
     }
 
@@ -471,7 +489,9 @@ impl ConfigScreen {
         let lines = vec![
             Line::from(Span::styled(
                 key_name,
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             detail_line("kind", &provider.kind),
@@ -490,18 +510,25 @@ impl ConfigScreen {
             Line::raw(""),
             Line::from(vec![
                 Span::styled("Space", Style::default().fg(Color::White)),
-                Span::styled(" to set as startup provider", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    " to set as startup provider",
+                    Style::default().fg(Color::Gray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Enter", Style::default().fg(Color::White)),
-                Span::styled(" to edit selected provider", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    " to edit selected provider",
+                    Style::default().fg(Color::Gray),
+                ),
             ]),
         ];
         let para = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::TOP).title(Span::styled(
-                " Details ",
-                Style::default().fg(Color::Cyan),
-            )))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .title(Span::styled(" Details ", Style::default().fg(Color::Cyan))),
+            )
             .wrap(Wrap { trim: false });
         f.render_widget(para, area);
     }
@@ -514,7 +541,9 @@ impl ConfigScreen {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             format!("Editing provider: {}", self.selected_key().unwrap_or("?")),
-            Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Yellow),
         )));
         lines.push(Line::raw(""));
 
@@ -578,14 +607,10 @@ impl ConfigScreen {
         let yaml = serde_yaml::to_string(&self.settings).unwrap_or_default();
         let para = Paragraph::new(yaml)
             .style(Style::default().fg(Color::Gray))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .title(Span::styled(
-                        " Preview (Enter=save) ",
-                        Style::default().fg(Color::Cyan),
-                    )),
-            );
+            .block(Block::default().borders(Borders::TOP).title(Span::styled(
+                " Preview (Enter=save) ",
+                Style::default().fg(Color::Cyan),
+            )));
         f.render_widget(para, area);
     }
 
@@ -676,12 +701,18 @@ impl ConfigScreen {
     fn handle_edit_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
             KeyCode::Up => {
-                let idx = Field::ALL.iter().position(|&f| f == self.field).unwrap_or(0);
+                let idx = Field::ALL
+                    .iter()
+                    .position(|&f| f == self.field)
+                    .unwrap_or(0);
                 self.field = Field::ALL[(idx + Field::ALL.len() - 1) % Field::ALL.len()];
                 None
             }
             KeyCode::Down => {
-                let idx = Field::ALL.iter().position(|&f| f == self.field).unwrap_or(0);
+                let idx = Field::ALL
+                    .iter()
+                    .position(|&f| f == self.field)
+                    .unwrap_or(0);
                 self.field = Field::ALL[(idx + 1) % Field::ALL.len()];
                 None
             }
@@ -808,10 +839,31 @@ fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 
 fn detail_line<'a>(label: &'a str, value: &'a str) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!("{label:<11}"), Style::default().fg(Color::Gray)),
+        Span::styled(
+            format!("{label:<11}"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(value.to_string(), Style::default().fg(Color::White)),
     ])
+}
+
+fn kv_label(label: &str) -> Span<'static> {
+    Span::styled(
+        format!("{label:<9}"),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn kv_value(value: &str, color: Color) -> Span<'static> {
+    Span::styled(
+        value.to_string(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
 }
 
 impl ConfigScreen {

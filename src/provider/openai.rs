@@ -3,10 +3,10 @@
 
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub struct OpenAICompatProvider {
@@ -46,8 +46,14 @@ impl OpenAICompatProvider {
 fn defaults(kind: &str) -> (&'static str, &'static str) {
     match kind {
         "deepseek" => ("https://api.deepseek.com/v1", "deepseek-chat"),
-        "openrouter" => ("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.5"),
-        "google" => ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash"),
+        "openrouter" => (
+            "https://openrouter.ai/api/v1",
+            "anthropic/claude-sonnet-4.5",
+        ),
+        "google" => (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.0-flash",
+        ),
         "openai" => ("https://api.openai.com/v1", "gpt-4o"),
         _ => ("https://api.openai.com/v1", "gpt-4o"),
     }
@@ -200,7 +206,10 @@ impl LLMProvider for OpenAICompatProvider {
 }
 
 fn parse_final(v: &Value) -> LLMResponse {
-    let choice = v.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
+    let choice = v
+        .pointer("/choices/0/message")
+        .cloned()
+        .unwrap_or(Value::Null);
     let content = choice
         .get("content")
         .and_then(|c| c.as_str())
@@ -211,7 +220,11 @@ fn parse_final(v: &Value) -> LLMResponse {
         .map(|arr| {
             arr.iter()
                 .map(|c| {
-                    let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let id = c
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let name = c
                         .pointer("/function/name")
                         .and_then(|x| x.as_str())
@@ -222,14 +235,21 @@ fn parse_final(v: &Value) -> LLMResponse {
                         .and_then(|x| x.as_str())
                         .unwrap_or("{}");
                     let arguments = serde_json::from_str(args_str).unwrap_or(Value::Null);
-                    ToolCall { id, name, arguments }
+                    ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    }
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let usage = v.get("usage").map(|u| Usage {
         input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        output_tokens: u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+        output_tokens: u
+            .get("completion_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
     });
     LLMResponse {
         content,
@@ -297,10 +317,7 @@ async fn run_stream(
                             .await;
                     }
                 }
-                if let Some(reasoning) = delta
-                    .get("reasoning_content")
-                    .and_then(|c| c.as_str())
-                {
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
                     if !reasoning.is_empty() {
                         let _ = tx
                             .send(Ok(LLMStreamChunk {
@@ -323,7 +340,8 @@ async fn run_stream(
                         if let Some(name) = c.pointer("/function/name").and_then(|x| x.as_str()) {
                             entry.name = name.to_string();
                         }
-                        if let Some(args) = c.pointer("/function/arguments").and_then(|x| x.as_str())
+                        if let Some(args) =
+                            c.pointer("/function/arguments").and_then(|x| x.as_str())
                         {
                             entry.args.push_str(args);
                         }
@@ -350,7 +368,11 @@ async fn run_stream(
         .send(Ok(LLMStreamChunk {
             delta: None,
             thinking_delta: None,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             done: true,
             usage: None,
         }))

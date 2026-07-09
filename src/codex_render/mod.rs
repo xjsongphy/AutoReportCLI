@@ -3,8 +3,8 @@
 //! stable rendering routines, adapted only for import paths and stubbed
 //! helpers. Kept verbatim otherwise so behaviour matches codex.
 
-pub mod color;
 pub mod codex_utils_string;
+pub mod color;
 pub mod highlight;
 pub mod line_utils;
 pub mod markdown_render;

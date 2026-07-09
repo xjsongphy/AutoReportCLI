@@ -71,52 +71,52 @@ fn query_color(which: u8) -> Option<(u8, u8, u8)> {
     // The reply read can block; do it on a thread with a hard deadline so a
     // non-responsive terminal can never hang the UI.
     let (tx, rx) = std::sync::mpsc::channel();
-    let builder = std::thread::Builder::new()
-        .name("osc-color-query".into());
-    builder.spawn(move || {
-        let res = (|| -> Option<(u8, u8, u8)> {
-            // Talk to the controlling terminal directly so we don't disturb the
-            // app's stdin/stdout buffers.
-            let mut tty = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open("/dev/tty")
-                .ok()?;
-            // OSC Ps ; ? — request current color. ST = ESC backslash.
-            let req = format!("\x1b]{};?\x1b\\", which);
-            tty.write_all(req.as_bytes()).ok()?;
-            tty.flush().ok()?;
-            // Read until BEL (0x07) or ST (ESC \).
-            let mut buf = Vec::with_capacity(64);
-            let mut byte = [0u8; 1];
-            for _ in 0..256 {
-                match tty.read(&mut byte) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        buf.push(byte[0]);
-                        if byte[0] == 0x07 {
-                            break;
+    let builder = std::thread::Builder::new().name("osc-color-query".into());
+    builder
+        .spawn(move || {
+            let res = (|| -> Option<(u8, u8, u8)> {
+                // Talk to the controlling terminal directly so we don't disturb the
+                // app's stdin/stdout buffers.
+                let mut tty = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/tty")
+                    .ok()?;
+                // OSC Ps ; ? — request current color. ST = ESC backslash.
+                let req = format!("\x1b]{};?\x1b\\", which);
+                tty.write_all(req.as_bytes()).ok()?;
+                tty.flush().ok()?;
+                // Read until BEL (0x07) or ST (ESC \).
+                let mut buf = Vec::with_capacity(64);
+                let mut byte = [0u8; 1];
+                for _ in 0..256 {
+                    match tty.read(&mut byte) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            buf.push(byte[0]);
+                            if byte[0] == 0x07 {
+                                break;
+                            }
+                            if buf.len() >= 2
+                                && buf[buf.len() - 2] == 0x1b
+                                && buf[buf.len() - 1] == b'\\'
+                            {
+                                break;
+                            }
+                            if byte[0] == b'\n' {
+                                break;
+                            }
                         }
-                        if buf.len() >= 2 && buf[buf.len() - 2] == 0x1b && buf[buf.len() - 1] == b'\\'
-                        {
-                            break;
-                        }
-                        if byte[0] == b'\n' {
-                            break;
-                        }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
-            }
-            parse_color_reply(&buf)
-        })();
-        let _ = tx.send(res);
-    })
-    .ok()?;
+                parse_color_reply(&buf)
+            })();
+            let _ = tx.send(res);
+        })
+        .ok()?;
 
-    rx.recv_timeout(Duration::from_millis(120))
-        .ok()
-        .flatten()
+    rx.recv_timeout(Duration::from_millis(120)).ok().flatten()
 }
 
 /// Parse an OSC color reply of the form `ESC ] <ps> ; rgb:RRRR/GGGG/BBBB ST`.
