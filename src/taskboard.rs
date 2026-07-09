@@ -1,9 +1,9 @@
-//! Shared task board used by `manage_tasks` / `send_to_agent` to coordinate
+//! Shared task board used by `update_plan` / `send_to_agent` to coordinate
 //! Main ↔ sub-agent work. Thread-safe via a mutex.
 
 use crate::types::{AgentType, TaskItem, TaskStatus};
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -51,6 +51,7 @@ impl TaskBoard {
             completed_at: None,
             blocking,
             session_id,
+            plan_order: None,
             reply: None,
         };
         g.tasks.insert(id, task.clone());
@@ -65,9 +66,7 @@ impl TaskBoard {
         let mut g = self.inner.lock().unwrap();
         let task = g.tasks.get_mut(task_id)?;
         task.status = status;
-        if status.is_settled() {
-            task.completed_at = Some(Utc::now());
-        }
+        task.completed_at = status.is_settled().then(Utc::now);
         Some(task.clone())
     }
 
@@ -115,23 +114,128 @@ impl TaskBoard {
             .cloned()
     }
 
+    fn is_local_plan_task(task: &TaskItem, agent: AgentType) -> bool {
+        task.source_agent == agent && task.target_agent == agent
+    }
+
+    fn sort_tasks(tasks: &mut [TaskItem]) {
+        tasks.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then(a.task_id.cmp(&b.task_id))
+        });
+    }
+
+    fn sort_plan(tasks: &mut [TaskItem]) {
+        tasks.sort_by(|a, b| {
+            a.plan_order
+                .unwrap_or(u32::MAX)
+                .cmp(&b.plan_order.unwrap_or(u32::MAX))
+                .then(a.created_at.cmp(&b.created_at))
+                .then(a.task_id.cmp(&b.task_id))
+        });
+    }
+
+    /// Codex-style local plan for `agent`, backed by self-assigned tasks.
+    pub fn local_plan(&self, agent: AgentType) -> Vec<TaskItem> {
+        let g = self.inner.lock().unwrap();
+        let mut tasks: Vec<TaskItem> = g
+            .tasks
+            .values()
+            .filter(|t| Self::is_local_plan_task(t, agent))
+            .cloned()
+            .collect();
+        Self::sort_plan(&mut tasks);
+        tasks
+    }
+
+    /// Replace the local plan for `agent` with the provided ordered steps.
+    pub fn sync_local_plan(
+        &self,
+        agent: AgentType,
+        steps: Vec<(String, TaskStatus)>,
+    ) -> Vec<TaskItem> {
+        let mut g = self.inner.lock().unwrap();
+        let existing_local: Vec<TaskItem> = g
+            .tasks
+            .values()
+            .filter(|t| Self::is_local_plan_task(t, agent))
+            .cloned()
+            .collect();
+        let mut reusable: HashMap<String, Vec<TaskItem>> = HashMap::new();
+        for task in &existing_local {
+            reusable
+                .entry(task.brief.clone())
+                .or_default()
+                .push(task.clone());
+        }
+
+        let mut kept_ids = HashSet::new();
+        for (order, (brief, status)) in steps.into_iter().enumerate() {
+            let mut task = reusable
+                .get_mut(&brief)
+                .and_then(|tasks| tasks.pop())
+                .unwrap_or_else(|| TaskItem {
+                    task_id: self.next_id(&mut g),
+                    brief: brief.clone(),
+                    source_agent: agent,
+                    target_agent: agent,
+                    status,
+                    created_at: Utc::now(),
+                    completed_at: None,
+                    blocking: false,
+                    session_id: None,
+                    plan_order: None,
+                    reply: None,
+                });
+            task.brief = brief;
+            task.status = status;
+            task.completed_at = status.is_settled().then(Utc::now);
+            task.blocking = false;
+            task.session_id = None;
+            task.plan_order = Some(order as u32);
+            task.reply = None;
+            kept_ids.insert(task.task_id.clone());
+            g.tasks.insert(task.task_id.clone(), task);
+        }
+
+        for task in existing_local {
+            if !kept_ids.contains(&task.task_id) {
+                g.tasks.remove(&task.task_id);
+            }
+        }
+
+        let mut tasks: Vec<TaskItem> = g
+            .tasks
+            .values()
+            .filter(|t| Self::is_local_plan_task(t, agent))
+            .cloned()
+            .collect();
+        Self::sort_plan(&mut tasks);
+        tasks
+    }
+
     /// Tasks assigned *to* `agent` that are still open (pending / in progress).
     pub fn todolist(&self, agent: AgentType) -> Vec<TaskItem> {
         let g = self.inner.lock().unwrap();
-        g.tasks
+        let mut tasks: Vec<TaskItem> = g
+            .tasks
             .values()
             .filter(|t| {
                 t.target_agent == agent
                     && matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress)
             })
             .cloned()
-            .collect()
+            .collect();
+        Self::sort_tasks(&mut tasks);
+        tasks
     }
 
     /// Tasks `agent` assigned *to others* that are still open.
     pub fn waitlist(&self, agent: AgentType) -> Vec<TaskItem> {
         let g = self.inner.lock().unwrap();
-        g.tasks
+        let mut tasks: Vec<TaskItem> = g
+            .tasks
             .values()
             .filter(|t| {
                 t.source_agent == agent
@@ -139,13 +243,16 @@ impl TaskBoard {
                     && matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress)
             })
             .cloned()
-            .collect()
+            .collect();
+        Self::sort_tasks(&mut tasks);
+        tasks
     }
 
     /// Tasks `agent` dispatched that are currently BLOCKED (need its action).
     pub fn blocked_waitlist(&self, agent: AgentType) -> Vec<TaskItem> {
         let g = self.inner.lock().unwrap();
-        g.tasks
+        let mut tasks: Vec<TaskItem> = g
+            .tasks
             .values()
             .filter(|t| {
                 t.source_agent == agent
@@ -153,7 +260,9 @@ impl TaskBoard {
                     && t.status == TaskStatus::Blocked
             })
             .cloned()
-            .collect()
+            .collect();
+        Self::sort_tasks(&mut tasks);
+        tasks
     }
 
     pub fn all(&self) -> Vec<TaskItem> {

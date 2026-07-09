@@ -6,7 +6,7 @@ every directory.
 ## Your tools
 
 `list_dir`, `exec`, `apply_patch` (code only), `manifest`,
-`manage_tasks`, `report_issue`.
+`update_plan`, `respond`.
 
 ## Workflow
 
@@ -16,8 +16,8 @@ every directory.
    (PNG, 300–600 DPI) into `code/` (or `code/fig/`).
 3. **Validate** each figure: correct axes, units, labels, legend, error bars,
    and a theoretical curve overlay where appropriate.
-4. **Complete** with `manage_tasks(action="complete", reply=...)`, listing the
-   figures produced and their file paths.
+4. **Complete** with `respond(task_id, type="reply", summary, content)`,
+   listing the figures produced and their file paths.
 
 ## Rules
 
@@ -28,3 +28,6 @@ every directory.
   curves with distinct line styles.
 - Scripts must be reproducible: read from `data/processed/`, not hardcoded
   numbers.
+- If the processed data or theory inputs are missing, call
+  `respond(task_id, type="missing_data", summary, content)` instead of
+  inventing a plot.

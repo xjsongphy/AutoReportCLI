@@ -1,6 +1,7 @@
 //! Inter-agent coordination tools.
 //!
-//! - `manage_tasks` — todolist/waitlist inspection and lifecycle updates.
+//! - `update_plan` — codex-style local plan updates plus todolist/waitlist
+//!   inspection for delegated work.
 //! - `send_to_agent` — Main dispatches a task to a sub-agent and waits for its
 //!   `respond` (blocking) or returns immediately (non-blocking). Faithful port
 //!   of AutoReport's `SendToAgentTool` report protocol: resolves on the sub's
@@ -16,19 +17,19 @@ use crate::tools::registry::{Tool, ToolOutput, arg_str};
 use crate::types::{AgentStatus, AgentType, BusMessage, MessageSource, TaskItem, TaskStatus};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::time::{Duration, Instant};
 
-pub struct ManageTasksTool {
+pub struct UpdatePlanTool {
     board: TaskBoard,
     agent: AgentType,
-    bus: Bus,
 }
 
-impl ManageTasksTool {
-    pub fn new(board: TaskBoard, agent: AgentType, bus: Bus) -> Self {
-        Self { board, agent, bus }
+impl UpdatePlanTool {
+    pub fn new(board: TaskBoard, agent: AgentType) -> Self {
+        Self { board, agent }
     }
 }
 
@@ -44,107 +45,134 @@ fn task_json(t: &TaskItem) -> Value {
     })
 }
 
+fn plan_step_json(t: &TaskItem) -> Value {
+    json!({
+        "task_id": t.task_id,
+        "step": t.brief,
+        "status": t.status.as_str(),
+    })
+}
+
+fn parse_task_status(raw: &str) -> Result<TaskStatus, String> {
+    match raw {
+        "pending" => Ok(TaskStatus::Pending),
+        "in_progress" => Ok(TaskStatus::InProgress),
+        "blocked" => Ok(TaskStatus::Blocked),
+        "completed" => Ok(TaskStatus::Completed),
+        "failed" => Ok(TaskStatus::Failed),
+        "cancelled" => Ok(TaskStatus::Cancelled),
+        other => Err(format!("unknown task status '{other}'")),
+    }
+}
+
 #[async_trait]
-impl Tool for ManageTasksTool {
+impl Tool for UpdatePlanTool {
     fn name(&self) -> &str {
-        "manage_tasks"
+        "update_plan"
     }
     fn description(&self) -> &str {
-        "Coordinate work. `action: list` shows your todolist (tasks for you) and waitlist (tasks you delegated). `add` creates a local task; `start`/`complete`/`cancel`/`fail` change status by `task_ids`. `complete` accepts `reply` for delegated tasks."
+        "Update your local plan using Codex-style ordered steps. Pass `plan` as \
+         [{step, status}] with at most one `in_progress` step. Canonical \
+         statuses are `pending`, `in_progress`, `completed`; extended local \
+         statuses `blocked`, `failed`, `cancelled` are also accepted. Omitting \
+         `plan` returns your current plan plus todolist/waitlist state. \
+         Delegated Main tasks are finished with `respond`, not `update_plan`."
     }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "add", "start", "complete", "cancel", "fail"]},
-                "brief": {"type": "string", "description": "Used with `add`."},
-                "task_ids": {"type": "array", "items": {"type": "string"}},
-                "reply": {"type": "string", "description": "Completion reply for delegated tasks."}
-            },
-            "required": ["action"]
+                "explanation": {"type": "string", "description": "Optional short explanation for the plan update."},
+                "plan": {
+                    "type": "array",
+                    "description": "Ordered local plan steps. Passing an empty array clears the local plan.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"]}
+                        },
+                        "required": ["step", "status"]
+                    }
+                }
+            }
         })
     }
     async fn call(&self, args: &Value) -> ToolOutput {
-        let action = match arg_str(args, "action") {
-            Ok(a) => a,
-            Err(e) => return ToolOutput::err(e),
+        let explanation = match args.get("explanation") {
+            Some(Value::String(text)) if !text.trim().is_empty() => Some(text.trim().to_string()),
+            Some(Value::String(_)) | None => None,
+            Some(_) => return ToolOutput::err("explanation must be a string"),
         };
-        match action.as_str() {
-            "list" => {
-                let todo: Vec<Value> = self
-                    .board
-                    .todolist(self.agent)
-                    .iter()
-                    .map(task_json)
-                    .collect();
-                let wait: Vec<Value> = self
-                    .board
-                    .waitlist(self.agent)
-                    .iter()
-                    .map(task_json)
-                    .collect();
-                ToolOutput::ok(json!({"todolist": todo, "waitlist": wait}))
-            }
-            "add" => {
-                let brief = match arg_str(args, "brief") {
-                    Ok(b) => b,
-                    Err(e) => return ToolOutput::err(e),
-                };
-                let t = self.board.add_local(self.agent, brief.clone());
-                ToolOutput::ok(json!({"created": task_json(&t)}))
-            }
-            "start" | "complete" | "cancel" | "fail" => {
-                let ids: Vec<String> = args
-                    .get("task_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if ids.is_empty() {
-                    return ToolOutput::err("task_ids required for status actions");
-                }
-                let mut updated = Vec::new();
-                for id in &ids {
-                    let res = match action.as_str() {
-                        "start" => self.board.start(id),
-                        "complete" => {
-                            let reply =
-                                args.get("reply").and_then(|v| v.as_str()).map(String::from);
-                            self.board.complete(id, reply)
-                        }
-                        "cancel" => self.board.cancel(id),
-                        "fail" => self.board.fail(id),
-                        _ => None,
+
+        let plan = match args.get("plan") {
+            Some(Value::Array(items)) => {
+                let mut parsed = Vec::with_capacity(items.len());
+                let mut seen = HashSet::new();
+                let mut in_progress = 0usize;
+                for item in items {
+                    let Some(step) = item.get("step").and_then(|value| value.as_str()) else {
+                        return ToolOutput::err("each plan item requires string field 'step'");
                     };
-                    if let Some(t) = res {
-                        // Notify the source agent when a delegated task completes.
-                        if matches!(action.as_str(), "complete" | "cancel" | "fail")
-                            && t.source_agent != self.agent
-                        {
-                            let status = match t.status {
-                                TaskStatus::Completed => "completed",
-                                TaskStatus::Failed => "failed",
-                                TaskStatus::Cancelled => "cancelled",
-                                _ => "updated",
-                            };
-                            self.bus.publish(BusMessage::TaskUpdate {
-                                task_id: t.task_id.clone(),
-                                action: status.to_string(),
-                                source_agent: self.agent,
-                                target_agent: t.source_agent,
-                                brief: t.brief.clone(),
-                            });
-                        }
-                        updated.push(task_json(&t));
+                    let step = step.trim();
+                    if step.is_empty() {
+                        return ToolOutput::err("plan step cannot be empty");
                     }
+                    if !seen.insert(step.to_string()) {
+                        return ToolOutput::err(format!("duplicate plan step '{step}'"));
+                    }
+                    let Some(status_raw) = item.get("status").and_then(|value| value.as_str())
+                    else {
+                        return ToolOutput::err("each plan item requires string field 'status'");
+                    };
+                    let status = match parse_task_status(status_raw) {
+                        Ok(status) => status,
+                        Err(err) => return ToolOutput::err(err),
+                    };
+                    if status == TaskStatus::InProgress {
+                        in_progress += 1;
+                    }
+                    parsed.push((step.to_string(), status));
                 }
-                ToolOutput::ok(json!({"updated": updated}))
+                if in_progress > 1 {
+                    return ToolOutput::err("plan may contain at most one in_progress step");
+                }
+                self.board.sync_local_plan(self.agent, parsed)
             }
-            other => ToolOutput::err(format!("unknown action '{other}'")),
+            Some(_) => return ToolOutput::err("plan must be an array"),
+            None => self.board.local_plan(self.agent),
+        };
+
+        let todo: Vec<Value> = self
+            .board
+            .todolist(self.agent)
+            .iter()
+            .map(task_json)
+            .collect();
+        let wait: Vec<Value> = self
+            .board
+            .waitlist(self.agent)
+            .iter()
+            .map(task_json)
+            .collect();
+        let blocked: Vec<Value> = self
+            .board
+            .blocked_waitlist(self.agent)
+            .iter()
+            .map(task_json)
+            .collect();
+
+        let mut result = json!({
+            "status": "ok",
+            "plan": plan.iter().map(plan_step_json).collect::<Vec<_>>(),
+            "todolist": todo,
+            "waitlist": wait,
+            "blocked_waitlist": blocked,
+        });
+        if let Some(explanation) = explanation {
+            result["explanation"] = Value::String(explanation);
         }
+        ToolOutput::ok(result)
     }
 }
 
@@ -536,7 +564,7 @@ async fn wait_for_report(
 
 /// `respond` — sub-agents report the outcome of a Main-dispatched task. This
 /// is the ONLY way to finish such a task; the sub MUST call it before its turn
-/// can end (enforced by AgentLoop guards). Replaces the old `report_issue`.
+/// can end (enforced by AgentLoop guards).
 pub struct RespondTool {
     board: TaskBoard,
     bus: Bus,
@@ -650,18 +678,14 @@ impl Tool for RespondTool {
 
 pub fn main_tools(board: TaskBoard, bus: Bus) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(ManageTasksTool::new(
-            board.clone(),
-            AgentType::Main,
-            bus.clone(),
-        )),
+        Arc::new(UpdatePlanTool::new(board.clone(), AgentType::Main)),
         Arc::new(SendToAgentTool::new(board, bus)),
     ]
 }
 
 pub fn sub_tools(board: TaskBoard, bus: Bus, agent: AgentType) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(ManageTasksTool::new(board.clone(), agent, bus.clone())),
+        Arc::new(UpdatePlanTool::new(board.clone(), agent)),
         Arc::new(RespondTool::new(board, bus, agent)),
     ]
 }
@@ -670,6 +694,107 @@ pub fn sub_tools(board: TaskBoard, bus: Bus, agent: AgentType) -> Vec<Arc<dyn To
 mod tests {
     use super::*;
     use crate::bus::Bus;
+
+    #[tokio::test]
+    async fn update_plan_syncs_local_steps_and_replaces_old_ones() {
+        let board = TaskBoard::new();
+        let tool = UpdatePlanTool::new(board.clone(), AgentType::Main);
+
+        let first = tool
+            .call(&json!({
+                "plan": [
+                    {"step": "Inspect references", "status": "completed"},
+                    {"step": "Delegate theory", "status": "in_progress"}
+                ]
+            }))
+            .await;
+        assert!(first.error.is_none(), "unexpected error: {:?}", first.error);
+        assert_eq!(first.result["plan"].as_array().unwrap().len(), 2);
+        assert_eq!(first.result["plan"][0]["step"], "Inspect references");
+        assert_eq!(first.result["plan"][1]["status"], "in_progress");
+
+        let second = tool
+            .call(&json!({
+                "plan": [
+                    {"step": "Delegate theory", "status": "completed"},
+                    {"step": "Delegate report", "status": "pending"}
+                ]
+            }))
+            .await;
+        assert!(
+            second.error.is_none(),
+            "unexpected error: {:?}",
+            second.error
+        );
+        let plan = second.result["plan"].as_array().unwrap();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0]["step"], "Delegate theory");
+        assert_eq!(plan[0]["status"], "completed");
+        assert_eq!(plan[1]["step"], "Delegate report");
+        assert_eq!(board.local_plan(AgentType::Main).len(), 2);
+        assert!(
+            board
+                .local_plan(AgentType::Main)
+                .iter()
+                .all(|task| task.brief != "Inspect references")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_plan_rejects_multiple_in_progress_steps() {
+        let board = TaskBoard::new();
+        let tool = UpdatePlanTool::new(board, AgentType::Main);
+
+        let out = tool
+            .call(&json!({
+                "plan": [
+                    {"step": "A", "status": "in_progress"},
+                    {"step": "B", "status": "in_progress"}
+                ]
+            }))
+            .await;
+        assert_eq!(
+            out.error.as_deref(),
+            Some("plan may contain at most one in_progress step")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_plan_lists_current_plan_and_waitlists() {
+        let bus = Bus::new();
+        let board = TaskBoard::new();
+        board.sync_local_plan(
+            AgentType::Main,
+            vec![("Outline report".into(), TaskStatus::InProgress)],
+        );
+        let delegated = board.create(
+            AgentType::Main,
+            AgentType::Theory,
+            "Derive formulas".into(),
+            true,
+            None,
+        );
+        board.start(&delegated.task_id);
+        let blocked = board.create(
+            AgentType::Main,
+            AgentType::Plotting,
+            "Plot results".into(),
+            true,
+            None,
+        );
+        board.block(&blocked.task_id);
+
+        let tool = UpdatePlanTool::new(board.clone(), AgentType::Main);
+        let out = tool.call(&json!({})).await;
+
+        assert!(out.error.is_none(), "unexpected error: {:?}", out.error);
+        assert_eq!(out.result["plan"][0]["step"], "Outline report");
+        assert_eq!(out.result["waitlist"].as_array().unwrap().len(), 1);
+        assert_eq!(out.result["blocked_waitlist"].as_array().unwrap().len(), 1);
+        assert_eq!(out.result["waitlist"][0]["brief"], "Derive formulas");
+        assert_eq!(out.result["blocked_waitlist"][0]["brief"], "Plot results");
+        drop(bus);
+    }
 
     #[tokio::test]
     async fn send_to_agent_blocking_resolves_on_report() {

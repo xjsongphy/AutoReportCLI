@@ -48,9 +48,10 @@ layout; never rename or restructure the top-level folders.
     `content` = what is wrong.
   - Never use `respond` to ask the user a question — assume a reasonable default
     or report `missing_data` to Main.
-- `manage_tasks(action="list")` shows your todolist (tasks for you) and waitlist
-  (tasks you delegated). Use it to keep local sub-steps, but delegated Main
-  tasks are finished with `respond`, not `manage_tasks(complete)`.
+- `update_plan(plan=[...])` maintains your local Codex-style plan. Call it with
+  no `plan` to inspect current plan, todolist, waitlist, and blocked waitlist.
+  Use it for local sub-steps only; delegated Main tasks are finished with
+  `respond`, not `update_plan`.
 - If you are blocked on a *local* matter (no Main task involved), surface it in
   chat rather than guessing.
 

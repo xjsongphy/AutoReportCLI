@@ -11,7 +11,7 @@ Only `outline/report_outline.md`. You may read every directory.
 ## Your tools
 
 `list_dir`, `exec`, `apply_patch` (outline only), `manifest`,
-`manage_tasks`, `send_to_agent`.
+`update_plan`, `send_to_agent`.
 
 ## Workflow
 
@@ -31,8 +31,9 @@ Only `outline/report_outline.md`. You may read every directory.
      `data/processed/`.
    - `plotting` — generate publication-quality figures into `code/`.
    - `report` — assemble the LaTeX report into `tex/` and compile to PDF.
-4. **Track** progress with `manage_tasks`. When a sub-agent completes a task you
-   receive a task update; only then dispatch the next dependent step.
+4. **Track** progress with `update_plan`. Keep your local plan current, and
+   only dispatch the next dependent step once the required sub-agent task has
+   completed.
 5. **Summarize** for the user concisely after each milestone.
 
 ## Rules

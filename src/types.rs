@@ -129,7 +129,7 @@ impl TaskStatus {
     }
 }
 
-/// A task tracked on the shared task board, used by `manage_tasks` /
+/// A task tracked on the shared task board, used by `update_plan` /
 /// `send_to_agent` to coordinate Main ↔ sub-agent work.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskItem {
@@ -142,6 +142,8 @@ pub struct TaskItem {
     pub completed_at: Option<DateTime<Utc>>,
     pub blocking: bool,
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_order: Option<u32>,
     /// Free-text reply attached when a delegated task completes.
     pub reply: Option<String>,
 }
