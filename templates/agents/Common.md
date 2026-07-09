@@ -10,22 +10,49 @@ layout; never rename or restructure the top-level folders.
 - **Be instruction-first.** Do exactly what is asked, nothing more. Avoid
   speculative refactors or extra files unless the task requires them.
 - **Use tools only when needed.** Most reasoning should happen in your head and
-  in chat; reach for `read` / `exec` / `write_file` only when the task demands
-  it.
+  in chat; reach for `list_dir` / `exec` / `apply_patch` only when the task
+  demands it.
 - **Keep chat concise.** One or two short paragraphs. No large tables or walls
   of text unless the user explicitly asks.
 - **Verify before claiming success.** If you compile code, read the output. If
   you analyze data, sanity-check numbers. Report failures honestly.
-- **Write files with `write_file` / `edit_file`.** Never invent paths outside
-  your assigned directory.
+- **Inspect with shell, edit with patch.** Read files through `exec` using
+  `cat`, `sed -n`, `rg`, and similar commands. Modify files with
+  `apply_patch`. Never write outside your assigned directory.
 
-## Coordination
+## Coordination (report protocol)
 
-- **Main** delegates via `send_to_agent` and tracks progress via `manage_tasks`.
-- **Sub-agents** acknowledge a delegated task with `manage_tasks(action="start")`
-  and signal completion with `manage_tasks(action="complete", reply=...)`.
-- If you are blocked (missing data, ambiguity, quality problem), call
-  `report_issue` to surface it to Main instead of guessing.
+- **Main** delegates work via `send_to_agent(agent_type, summary, content, ...)`.
+  `summary` is a short visible task label; `content` is the full instruction.
+  Keep the instruction minimal: task goal, input file locations, dependency,
+  and explicit user constraints only. Do NOT paste formulas, implementation
+  steps, copied source, output filenames, or quality rules the sub-agent
+  already owns.
+  - `blocking=true` (default): the call returns the sub-agent's reply (or block
+    reason) — Main cannot continue until it arrives.
+  - `blocking=false`: returns immediately; the sub's later `respond` updates the
+    task and notifies Main.
+  - Pass an existing `task_id` to **re-dispatch** a previously blocked task.
+  - Main **may not stop** while it has blocked tasks — re-dispatch, reassign, or
+    resolve the missing input before ending.
+- **Sub-agents** MUST finish every Main-dispatched task by calling
+  `respond(task_id, type, summary, content)`. This is the ONLY way to end such a task;
+  you MUST call it before stopping, or the turn will be held and the task marked
+  blocked. The `task_id` is the `[task_id: ...]` prefix of your current
+  instruction.
+  - `type="reply"`: you finished. `summary` = short visible outcome.
+    `content` = final result (file paths, numbers).
+  - `type="missing_data"`: an input is missing. `summary` = short blocker.
+    `content` = exactly what is missing and where it should come from.
+  - `type="quality"`: a dependency's output is wrong. `summary` = short blocker.
+    `content` = what is wrong.
+  - Never use `respond` to ask the user a question — assume a reasonable default
+    or report `missing_data` to Main.
+- `manage_tasks(action="list")` shows your todolist (tasks for you) and waitlist
+  (tasks you delegated). Use it to keep local sub-steps, but delegated Main
+  tasks are finished with `respond`, not `manage_tasks(complete)`.
+- If you are blocked on a *local* matter (no Main task involved), surface it in
+  chat rather than guessing.
 
 ## Commands the user can type
 

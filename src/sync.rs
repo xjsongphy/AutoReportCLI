@@ -6,7 +6,8 @@
 //!    (`*ProviderPresets.ts`) describing known providers/models/bases. Cached
 //!    under `.autoreport/external/cc-switch/`.
 //! 2. **skills** (`xjsongphy/skills`) — the agent skill files (`SKILL.md`),
-//!    written into `.autoreport/skills/` where `SkillLoader` discovers them.
+//!    written into `.autoreport/skills/<name>/SKILL.md` where `SkillLoader`
+//!    discovers them.
 //!
 //! This is a real, complete implementation: HTTPS fetch via reqwest, on-disk
 //! caching, parsing of the preset TS into provider entries that auto-register
@@ -33,7 +34,10 @@ const PRESET_FILES: &[&str] = &[
 
 /// Skills to pull from the skills repo (name → path within repo).
 const SKILL_FILES: &[(&str, &str)] = &[
-    ("experiment-report-writer", "experiment-report-writer/SKILL.md"),
+    (
+        "experiment-report-writer",
+        "experiment-report-writer/SKILL.md",
+    ),
     ("latex-compile", "latex-compile/SKILL.md"),
     ("md-report-writer", "md-report-writer/SKILL.md"),
     ("mineru", "mineru/SKILL.md"),
@@ -60,6 +64,22 @@ pub fn skills_dir(workspace: &Path) -> PathBuf {
     workspace.join(".autoreport").join("skills")
 }
 
+/// Whether the local cache has the minimum files needed to skip startup sync.
+pub fn cache_is_warm(workspace: &Path) -> bool {
+    let preset_dir = external_dir(workspace)
+        .join("cc-switch")
+        .join("src")
+        .join("config");
+    let skills = skills_dir(workspace);
+    PRESET_FILES
+        .iter()
+        .all(|file| preset_dir.join(file).exists())
+        && SKILL_FILES.iter().all(|(name, _)| {
+            skills.join(name).join("SKILL.md").exists()
+                || skills.join(format!("{name}.md")).exists()
+        })
+}
+
 /// Fetch both repositories' content into the workspace cache. Network errors
 /// are recorded in the report rather than propagated, so a missing network
 /// degrades gracefully to the existing cache.
@@ -73,13 +93,17 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
     let mut report = SyncReport::default();
 
     // 1) cc-switch presets.
-    let preset_dir = external_dir(workspace).join("cc-switch").join("src").join("config");
+    let preset_dir = external_dir(workspace)
+        .join("cc-switch")
+        .join("src")
+        .join("config");
     let _ = std::fs::create_dir_all(&preset_dir);
     for file in PRESET_FILES {
         let url = format!("{CC_SWITCH_RAW}/src/config/{file}");
+        let dest = preset_dir.join(file);
         match fetch_text(&client, &url).await {
             Ok(body) => {
-                if let Err(e) = std::fs::write(preset_dir.join(file), &body) {
+                if let Err(e) = std::fs::write(&dest, &body) {
                     report.errors.push(format!("write {file}: {e}"));
                 } else {
                     report.presets_fetched += 1;
@@ -97,7 +121,9 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
         let url = format!("{SKILLS_RAW}/{repo_path}");
         match fetch_text(&client, &url).await {
             Ok(body) => {
-                let dest = skills.join(format!("{name}.md"));
+                let skill_dir = skills.join(name);
+                let _ = std::fs::create_dir_all(&skill_dir);
+                let dest = skill_dir.join("SKILL.md");
                 if let Err(e) = std::fs::write(&dest, &body) {
                     report.errors.push(format!("write skill {name}: {e}"));
                 } else {
@@ -161,19 +187,22 @@ pub fn parse_presets(body: &str, kind_hint: &str) -> Vec<PresetProvider> {
             continue;
         };
         let env = extract_env_block(&obj);
-        if env.is_empty() {
-            continue;
-        }
         let base_url = env
             .iter()
             .find(|(k, _)| k.ends_with("_BASE_URL") || k.ends_with("_API_BASE"))
             .map(|(_, v)| v.clone())
+            .or_else(|| ts_string_field(&obj, "base_url"))
+            .or_else(|| ts_string_field(&obj, "baseUrl"))
+            .or_else(|| config_string_field(&obj, "base_url"))
+            .or_else(|| config_call_arg(&obj, "config", 1))
             .unwrap_or_default();
         // API-key env var: honour `apiKeyField`, else pick the auth var.
         let env_key = ts_string_field(&obj, "apiKeyField")
             .or_else(|| {
                 env.iter()
-                    .find(|(k, v)| (k.ends_with("_API_KEY") || k.ends_with("_AUTH_TOKEN")) && v.is_empty())
+                    .find(|(k, v)| {
+                        (k.ends_with("_API_KEY") || k.ends_with("_AUTH_TOKEN")) && v.is_empty()
+                    })
                     .map(|(k, _)| k.clone())
             })
             .or_else(|| {
@@ -190,9 +219,16 @@ pub fn parse_presets(body: &str, kind_hint: &str) -> Vec<PresetProvider> {
                     && !k.contains("_HAIKU")
                     && !k.contains("_OPUS")
             })
-            .or_else(|| env.iter().find(|(k, _)| k.ends_with("_DEFAULT_SONNET_MODEL")))
+            .or_else(|| {
+                env.iter()
+                    .find(|(k, _)| k.ends_with("_DEFAULT_SONNET_MODEL"))
+            })
             .or_else(|| env.iter().find(|(k, _)| k.ends_with("_MODEL")))
-            .map(|(_, v)| v.clone());
+            .map(|(_, v)| v.clone())
+            .or_else(|| ts_string_field(&obj, "model"))
+            .or_else(|| ts_string_field(&obj, "id"))
+            .or_else(|| config_string_field(&obj, "model"))
+            .or_else(|| config_call_arg(&obj, "config", 2));
         let models = model.into_iter().collect::<Vec<_>>();
         if base_url.is_empty() && models.is_empty() {
             continue;
@@ -317,8 +353,30 @@ fn read_ts_value(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> 
             chars.next();
             if c == '\\' {
                 if let Some(&(_, e)) = chars.peek() {
-                    out.push(e);
                     chars.next();
+                    match e {
+                        'n' => out.push('\n'),
+                        'r' => out.push('\r'),
+                        't' => out.push('\t'),
+                        '"' | '\'' | '\\' | '`' => out.push(e),
+                        'u' => {
+                            let mut hex = String::new();
+                            for _ in 0..4 {
+                                if let Some(&(_, h)) = chars.peek() {
+                                    chars.next();
+                                    hex.push(h);
+                                } else {
+                                    break;
+                                }
+                            }
+                            if let Ok(code) = u32::from_str_radix(&hex, 16)
+                                && let Some(ch) = char::from_u32(code)
+                            {
+                                out.push(ch);
+                            }
+                        }
+                        other => out.push(other),
+                    }
                 }
                 continue;
             }
@@ -339,11 +397,7 @@ fn read_ts_value(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> 
         chars.next();
     }
     let v = out.trim().to_string();
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
+    if v.is_empty() { None } else { Some(v) }
 }
 
 /// Iterate the body of every `{ ... }` object that is a direct array element
@@ -401,23 +455,86 @@ fn ts_string_field(obj: &str, field: &str) -> Option<String> {
     if q != '"' && q != '\'' && q != '`' {
         return None;
     }
-    let bs = rest.as_bytes();
     let mut out = String::new();
-    let mut j = 1;
-    while j < bs.len() {
-        let c = bs[j];
-        if c == b'\\' && j + 1 < bs.len() {
-            out.push(bs[j + 1] as char);
-            j += 2;
+    let mut escaped = false;
+    let mut chars = rest.chars();
+    let _ = chars.next();
+    while let Some(c) = chars.next() {
+        if escaped {
+            match c {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '"' | '\'' | '\\' | '`' => out.push(c),
+                'u' => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Ok(code) = u32::from_str_radix(&hex, 16)
+                        && let Some(ch) = char::from_u32(code)
+                    {
+                        out.push(ch);
+                    }
+                }
+                other => out.push(other),
+            }
+            escaped = false;
             continue;
         }
-        if c == q as u8 {
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == q {
             return Some(out);
         }
-        out.push(c as char);
-        j += 1;
+        out.push(c);
     }
     None
+}
+
+fn config_string_field(obj: &str, key: &str) -> Option<String> {
+    let config = ts_string_field(obj, "config")?;
+    let pattern = format!("{key} = \"");
+    let start = config.find(&pattern)? + pattern.len();
+    let rest = &config[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn config_call_arg(obj: &str, field: &str, arg_index: usize) -> Option<String> {
+    let pos = find_key(obj, field)?;
+    let mut rest = &obj[pos..];
+    rest = rest.trim_start();
+    rest = rest.strip_prefix([':', '=']).unwrap_or(rest);
+    let open = rest.find('(')?;
+    let call = &rest[open + 1..];
+    let mut args = Vec::new();
+    let mut chars = call.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c == ')' {
+            break;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            let mut out = String::new();
+            let mut escaped = false;
+            while let Some((_, ch)) = chars.next() {
+                if escaped {
+                    out.push(ch);
+                    escaped = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if ch == c {
+                    args.push(out);
+                    break;
+                }
+                out.push(ch);
+            }
+        }
+    }
+    args.get(arg_index).cloned()
 }
 
 /// Register parsed preset providers into `settings` (without overwriting
@@ -434,7 +551,11 @@ pub fn register_providers(settings: &mut Settings, presets: &[PresetProvider]) {
                 kind: p.kind.clone(),
                 model,
                 api_key: None,
-                api_base: if p.base_url.is_empty() { None } else { Some(p.base_url.clone()) },
+                api_base: if p.base_url.is_empty() {
+                    None
+                } else {
+                    Some(p.base_url.clone())
+                },
                 api_key_env: p.env_key.clone(),
                 temperature: 0.1,
                 max_tokens: 8192,
@@ -491,10 +612,21 @@ mod tests {
     #[ignore]
     async fn parse_live_cc_switch() {
         let url = "https://raw.githubusercontent.com/farion1231/cc-switch/main/src/config/claudeProviderPresets.ts";
-        let body = reqwest::Client::new().get(url).send().await.unwrap().text().await.unwrap();
+        let body = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
         let presets = parse_presets(&body, "anthropic");
         eprintln!("parsed {} providers from live claude preset", presets.len());
-        assert!(presets.iter().any(|p| p.name == "Shengsuanyun"), "names: {:?}", presets.iter().map(|p| &p.name).collect::<Vec<_>>());
+        assert!(
+            presets.iter().any(|p| p.name == "Shengsuanyun"),
+            "names: {:?}",
+            presets.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
         let sheng = presets.iter().find(|p| p.name == "Shengsuanyun").unwrap();
         assert_eq!(sheng.base_url, "https://router.shengsuanyun.com/api");
         assert_eq!(sheng.env_key.as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
@@ -524,5 +656,42 @@ mod tests {
         }];
         register_providers(&mut settings, &presets);
         assert_eq!(settings.providers.get("anthropic").unwrap().model, "x");
+    }
+
+    #[test]
+    fn parses_unicode_provider_name_without_mojibake() {
+        let body = r#"export const geminiProviderPresets = [
+  {
+    name: "自定义网关",
+    settingsConfig: {
+      env: {
+        GOOGLE_GEMINI_BASE_URL: "https://example.com",
+        GEMINI_MODEL: "gemini-3.5-flash",
+      },
+    },
+  },
+];"#;
+        let presets = parse_presets(body, "google");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "自定义网关");
+    }
+
+    #[test]
+    fn parses_codex_config_string_shape() {
+        let body = r#"export const codexProviderPresets = [
+  {
+    name: "PatewayAI",
+    config: generateThirdPartyConfig(
+      "patewayai",
+      "https://api.pateway.ai/v1",
+      "gpt-5.5",
+    ),
+  },
+];"#;
+        let presets = parse_presets(body, "openai");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "PatewayAI");
+        assert_eq!(presets[0].base_url, "https://api.pateway.ai/v1");
+        assert_eq!(presets[0].models, vec!["gpt-5.5"]);
     }
 }

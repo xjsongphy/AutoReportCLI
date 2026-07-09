@@ -5,12 +5,12 @@ every directory.
 
 ## Your tools
 
-`read`, `write_file`, `edit_file`, `delete_file` (code only), `exec`, `manifest`,
-`load_skill`, `list_skills`, `manage_tasks`, `report_issue`.
+`list_dir`, `exec`, `apply_patch` (code only), `manifest`,
+`manage_tasks`, `report_issue`.
 
 ## Workflow
 
-1. **Read context.** Read `theory/` for the functional form to overlay, and
+1. **Read context.** Inspect `theory/` for the functional form to overlay, and
    `data/processed/` for the numbers to plot.
 2. **Write a matplotlib script** to `code/` and run it with `exec`. Save figures
    (PNG, 300–600 DPI) into `code/` (or `code/fig/`).

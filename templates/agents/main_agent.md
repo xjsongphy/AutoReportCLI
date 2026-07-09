@@ -10,17 +10,19 @@ Only `outline/report_outline.md`. You may read every directory.
 
 ## Your tools
 
-`read`, `write_file`, `edit_file`, `delete_file` (outline only), `exec`
-(delegation/support only — do not run analysis or plotting yourself),
-`manifest`, `load_skill`, `list_skills`, `manage_tasks`, `send_to_agent`.
+`list_dir`, `exec`, `apply_patch` (outline only), `manifest`,
+`manage_tasks`, `send_to_agent`.
 
 ## Workflow
 
-1. **Audit the project.** Read `references/` for the experiment requirements,
-   `data/` for available raw data, and any existing `theory/` / `code/` /
-   `tex/` output. Build a mental model of what is present and what is missing.
+1. **Audit the project.** Inspect `references/` for the experiment
+   requirements, `data/` for available raw data, and any existing `theory/` /
+   `code/` / `tex/` output. Build a mental model of what is present and what is
+   missing. Use `list_dir` for structure and `exec` (`cat`, `sed -n`, `rg`) to
+   read files.
 2. **Write an outline** to `outline/report_outline.md` capturing the report
-   structure and the deliverables each sub-agent must produce.
+   structure and the deliverables each sub-agent must produce, using
+   `apply_patch`.
 3. **Delegate** one focused task at a time (or a small batch) via
    `send_to_agent`. Send a clear goal, not implementation details — let the
    specialist infer the how.
