@@ -12,9 +12,9 @@
 //! under the same per-agent write-directory isolation as the other file tools.
 
 use crate::tools::file_tools::FsCtx;
-use crate::tools::registry::{arg_str, Tool, ToolOutput};
+use crate::tools::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct ApplyPatchTool {
@@ -78,8 +78,13 @@ pub mod engine {
 
     #[derive(Debug, Clone)]
     pub enum Hunk {
-        AddFile { path: PathBuf, contents: String },
-        DeleteFile { path: PathBuf },
+        AddFile {
+            path: PathBuf,
+            contents: String,
+        },
+        DeleteFile {
+            path: PathBuf,
+        },
         UpdateFile {
             path: PathBuf,
             move_path: Option<PathBuf>,
@@ -248,7 +253,10 @@ pub mod engine {
                     i += 1;
                     break;
                 }
-                if l.starts_with("***") || l == EMPTY_CHANGE_CONTEXT_MARKER || l.starts_with(CHANGE_CONTEXT_MARKER) {
+                if l.starts_with("***")
+                    || l == EMPTY_CHANGE_CONTEXT_MARKER
+                    || l.starts_with(CHANGE_CONTEXT_MARKER)
+                {
                     break;
                 }
                 match l.chars().next() {
@@ -339,13 +347,13 @@ pub mod engine {
                 s.trim()
                     .chars()
                     .map(|c| match c {
-                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
-                        | '\u{2212}' => '-',
+                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
+                        | '\u{2015}' | '\u{2212}' => '-',
                         '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
                         '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
-                        | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}'
-                        | '\u{205F}' | '\u{3000}' => ' ',
+                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
+                        | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
+                        | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
                         other => other,
                     })
                     .collect::<String>()
@@ -378,9 +386,12 @@ pub mod engine {
 
         for chunk in chunks {
             if let Some(ctx_line) = &chunk.change_context {
-                if let Some(idx) =
-                    seek_sequence::seek_sequence(original_lines, std::slice::from_ref(ctx_line), line_index, false)
-                {
+                if let Some(idx) = seek_sequence::seek_sequence(
+                    original_lines,
+                    std::slice::from_ref(ctx_line),
+                    line_index,
+                    false,
+                ) {
                     line_index = idx + 1;
                 } else {
                     return Err(format!(
@@ -402,8 +413,12 @@ pub mod engine {
             }
 
             let mut pattern: &[String] = &chunk.old_lines;
-            let mut found =
-                seek_sequence::seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+            let mut found = seek_sequence::seek_sequence(
+                original_lines,
+                pattern,
+                line_index,
+                chunk.is_end_of_file,
+            );
             let mut new_slice: &[String] = &chunk.new_lines;
 
             if found.is_none() && pattern.last().is_some_and(String::is_empty) {
@@ -411,7 +426,12 @@ pub mod engine {
                 if new_slice.last().is_some_and(String::is_empty) {
                     new_slice = &new_slice[..new_slice.len() - 1];
                 }
-                found = seek_sequence::seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+                found = seek_sequence::seek_sequence(
+                    original_lines,
+                    pattern,
+                    line_index,
+                    chunk.is_end_of_file,
+                );
             }
 
             if let Some(start_idx) = found {
@@ -464,13 +484,13 @@ pub mod engine {
             match hunk {
                 Hunk::AddFile { path, contents } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
+                    ctx.assert_write_allowed(&resolved)?;
                     write_with_parents(&resolved, contents)?;
                     report.push(json!({"add": resolved.display().to_string()}));
                 }
                 Hunk::DeleteFile { path } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
+                    ctx.assert_write_allowed(&resolved)?;
                     if resolved.is_dir() {
                         return Err(format!("{} is a directory", resolved.display()));
                     }
@@ -485,9 +505,8 @@ pub mod engine {
                     chunks,
                 } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
-                    let original =
-                        std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
+                    ctx.assert_write_allowed(&resolved)?;
+                    let original = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
                     let mut original_lines: Vec<String> =
                         original.split('\n').map(String::from).collect();
                     if original_lines.last().is_some_and(String::is_empty) {
@@ -502,7 +521,7 @@ pub mod engine {
 
                     if let Some(dest) = move_path {
                         let dest_abs = resolve_within(&dest.to_string_lossy(), &ctx.workspace)?;
-                        check_write(ctx, &dest_abs)?;
+                        ctx.assert_write_allowed(&dest_abs)?;
                         write_with_parents(&dest_abs, &new_contents)?;
                         std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
                         report.push(json!({"move": resolved.display().to_string(), "to": dest_abs.display().to_string()}));
@@ -514,22 +533,6 @@ pub mod engine {
             }
         }
         Ok(report)
-    }
-
-    fn check_write(ctx: &FsCtx, target: &Path) -> Result<(), String> {
-        let metadata = ctx.workspace.join(".autoreport");
-        if target == metadata || target.starts_with(&metadata) {
-            return Err("writing inside .autoreport is not permitted".into());
-        }
-        match &ctx.write_dir {
-            Some(dir) if target.starts_with(dir) => Ok(()),
-            Some(dir) => Err(format!(
-                "this agent may only write under {}; '{}' is outside it",
-                dir.display(),
-                target.display()
-            )),
-            None => Err("this agent has no write access".into()),
-        }
     }
 
     fn write_with_parents(path: &Path, contents: &str) -> Result<(), String> {
@@ -582,8 +585,14 @@ pub mod engine {
 *** End Patch";
             let report = apply(patch, &ctx(&dir)).unwrap();
             assert!(report.iter().any(|r| r.get("update").is_some()));
-            assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
-            assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "hello\nworld\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+                "alpha\nBETA\ngamma\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+                "hello\nworld\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -600,7 +609,10 @@ pub mod engine {
 *** End of File
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
-            assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "one\ntwo\nthree\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+                "one\ntwo\nthree\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -620,7 +632,10 @@ pub mod engine {
 +BAR
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
-            assert_eq!(std::fs::read_to_string(dir.join("g.txt")).unwrap(), "foo\nBAR\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("g.txt")).unwrap(),
+                "foo\nBAR\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -638,7 +653,10 @@ pub mod engine {
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
             assert!(!dir.join("old.txt").exists());
-            assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "X\ny\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("new.txt")).unwrap(),
+                "X\ny\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 

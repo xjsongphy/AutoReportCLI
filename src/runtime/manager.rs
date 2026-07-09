@@ -9,10 +9,9 @@ use crate::provider::LLMProvider;
 use crate::runtime::AgentLoop;
 use crate::skills::SkillLoader;
 use crate::taskboard::TaskBoard;
-use crate::tools::file_tools::{self, FsCtx};
+use crate::tools::file_tools::FsCtx;
 use crate::tools::manifest::{ManifestStore, ManifestTool};
 use crate::tools::registry::ToolRegistry;
-use crate::tools::skill_tool::{ListSkillsTool, LoadSkillTool};
 use crate::tools::task_tools;
 use crate::types::{AgentType, MessageSource};
 use anyhow::Result;
@@ -115,6 +114,23 @@ impl LoopManager {
         }
     }
 
+    /// Interrupt the active turn of one agent (codex ESC semantics).
+    pub fn interrupt(&self, agent: AgentType) {
+        if let Some(l) = self.loops.get(&agent) {
+            let l = l.clone();
+            tokio::spawn(async move {
+                l.interrupt().await;
+            });
+        }
+    }
+
+    /// Interrupt every agent (e.g. on Ctrl+C cleanup).
+    pub fn interrupt_all(&self) {
+        for agent in AgentType::ALL {
+            self.interrupt(agent);
+        }
+    }
+
     /// Absolute write directory for an agent.
     fn write_dir(&self, agent: AgentType) -> PathBuf {
         match agent {
@@ -130,28 +146,20 @@ impl LoopManager {
         let mut registry = ToolRegistry::new();
         let ctx = FsCtx::new(self.workspace.clone(), Some(self.write_dir(agent)));
 
-        // File tools (read anywhere, write confined).
-        for t in file_tools::bundle(ctx.clone()) {
-            registry.register(t);
-        }
+        // codex-ported paginated directory listing (read-only, workspace-scoped).
+        registry.register(crate::tools::list_dir::ListDirTool::make(ctx.clone()));
 
         // codex-compatible multi-edit patch tool (same write isolation).
-        registry.register(crate::tools::apply_patch::make(ctx));
+        registry.register(crate::tools::apply_patch::make(ctx.clone()));
 
-        // Exec for compute/build agents.
-        if matches!(agent, AgentType::Main | AgentType::DataAnalysis | AgentType::Plotting | AgentType::Report) {
-            registry.register(crate::tools::exec_tool::make(
-                self.workspace.clone(),
-                self.defaults.exec_timeout_secs,
-            ));
-        }
+        // Unified shell entrypoint for reading files and running commands.
+        registry.register(crate::tools::exec_tool::make(
+            ctx,
+            self.defaults.exec_timeout_secs,
+        ));
 
         // Manifest.
         registry.register(Arc::new(ManifestTool::new(self.manifest.clone(), agent)));
-
-        // Skills.
-        registry.register(Arc::new(LoadSkillTool::new(self.skills.clone())));
-        registry.register(Arc::new(ListSkillsTool::new(self.skills.clone())));
 
         // Coordination: Main delegates, sub-agents report back.
         if agent == AgentType::Main {
