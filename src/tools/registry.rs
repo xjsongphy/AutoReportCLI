@@ -17,7 +17,10 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(result: Value) -> Self {
-        Self { result, error: None }
+        Self {
+            result,
+            error: None,
+        }
     }
     pub fn err(message: impl Into<String>) -> Self {
         Self {
@@ -81,7 +84,9 @@ pub fn arg_str(args: &Value, key: &str) -> Result<String, String> {
 }
 
 pub fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
-    args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 pub fn arg_opt_u64(args: &Value, key: &str) -> Option<u64> {

@@ -4,14 +4,14 @@
 //! spins up the loop manager (one persistent agent loop per agent type), then
 //! runs the codex-style TUI.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,8 +80,11 @@ async fn main() -> Result<()> {
     //    AutoReport does on startup. Best-effort: network failure keeps the
     //    existing cache and continues. `--no-sync` skips the fetch; use the
     //    existing cache instead. `--sync-presets` forces a full fetch + exits.
-    if !cli.no_sync {
-        let report = autoreport_cli::sync::sync_all(&workspace, std::time::Duration::from_secs(20)).await;
+    let should_sync =
+        cli.sync_presets || (!cli.no_sync && !autoreport_cli::sync::cache_is_warm(&workspace));
+    if should_sync {
+        let report =
+            autoreport_cli::sync::sync_all(&workspace, std::time::Duration::from_secs(10)).await;
         if report.total() > 0 {
             eprintln!(
                 "synced {} preset(s) and {} skill(s) from cc-switch + skills repos",
@@ -119,7 +122,9 @@ async fn main() -> Result<()> {
     ] {
         let path = cfg_dir.join(file);
         if let Ok(body) = std::fs::read_to_string(&path) {
-            let kind = autoreport_cli::sync::file_kind(file).map(|(k, _)| k).unwrap_or("openai");
+            let kind = autoreport_cli::sync::file_kind(file)
+                .map(|(k, _)| k)
+                .unwrap_or("openai");
             let presets = autoreport_cli::sync::parse_presets(&body, kind);
             autoreport_cli::sync::register_providers(&mut settings, &presets);
         }
@@ -185,7 +190,9 @@ fn run_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
         }
     };
     let mut screen = ConfigScreen::new(settings, workspace.to_path_buf());
-    let outcome = screen.run_fullscreen(&mut terminal).unwrap_or(Outcome::Cancelled);
+    let outcome = screen
+        .run_fullscreen(&mut terminal)
+        .unwrap_or(Outcome::Cancelled);
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
     outcome

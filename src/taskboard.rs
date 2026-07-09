@@ -65,7 +65,7 @@ impl TaskBoard {
         let mut g = self.inner.lock().unwrap();
         let task = g.tasks.get_mut(task_id)?;
         task.status = status;
-        if matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled) {
+        if status.is_settled() {
             task.completed_at = Some(Utc::now());
         }
         Some(task.clone())
@@ -90,6 +90,30 @@ impl TaskBoard {
     pub fn cancel(&self, task_id: &str) -> Option<TaskItem> {
         self.set_status(task_id, TaskStatus::Cancelled)
     }
+    /// Mark a delegated task BLOCKED — the target cannot proceed and needs the
+    /// dispatcher (source) to act. Returns the updated task.
+    pub fn block(&self, task_id: &str) -> Option<TaskItem> {
+        self.set_status(task_id, TaskStatus::Blocked)
+    }
+
+    /// Look up a task by id with optional filters. `active_only` restricts to
+    /// pending/in_progress.
+    pub fn get_task(
+        &self,
+        task_id: &str,
+        target_agent: Option<AgentType>,
+        active_only: bool,
+    ) -> Option<TaskItem> {
+        let g = self.inner.lock().unwrap();
+        g.tasks
+            .get(task_id)
+            .filter(|t| {
+                target_agent.is_none_or(|a| t.target_agent == a)
+                    && (!active_only
+                        || matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress))
+            })
+            .cloned()
+    }
 
     /// Tasks assigned *to* `agent` that are still open (pending / in progress).
     pub fn todolist(&self, agent: AgentType) -> Vec<TaskItem> {
@@ -113,6 +137,20 @@ impl TaskBoard {
                 t.source_agent == agent
                     && t.target_agent != agent
                     && matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Tasks `agent` dispatched that are currently BLOCKED (need its action).
+    pub fn blocked_waitlist(&self, agent: AgentType) -> Vec<TaskItem> {
+        let g = self.inner.lock().unwrap();
+        g.tasks
+            .values()
+            .filter(|t| {
+                t.source_agent == agent
+                    && t.target_agent != agent
+                    && t.status == TaskStatus::Blocked
             })
             .cloned()
             .collect()

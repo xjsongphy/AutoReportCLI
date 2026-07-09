@@ -11,7 +11,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Directories never surfaced in `@` matches.
-const SKIP_DIRS: &[&str] = &[".autoreport", ".git", "target", "node_modules", "__pycache__"];
+const SKIP_DIRS: &[&str] = &[
+    ".autoreport",
+    ".git",
+    "target",
+    "node_modules",
+    "__pycache__",
+];
 
 pub struct FileIndex {
     root: PathBuf,
@@ -59,14 +65,21 @@ impl FileIndex {
             return entries.iter().take(limit).cloned().collect();
         }
 
-        let pattern = Pattern::new(q, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
+        let pattern = Pattern::new(
+            q,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
         let mut matcher = Matcher::new(Config::DEFAULT);
         let mut buf: Vec<char> = Vec::new();
         let mut scored: Vec<(u32, String)> = entries
             .iter()
             .filter_map(|p| {
                 let haystack = Utf32Str::new(p, &mut buf);
-                pattern.score(haystack, &mut matcher).map(|s| (s, p.clone()))
+                pattern
+                    .score(haystack, &mut matcher)
+                    .map(|s| (s, p.clone()))
             })
             .collect();
         // codex ordering: descending score, then ascending path.

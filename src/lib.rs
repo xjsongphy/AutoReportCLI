@@ -3,18 +3,19 @@
 
 #![allow(dead_code)]
 
-pub mod bus;
 pub mod bundled;
+pub mod bus;
 pub mod codex_render;
 pub mod config;
 pub mod config_ui;
+pub mod diff_render;
 pub mod file_search;
-pub mod provider;
 pub mod prompts;
+pub mod provider;
 pub mod rollout;
-pub mod sync;
 pub mod runtime;
 pub mod skills;
+pub mod sync;
 pub mod taskboard;
 pub mod tools;
 pub mod tui;

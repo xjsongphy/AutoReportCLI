@@ -98,6 +98,8 @@ pub enum AgentStatus {
 pub enum TaskStatus {
     Pending,
     InProgress,
+    /// Sub-agent cannot proceed; needs the dispatcher (source agent) to act.
+    Blocked,
     Completed,
     Failed,
     Cancelled,
@@ -108,10 +110,22 @@ impl TaskStatus {
         match self {
             TaskStatus::Pending => "pending",
             TaskStatus::InProgress => "in_progress",
+            TaskStatus::Blocked => "blocked",
             TaskStatus::Completed => "completed",
             TaskStatus::Failed => "failed",
             TaskStatus::Cancelled => "cancelled",
         }
+    }
+
+    /// Terminal or blocked states — i.e. no longer in-flight.
+    pub fn is_settled(&self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Blocked
+                | TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+        )
     }
 }
 
@@ -148,6 +162,12 @@ pub enum BusMessage {
         content: String,
         streaming: bool,
     },
+    /// Streaming/final reasoning fragment produced by a provider that exposes it.
+    AgentReasoning {
+        agent_type: AgentType,
+        content: String,
+        streaming: bool,
+    },
     ToolCall {
         agent_type: AgentType,
         tool_name: String,
@@ -163,11 +183,23 @@ pub enum BusMessage {
         agent_type: AgentType,
         status: AgentStatus,
     },
-    /// Sub-agent → Main feedback (report_issue).
-    AgentFeedback {
+    /// Sub-agent's explicit report on a Main-dispatched task — the single
+    /// reply channel. `SendToAgent` (Main side) subscribes to resolve its
+    /// blocking wait; the sub-agent's loop observes its own report to mark
+    /// the turn "reported".
+    Report {
         agent_type: AgentType,
+        task_id: String,
+        /// "reply" | "missing_data" | "quality"
+        report_type: String,
+        summary: String,
         content: String,
-        feedback_type: String,
+    },
+    /// A notice explaining why an agent is waiting/busy (loop guards, etc.).
+    /// Rendered as a bubble; the agent loop does NOT treat it as input.
+    SystemNotice {
+        agent_type: Option<AgentType>,
+        content: String,
     },
     TaskUpdate {
         task_id: String,
@@ -187,10 +219,12 @@ impl BusMessage {
         match self {
             BusMessage::UserMessage { agent_type, .. }
             | BusMessage::AgentResponse { agent_type, .. }
+            | BusMessage::AgentReasoning { agent_type, .. }
             | BusMessage::ToolCall { agent_type, .. }
             | BusMessage::ToolResult { agent_type, .. }
             | BusMessage::StatusChange { agent_type, .. }
-            | BusMessage::AgentFeedback { agent_type, .. } => Some(*agent_type),
+            | BusMessage::Report { agent_type, .. } => Some(*agent_type),
+            BusMessage::SystemNotice { agent_type, .. } => *agent_type,
             BusMessage::TaskUpdate { target_agent, .. } => Some(*target_agent),
             BusMessage::Error { agent_type, .. } => *agent_type,
         }
