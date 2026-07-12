@@ -128,9 +128,41 @@ pub fn validate_plain_command_script(
     script: &str,
     allowlist: &std::collections::HashSet<&'static str>,
 ) -> Result<Vec<Vec<String>>, String> {
-    let commands = parse_shell_script_into_commands(script).ok_or_else(|| {
-        "command must be a plain shell command sequence without redirects, subshells, or substitutions".to_string()
-    })?;
+    validate_command_for_shell(script, allowlist, default_user_shell().shell_type)
+}
+
+/// Validate a command script for a specific shell family.
+///
+/// Codex ships separate parsers per shell (`codex_shell_command::bash` vs
+/// `::powershell`). We mirror that split rather than running PowerShell
+/// commands through the bash grammar (which falsely rejects legitimate PS
+/// constructs on Windows):
+/// - **POSIX shells** (bash/zsh/sh): the bash tree-sitter grammar, which
+///   rejects redirects/subshells/substitutions and recovers a tokenized
+///   command sequence for write-target extraction.
+/// - **PowerShell/Cmd**: a conservative tokenizer (quote-aware split on
+///   `;`, `|`, `&&`, `||`, newlines), program allowlist, and rejection of
+///   unsafe operators (`>`, `<`, backticks, `$(...)`). A full PowerShell AST
+///   parser like codex's is the long-term path; this is a safe stopgap that
+///   does not falsely reject the simple `prog arg ...` invocations an agent
+///   actually issues.
+pub fn validate_command_for_shell(
+    script: &str,
+    allowlist: &std::collections::HashSet<&'static str>,
+    shell_type: ShellType,
+) -> Result<Vec<Vec<String>>, String> {
+    let commands = match shell_type {
+        ShellType::Bash | ShellType::Zsh | ShellType::Sh => {
+            parse_shell_script_into_commands(script).ok_or_else(|| {
+                "command must be a plain shell command sequence without redirects, subshells, or substitutions".to_string()
+            })?
+        }
+        ShellType::PowerShell | ShellType::Cmd => {
+            parse_simple_command_sequence(script).ok_or_else(|| {
+                "command must be a plain command sequence without redirects, subshells, or substitutions".to_string()
+            })?
+        }
+    };
     if commands.is_empty() {
         return Err("empty command".to_string());
     }
@@ -147,6 +179,168 @@ pub fn validate_plain_command_script(
         }
     }
     Ok(commands)
+}
+
+/// Conservative quote-aware tokenizer for PowerShell/Cmd. Splits a script into
+/// commands on `;`, `|`, `&&`, `||`, and newlines (only when unquoted), rejects
+/// unsafe operators, and tokenizes each command on whitespace while preserving
+/// quoted strings. Returns `None` on anything it cannot safely classify —
+/// fail-closed.
+fn parse_simple_command_sequence(script: &str) -> Option<Vec<Vec<String>>> {
+    // Reject operators that change semantics in ways this tokenizer cannot
+    // reason about safely.
+    if script.contains('>') || script.contains('<') {
+        return None;
+    }
+    // PowerShell uses backtick as the escape char and supports `$(...)`
+    // subexpressions; reject both so we never misclassify an embedded command.
+    if script.contains('`') {
+        return None;
+    }
+    // `--%` is PowerShell's stop-parsing marker: everything after it is passed
+    // literally, letting a model smuggle args (e.g. `git log --% --output=x`)
+    // past token-based checks. Reject outright (codex's PS parser does too).
+    if script.contains("--%") {
+        return None;
+    }
+
+    let mut commands = Vec::new();
+    for raw_cmd in split_on_separators(script) {
+        let tokens = tokenize_command(raw_cmd.trim())?;
+        if tokens.is_empty() {
+            continue;
+        }
+        // Reject `$(` subexpressions and any `$`-prefixed/dollar-interpolated
+        // token (`$foo`, `$env:PATH`, `"text $var"`) — these are dynamic and
+        // cannot be statically allowlisted (codex's PS AST parser only accepts
+        // constant/expandable-with-no-nesting expressions).
+        if tokens.iter().any(|t| t.contains("$(") || t.contains('$')) {
+            return None;
+        }
+        // Intrinsic dangerous-cmdlet blocklist (codex
+        // `windows_safe_commands::is_safe_powershell_words`): reject these
+        // regardless of the caller's allowlist, even when nested. The allowlist
+        // gates ordinary programs; these cmdlets are file/process mutating and
+        // must never be auto-approved.
+        if let Some(program) = tokens.first() {
+            if is_dangerous_powershell_cmdlet(program) {
+                return None;
+            }
+        }
+        commands.push(tokens);
+    }
+    if commands.is_empty() {
+        return None;
+    }
+    Some(commands)
+}
+
+/// PowerShell cmdlets that mutate the filesystem or spawn/control processes.
+/// They are blocked unconditionally on the PowerShell path (defense-in-depth
+/// on top of the caller allowlist), mirroring codex's intrinsic danger set.
+fn is_dangerous_powershell_cmdlet(program: &str) -> bool {
+    // Normalize: PowerShell is case-insensitive and accepts cmdlets with or
+    // without the leading verb-prefix dash (e.g. `Remove-Item` / `rm`).
+    let lower = program.to_ascii_lowercase();
+    const DANGEROUS: &[&str] = &[
+        "remove-item",
+        "del",
+        "erase",
+        "rd",
+        "rmdir",
+        "move-item",
+        "copy-item",
+        "rename-item",
+        "new-item",
+        "out-file",
+        "set-content",
+        "add-content",
+        "clear-content",
+        "start-process",
+        "stop-process",
+        "stop-job",
+        "invoke-expression",
+        "iex",
+    ];
+    DANGEROUS.contains(&lower.as_str())
+}
+
+/// Split a script into raw command strings on top-level `;`, `|`, `&&`, `||`,
+/// and newlines, respecting `"..."` and `'...'` quoting.
+fn split_on_separators(script: &str) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let chars: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        match quote {
+            Some(q) => {
+                out.last_mut().unwrap().push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    quote = Some(c);
+                    out.last_mut().unwrap().push(c);
+                } else if c == ';' || c == '|' || c == '\n' || c == '\r' {
+                    // `&&` and `||` are two-char; a single `|` is also a
+                    // boundary. Push a fresh command segment either way.
+                    if c == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
+                        i += 1;
+                    }
+                    out.push(String::new());
+                } else if c == '&' && i + 1 < chars.len() && chars[i + 1] == '&' {
+                    i += 1;
+                    out.push(String::new());
+                } else {
+                    out.last_mut().unwrap().push(c);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Tokenize one command into words, respecting `"..."` and `'...'`. Returns
+/// `None` on an unterminated quote (fail-closed).
+fn tokenize_command(cmd: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_token = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                in_token = true;
+                let quote = c;
+                loop {
+                    match chars.next() {
+                        Some(q) if q == quote => break,
+                        Some(q) => current.push(q),
+                        None => return None, // unterminated quote
+                    }
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut current));
+                    in_token = false;
+                }
+            }
+            c => {
+                in_token = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_token {
+        tokens.push(current);
+    }
+    Some(tokens)
 }
 
 pub fn detect_shell_type(shell_path: impl AsRef<std::path::Path>) -> Option<ShellType> {
@@ -490,9 +684,50 @@ mod tests {
 
     #[test]
     fn rejects_redirects() {
-        let err =
-            validate_plain_command_script("cat foo > out.txt", &["cat"].into_iter().collect())
-                .unwrap_err();
+        // Explicitly exercise the bash grammar path (host-shell-agnostic).
+        let err = validate_command_for_shell(
+            "cat foo > out.txt",
+            &["cat"].into_iter().collect(),
+            ShellType::Bash,
+        )
+        .unwrap_err();
         assert!(err.contains("plain shell command sequence"));
+    }
+
+    #[test]
+    fn powershell_path_accepts_simple_sequence() {
+        // On Windows the default shell is PowerShell; the bash grammar path
+        // would reject cmdlet-style or `;`-separated sequences. The
+        // shell-aware path must accept a simple allowlisted sequence and
+        // still reject redirects / subshells.
+        let allowlist: std::collections::HashSet<&str> = ["python", "rg"].into_iter().collect();
+        let parsed = validate_command_for_shell(
+            "python analyze.py; rg result data",
+            &allowlist,
+            ShellType::PowerShell,
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0][0], "python");
+        assert_eq!(parsed[1][0], "rg");
+    }
+
+    #[test]
+    fn powershell_path_rejects_redirects_and_subshells() {
+        let allowlist: std::collections::HashSet<&str> = ["python"].into_iter().collect();
+        let err = validate_command_for_shell(
+            "python a.py > out.txt",
+            &allowlist,
+            ShellType::PowerShell,
+        )
+        .unwrap_err();
+        assert!(err.contains("plain command sequence"));
+        let err = validate_command_for_shell(
+            "python $(whoami)",
+            &allowlist,
+            ShellType::Cmd,
+        )
+        .unwrap_err();
+        assert!(err.contains("plain command sequence"));
     }
 }

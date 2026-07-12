@@ -882,13 +882,13 @@ mod tests {
                 "task_id": task.task_id,
                 "type": "reply",
                 "summary": "Report complete",
-                "content": "done at tex/out.pdf"
+                "content": "done at Tex/out.pdf"
             }))
             .await;
         assert!(out.error.is_none());
         let updated = board.get_task(&task.task_id, None, false).unwrap();
         assert_eq!(updated.status, TaskStatus::Completed);
-        assert_eq!(updated.reply.as_deref(), Some("done at tex/out.pdf"));
+        assert_eq!(updated.reply.as_deref(), Some("done at Tex/out.pdf"));
     }
 
     #[tokio::test]
@@ -901,7 +901,7 @@ mod tests {
             .call(&json!({
                 "agent_type": "plotting",
                 "summary": "Draw scatter plot",
-                "content": "plot data/processed/out.csv",
+                "content": "plot Data/Processed/out.csv",
                 "blocking": false
             }))
             .await;

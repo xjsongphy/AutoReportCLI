@@ -5,7 +5,7 @@
 //! snapshot the workspace before and after execution to reject writes outside
 //! the agent's allowed write directory.
 
-use crate::tools::codex_shell::{CodexShell, validate_plain_command_script};
+use crate::tools::codex_shell::{CodexShell, validate_command_for_shell};
 use crate::tools::file_tools::{FsCtx, resolve_within};
 use crate::tools::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
@@ -89,7 +89,7 @@ impl Tool for ExecTool {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Full shell command line, e.g. `python3 analyze.py && rg result data/processed`."},
+                "command": {"type": "string", "description": "Full shell command line, e.g. `python3 analyze.py && rg result Data/Processed`."},
                 "command_description": {"type": "string", "description": "Short human description of what this does."}
             },
             "required": ["command"]
@@ -103,7 +103,7 @@ impl Tool for ExecTool {
         if let Err(e) = block_internal_paths(&command) {
             return ToolOutput::err(e);
         }
-        let parsed = match validate_plain_command_script(&command, &allowlist()) {
+        let parsed = match validate_command_for_shell(&command, &allowlist(), self.shell.detected_shell().shell_type) {
             Ok(commands) => commands,
             Err(e) => return ToolOutput::err(e),
         };
@@ -157,8 +157,20 @@ impl Tool for ExecTool {
 }
 
 fn block_internal_paths(command: &str) -> Result<(), String> {
-    if command.contains(".autoreport") {
-        return Err("accessing .autoreport metadata via exec is not permitted".to_string());
+    // Reject any token that references the internal `.autoreport` metadata
+    // tree. Tokenize by whitespace (respecting quotes) so this is a
+    // path-aware check, not a brittle whole-string substring match — a
+    // command like `cat report.autoreport-notes.txt` is fine, while
+    // `cat .autoreport/sessions/x.jsonl` is blocked.
+    for token in command.split_whitespace() {
+        let mut probe = token.trim_matches(|c: char| c == '"' || c == '\'');
+        // Drop leading `./` so `.autoreport` and `./.autoreport` match.
+        if let Some(rest) = probe.strip_prefix("./") {
+            probe = rest;
+        }
+        if probe == ".autoreport" || probe.starts_with(".autoreport/") || probe.starts_with(".autoreport\\") {
+            return Err("accessing .autoreport metadata via exec is not permitted".to_string());
+        }
     }
     Ok(())
 }
@@ -238,6 +250,34 @@ fn validate_declared_write_targets(ctx: &FsCtx, commands: &[Vec<String>]) -> Res
                 if let Some(last) = command.iter().rev().find(|arg| !arg.starts_with('-')) {
                     targets.push(last.clone());
                 }
+            }
+            // Destructive git subcommands operate workspace-wide (e.g.
+            // `git clean -fdx` wipes untracked files, `git rm -rf` removes
+            // tracked ones). The post-hoc workspace snapshot would detect
+            // the damage only AFTER it is done — irreversible for `rm`/clean.
+            // Require an explicit path target inside the write dir up front;
+            // bare `git clean` / `git rm` are rejected pre-emptively.
+            "git" => {
+                let sub = command.get(1).map(String::as_str).unwrap_or("");
+                if !matches!(sub, "clean" | "rm") {
+                    continue;
+                }
+                let path_args: Vec<&String> = command
+                    .iter()
+                    .skip(2)
+                    .filter(|a| !a.starts_with('-'))
+                    .collect();
+                if path_args.is_empty() {
+                    return Err(format!(
+                        "git {sub} without an explicit path inside your write directory is not permitted \
+                         (it would affect files outside your allowed write dir)"
+                    ));
+                }
+                for target in path_args {
+                    let path = resolve_within(target, &ctx.workspace)?;
+                    ctx.assert_write_allowed(&path)?;
+                }
+                continue;
             }
             _ => continue,
         }

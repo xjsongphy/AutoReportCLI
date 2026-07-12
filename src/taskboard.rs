@@ -39,7 +39,7 @@ impl TaskBoard {
         blocking: bool,
         session_id: Option<String>,
     ) -> TaskItem {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let id = self.next_id(&mut g);
         let task = TaskItem {
             task_id: id.clone(),
@@ -63,7 +63,7 @@ impl TaskBoard {
     }
 
     fn set_status(&self, task_id: &str, status: TaskStatus) -> Option<TaskItem> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let task = g.tasks.get_mut(task_id)?;
         task.status = status;
         task.completed_at = status.is_settled().then(Utc::now);
@@ -74,7 +74,7 @@ impl TaskBoard {
         self.set_status(task_id, TaskStatus::InProgress)
     }
     pub fn complete(&self, task_id: &str, reply: Option<String>) -> Option<TaskItem> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let task = g.tasks.get_mut(task_id)?;
         task.status = TaskStatus::Completed;
         task.completed_at = Some(Utc::now());
@@ -103,7 +103,7 @@ impl TaskBoard {
         target_agent: Option<AgentType>,
         active_only: bool,
     ) -> Option<TaskItem> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.tasks
             .get(task_id)
             .filter(|t| {
@@ -138,7 +138,7 @@ impl TaskBoard {
 
     /// Codex-style local plan for `agent`, backed by self-assigned tasks.
     pub fn local_plan(&self, agent: AgentType) -> Vec<TaskItem> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut tasks: Vec<TaskItem> = g
             .tasks
             .values()
@@ -155,7 +155,7 @@ impl TaskBoard {
         agent: AgentType,
         steps: Vec<(String, TaskStatus)>,
     ) -> Vec<TaskItem> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let existing_local: Vec<TaskItem> = g
             .tasks
             .values()
@@ -217,7 +217,7 @@ impl TaskBoard {
 
     /// Tasks assigned *to* `agent` that are still open (pending / in progress).
     pub fn todolist(&self, agent: AgentType) -> Vec<TaskItem> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut tasks: Vec<TaskItem> = g
             .tasks
             .values()
@@ -233,7 +233,7 @@ impl TaskBoard {
 
     /// Tasks `agent` assigned *to others* that are still open.
     pub fn waitlist(&self, agent: AgentType) -> Vec<TaskItem> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut tasks: Vec<TaskItem> = g
             .tasks
             .values()
@@ -250,7 +250,7 @@ impl TaskBoard {
 
     /// Tasks `agent` dispatched that are currently BLOCKED (need its action).
     pub fn blocked_waitlist(&self, agent: AgentType) -> Vec<TaskItem> {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut tasks: Vec<TaskItem> = g
             .tasks
             .values()
@@ -266,7 +266,7 @@ impl TaskBoard {
     }
 
     pub fn all(&self) -> Vec<TaskItem> {
-        self.inner.lock().unwrap().tasks.values().cloned().collect()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).tasks.values().cloned().collect()
     }
 }
 

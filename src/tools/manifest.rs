@@ -69,11 +69,11 @@ impl ManifestStore {
 
     fn manifest_dirs(agent: AgentType) -> &'static [&'static str] {
         match agent {
-            AgentType::Main => &["outline"],
-            AgentType::DataAnalysis => &["data/processed"],
-            AgentType::Plotting => &["code"],
-            AgentType::Theory => &["theory"],
-            AgentType::Report => &["tex"],
+            AgentType::Main => &["Outline"],
+            AgentType::DataAnalysis => &["Data/Processed"],
+            AgentType::Plotting => &["Plots"],
+            AgentType::Theory => &["Theory"],
+            AgentType::Report => &["Tex"],
         }
     }
 
@@ -214,7 +214,7 @@ impl ManifestStore {
 
     pub fn load(&self, agent: AgentType) -> AgentManifest {
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(manifest) = cache.get(agent.as_str()) {
                 return self.sync_with_filesystem(agent, manifest.clone());
             }
@@ -575,8 +575,8 @@ mod tests {
     #[test]
     fn load_scans_agent_directory_and_preserves_annotations() {
         let workspace = temp_workspace();
-        std::fs::create_dir_all(workspace.path().join("code")).unwrap();
-        std::fs::write(workspace.path().join("code/plot.py"), "print('x')\n").unwrap();
+        std::fs::create_dir_all(workspace.path().join("Plots/Scripts")).unwrap();
+        std::fs::write(workspace.path().join("Plots/Scripts/plot.py"), "print('x')\n").unwrap();
 
         let store = ManifestStore::new(workspace.path());
         let mut manifest = store.load(AgentType::Plotting);
@@ -585,13 +585,13 @@ mod tests {
         manifest.files[0].description_updated_at = Some("2026-01-01T00:00:00Z".into());
         store.save(AgentType::Plotting, manifest);
 
-        std::fs::write(workspace.path().join("code/other.py"), "print('y')\n").unwrap();
+        std::fs::write(workspace.path().join("Plots/Scripts/other.py"), "print('y')\n").unwrap();
         let loaded = store.load(AgentType::Plotting);
         assert_eq!(loaded.files.len(), 2);
         let plot = loaded
             .files
             .iter()
-            .find(|item| item.path == "code/plot.py")
+            .find(|item| item.path == "Plots/Scripts/plot.py")
             .unwrap();
         assert_eq!(plot.description, "main plotting script");
     }

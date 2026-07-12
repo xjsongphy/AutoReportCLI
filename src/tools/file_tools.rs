@@ -27,11 +27,11 @@ impl FsCtx {
 
     pub fn assert_write_allowed(&self, target: &Path) -> Result<(), String> {
         let metadata = self.workspace.join(".autoreport");
-        if target == metadata || target.starts_with(&metadata) {
+        if path_eq(target, &metadata) || path_starts_with(target, &metadata) {
             return Err("writing inside .autoreport is not permitted".to_string());
         }
         match &self.write_dir {
-            Some(dir) if target.starts_with(dir) => Ok(()),
+            Some(dir) if path_starts_with(target, dir) => Ok(()),
             Some(dir) => Err(format!(
                 "this agent may only write under {}; '{}' is outside it",
                 dir.display(),
@@ -52,7 +52,7 @@ pub fn resolve_within(path: &str, workspace: &Path) -> Result<PathBuf, String> {
     } else {
         normalize(&workspace.join(p))
     };
-    if joined == *workspace || joined.starts_with(workspace) {
+    if path_eq(&joined, workspace) || path_starts_with(&joined, workspace) {
         Ok(joined)
     } else {
         Err(format!("path '{}' escapes the workspace", path))
@@ -73,6 +73,44 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Compare two path components with the filesystem's case sensitivity:
+/// case-insensitive on Windows (NTFS default), case-sensitive elsewhere.
+/// `Path::starts_with` / `==` are always case-sensitive and would falsely
+/// reject an agent that writes `Data/Processed/x.csv` against a canonical
+/// `Data/Processed` write dir on Windows.
+fn component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
+/// `target == base`, filesystem-case-aware.
+fn path_eq(target: &Path, base: &Path) -> bool {
+    let t: Vec<_> = target.components().collect();
+    let b: Vec<_> = base.components().collect();
+    t.len() == b.len()
+        && t.iter()
+            .zip(b.iter())
+            .all(|(tc, bc)| component_eq(tc.as_os_str(), bc.as_os_str()))
+}
+
+/// `target` is `base` or nested under it, filesystem-case-aware.
+fn path_starts_with(target: &Path, base: &Path) -> bool {
+    let t: Vec<_> = target.components().collect();
+    let b: Vec<_> = base.components().collect();
+    if t.len() < b.len() {
+        return false;
+    }
+    t.iter()
+        .zip(b.iter())
+        .all(|(tc, bc)| component_eq(tc.as_os_str(), bc.as_os_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,14 +127,14 @@ mod tests {
         let workspace = std::env::temp_dir().join("autoreport-file-tools-write");
         let ctx = FsCtx::new(
             workspace.clone(),
-            Some(workspace.join("data").join("processed")),
+            Some(workspace.join("Data").join("Processed")),
         );
         assert!(
-            ctx.assert_write_allowed(&workspace.join("data").join("processed").join("x.csv"))
+            ctx.assert_write_allowed(&workspace.join("Data").join("Processed").join("x.csv"))
                 .is_ok()
         );
         assert!(
-            ctx.assert_write_allowed(&workspace.join("theory").join("x.md"))
+            ctx.assert_write_allowed(&workspace.join("Theory").join("x.md"))
                 .is_err()
         );
     }

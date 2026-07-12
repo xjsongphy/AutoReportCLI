@@ -134,10 +134,10 @@ impl LoopManager {
     /// Absolute write directory for an agent.
     fn write_dir(&self, agent: AgentType) -> PathBuf {
         match agent {
-            AgentType::Main => self.workspace.join("outline"),
+            AgentType::Main => self.workspace.join("Outline"),
             other => match other.write_dir() {
                 Some(d) => self.workspace.join(d),
-                None => self.workspace.join("outline"),
+                None => self.workspace.join("Outline"),
             },
         }
     }
