@@ -13,11 +13,11 @@ struct Bundled {
 
 const BUNDLED: &[Bundled] = &[
     Bundled {
-        rel: "references/templates/template_mpl.tex",
+        rel: "References/templates/template_mpl.tex",
         content: include_str!("../templates/reports/template_mpl.tex"),
     },
     Bundled {
-        rel: "references/templates/mpltx.cls",
+        rel: "References/templates/mpltx.cls",
         content: include_str!("../templates/reports/mpltx.cls"),
     },
 ];

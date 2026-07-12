@@ -110,12 +110,12 @@ Provider 可以通过以下任一方式配置：
 
 ```text
 .
-├── data/            原始数据与处理结果
-├── references/      论文、图片、模板、自定义 skills
-├── theory/          Theory 智能体输出
-├── code/            绘图脚本与图表
-├── tex/             LaTeX 源文件与编译后的 PDF
-├── outline/         Main 智能体的大纲与规划
+├── Data/            原始数据与处理结果
+├── References/      论文、图片、模板、自定义 skills
+├── Theory/          Theory 智能体输出
+├── Plots/           绘图图表（Plots/Fig）与脚本（Plots/Scripts）
+├── Tex/             LaTeX 源文件与编译后的 PDF
+├── Outline/         Main 智能体的大纲与规划
 └── .autoreport/     会话、同步资源、内部元数据
 ```
 

@@ -7,18 +7,54 @@ use std::path::{Path, PathBuf};
 /// The fixed directories every AutoReport project owns.
 /// Users may only add/remove files *inside* these, never rename them.
 pub const REQUIRED_DIRS: &[&str] = &[
-    "data",
-    "data/processed",
-    "references",
-    "theory",
-    "code",
-    "tex",
-    "outline",
+    "Data",
+    "Data/Processed",
+    "References",
+    "Theory",
+    "Plots",
+    "Plots/Fig",
+    "Plots/Scripts",
+    "Tex",
+    "Outline",
     ".autoreport",
+];
+
+/// Lowercase -> capitalized directory pairs for migrating projects created
+/// before the directory-name capitalization change. Applied once, in
+/// `ensure_workspace`, before the create-missing loop: if the capitalized dir
+/// does not exist but the legacy lowercase one does, rename it in place.
+const LEGACY_DIR_RENAMES: &[(&str, &str)] = &[
+    ("data/processed", "Data/Processed"),
+    ("data", "Data"),
+    ("references", "References"),
+    ("theory", "Theory"),
+    ("code", "Plots"),
+    ("tex", "Tex"),
+    ("outline", "Outline"),
 ];
 
 /// Create any missing required directories under `workspace`. Idempotent.
 pub fn ensure_workspace(workspace: &Path) -> Result<()> {
+    // One-time migration: rename legacy lowercase dirs to the capitalized
+    // layout. Order matters — rename `data/processed` before `data`, etc.
+    for (legacy, current) in LEGACY_DIR_RENAMES {
+        let new_path = workspace.join(current);
+        let old_path = workspace.join(legacy);
+        if !new_path.exists() && old_path.exists() {
+            if let Some(parent) = new_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::rename(&old_path, &new_path).with_context(|| {
+                format!(
+                    "migrating {} -> {}",
+                    old_path.display(),
+                    new_path.display()
+                )
+            })?;
+            log::info!("migrated directory {} -> {}", legacy, current);
+        }
+    }
+
     for dir in REQUIRED_DIRS {
         let path = workspace.join(dir);
         if !path.exists() {
@@ -179,6 +215,39 @@ mod tests {
     use super::*;
     use crate::config::schema::ProviderConfig;
     use tempfile::tempdir;
+
+    #[test]
+    fn ensure_workspace_migrates_legacy_lowercase_dirs() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        // Seed legacy lowercase layout with content.
+        std::fs::create_dir_all(ws.join("data/processed")).unwrap();
+        std::fs::create_dir_all(ws.join("code")).unwrap();
+        std::fs::write(ws.join("data/processed/out.csv"), "x").unwrap();
+        std::fs::write(ws.join("code/plot.py"), "x").unwrap();
+
+        ensure_workspace(ws).unwrap();
+
+        // Content is reachable at the capitalized paths. On case-sensitive
+        // filesystems the lowercase dirs are renamed; on case-insensitive ones
+        // (Windows NTFS) the case-only rename is a no-op but the content is
+        // accessible via the capitalized name regardless.
+        assert!(ws.join("Data/Processed/out.csv").exists());
+        assert!(ws.join("Plots/plot.py").exists());
+        // New required sub-dirs created.
+        assert!(ws.join("Plots/Fig").exists());
+        assert!(ws.join("Plots/Scripts").exists());
+        assert!(ws.join("Outline").exists());
+    }
+
+    #[test]
+    fn ensure_workspace_creates_all_required_dirs_when_empty() {
+        let dir = tempdir().unwrap();
+        ensure_workspace(dir.path()).unwrap();
+        for d in REQUIRED_DIRS {
+            assert!(dir.path().join(d).exists(), "missing required dir {d}");
+        }
+    }
 
     #[test]
     fn save_settings_writes_yaml_and_roundtrips() {

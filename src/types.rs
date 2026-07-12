@@ -54,10 +54,10 @@ impl AgentType {
     pub fn write_dir(&self) -> Option<&'static str> {
         match self {
             AgentType::Main => None,
-            AgentType::DataAnalysis => Some("data/processed"),
-            AgentType::Plotting => Some("code"),
-            AgentType::Theory => Some("theory"),
-            AgentType::Report => Some("tex"),
+            AgentType::DataAnalysis => Some("Data/Processed"),
+            AgentType::Plotting => Some("Plots"),
+            AgentType::Theory => Some("Theory"),
+            AgentType::Report => Some("Tex"),
         }
     }
 }

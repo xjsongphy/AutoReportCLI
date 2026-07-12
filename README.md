@@ -112,12 +112,12 @@ Useful CLI flags:
 
 ```text
 .
-├── data/            raw data and processed results
-├── references/      papers, images, templates, custom skills
-├── theory/          theory agent output
-├── code/            plotting scripts and figures
-├── tex/             LaTeX sources and compiled PDF
-├── outline/         main agent planning output
+├── Data/            raw data and processed results
+├── References/      papers, images, templates, custom skills
+├── Theory/          theory agent output
+├── Plots/           plotting figures (Plots/Fig) and scripts (Plots/Scripts)
+├── Tex/             LaTeX sources and compiled PDF
+├── Outline/         main agent planning output
 └── .autoreport/     sessions, synced assets, internal metadata
 ```
 
