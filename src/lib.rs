@@ -10,6 +10,7 @@ pub mod config;
 pub mod config_ui;
 pub mod diff_render;
 pub mod file_search;
+pub mod ide_context;
 pub mod prompts;
 pub mod provider;
 pub mod rollout;
