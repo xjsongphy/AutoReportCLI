@@ -59,6 +59,11 @@ pub enum ResponseItem {
         summary: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<Vec<String>>,
+        /// Opaque signed reasoning blob to echo back on the next turn (codex
+        /// `encrypted_content`; Anthropic thinking `signature`). Absent on
+        /// providers that don't sign reasoning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
     },
     FunctionCall {
         #[serde(default, skip_serializing)]
@@ -116,6 +121,30 @@ impl ResponseItem {
             id: None,
             summary: Vec::new(),
             content: Some(vec![text.into()]),
+            encrypted_content: None,
+        }
+    }
+
+    /// Reasoning with a signed blob (Anthropic `signature` / codex
+    /// `encrypted_content`), so it can be echoed back to continue an
+    /// extended-thinking turn.
+    pub fn reasoning_signed(text: impl Into<String>, signature: impl Into<String>) -> Self {
+        ResponseItem::Reasoning {
+            id: None,
+            summary: Vec::new(),
+            content: Some(vec![text.into()]),
+            encrypted_content: Some(signature.into()),
+        }
+    }
+
+    /// The signed reasoning blob, if any (for echo-back on the next turn).
+    pub fn reasoning_signature(&self) -> Option<&str> {
+        match self {
+            ResponseItem::Reasoning {
+                encrypted_content: Some(s),
+                ..
+            } => Some(s),
+            _ => None,
         }
     }
 
@@ -157,35 +186,105 @@ pub struct SessionMeta {
     pub timestamp: String,
 }
 
+/// Codex on-disk wire envelope. Every rollout line is one of these, never a
+/// bare item:
+///   {"timestamp":"...","type":"session_meta","payload":{...}}
+///   {"timestamp":"...","type":"response_item","payload":{"type":"message",...}}
+/// This makes files inspectable with `jq 'select(.type=="response_item")'`
+/// and listable by codex tooling (`codex list-threads`), which deserialize
+/// `RolloutLine` directly.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct RolloutLine {
+    timestamp: String,
+    #[serde(flatten)]
+    payload: RolloutPayload,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+enum RolloutPayload {
+    SessionMeta(SessionMeta),
+    ResponseItem(ResponseItem),
+}
+
 /// Where rollout files live for a workspace.
 pub fn sessions_dir(workspace: &Path) -> PathBuf {
     workspace.join(".autoreport").join("sessions")
 }
 
-/// Append-only recorder: writes `SessionMeta` header, then one JSON item/line.
+/// `sessions/YYYY/MM/DD/` for a timestamp like `2026-07-12T13-45-07`
+/// (codex directory layout, `rollout/src/list.rs:420`).
+fn date_dir(root: &Path, ts: &str) -> PathBuf {
+    let date = ts.split('T').next().unwrap_or("");
+    let mut parts = date.split('-');
+    let y = parts.next().unwrap_or("unknown");
+    let m = parts.next().unwrap_or("00");
+    let d = parts.next().unwrap_or("00");
+    root.join(y).join(m).join(d)
+}
+
+/// Current UTC time as an RFC3339 string (per-line envelope timestamp).
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Replace characters that are illegal in Windows filenames
+/// (`< > : " | ? *` and control chars) with `-`, so a rollout filename is
+/// valid on every platform regardless of what the caller passes. Forward
+/// slashes (path separators) are likewise replaced to prevent directory
+/// escape. Defense-in-depth; the canonical timestamp is already dash-separated.
+fn sanitize_filename_component(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\' => '-',
+            c if (c as u32) < 0x20 => '-',
+            c => c,
+        })
+        .collect()
+}
+
+/// Append-only recorder: writes the `SessionMeta` header, then one JSON
+/// item/line, each wrapped in the codex `RolloutLine` envelope.
 pub struct RolloutRecorder {
     path: PathBuf,
 }
 
 impl RolloutRecorder {
-    /// Create (or resume) a rollout file for `conversation_id`.
-    pub fn create(workspace: &Path, conversation_id: &str, timestamp: &str) -> Result<Self> {
-        let dir = sessions_dir(workspace);
+    /// Create a new rollout file. `conversation_id` is recorded in the meta
+    /// payload; `session_uuid` (a bare UUID) identifies the file on disk so
+    /// resume can find it. `timestamp` is the `%Y-%m-%dT%H-%M-%S` creation
+    /// stamp used for the filename and the `sessions/YYYY/MM/DD/` directory.
+    pub fn create(
+        workspace: &Path,
+        conversation_id: &str,
+        session_uuid: &str,
+        timestamp: &str,
+    ) -> Result<Self> {
+        let root = sessions_dir(workspace);
+        let ts = sanitize_filename_component(timestamp);
+        let uuid = sanitize_filename_component(session_uuid);
+        let dir = date_dir(&root, &ts);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join(format!("rollout-{timestamp}-{conversation_id}.jsonl"));
+        let path = dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
         let meta = SessionMeta {
             conversation_id: conversation_id.to_string(),
             cli_version: env!("CARGO_PKG_VERSION").to_string(),
             timestamp: timestamp.to_string(),
         };
-        let line = serde_json::to_string(&meta).context("encoding session meta")?;
-        std::fs::OpenOptions::new()
+        let line = RolloutLine {
+            timestamp: now_rfc3339(),
+            payload: RolloutPayload::SessionMeta(meta),
+        };
+        let encoded = serde_json::to_string(&line).context("encoding session meta")?;
+        // Write through a create+append handle. Never `fs::write` — it
+        // truncates, so a stray second `create()` would destroy history.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("opening {}", path.display()))?;
-        std::fs::write(&path, format!("{line}\n"))
-            .with_context(|| format!("writing {}", path.display()))?;
+        writeln!(f, "{encoded}").with_context(|| format!("writing {}", path.display()))?;
         Ok(Self { path })
     }
 
@@ -205,12 +304,16 @@ impl RolloutRecorder {
     /// a replayable file.
     pub fn append(&self, item: &ResponseItem) -> Result<()> {
         use std::io::Write;
-        let line = serde_json::to_string(item).context("encoding response item")?;
+        let line = RolloutLine {
+            timestamp: now_rfc3339(),
+            payload: RolloutPayload::ResponseItem(item.clone()),
+        };
+        let encoded = serde_json::to_string(&line).context("encoding response item")?;
         let mut f = std::fs::OpenOptions::new()
             .append(true)
             .open(&self.path)
             .with_context(|| format!("opening {}", self.path.display()))?;
-        writeln!(f, "{line}").with_context(|| format!("writing {}", self.path.display()))?;
+        writeln!(f, "{encoded}").with_context(|| format!("writing {}", self.path.display()))?;
         f.flush().ok();
         Ok(())
     }
@@ -227,7 +330,10 @@ pub enum RolloutEntry {
     Item(ResponseItem),
 }
 
-/// Read a rollout file back into entries (for resume / inspection).
+/// Read a rollout file back into entries (for resume / inspection). Accepts
+/// both the codex `RolloutLine` envelope and the legacy bare format (lines
+/// without a `payload` wrapper), so files written before the envelope migration
+/// still resume.
 pub fn read(path: &Path) -> Result<Vec<RolloutEntry>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -244,6 +350,23 @@ pub fn read(path: &Path) -> Result<Vec<RolloutEntry>> {
                 continue;
             }
         };
+        // Envelope: {"timestamp":..., "type":"session_meta"|"response_item", "payload":{...}}
+        if v.get("payload").is_some()
+            && matches!(
+                v.get("type").and_then(|t| t.as_str()),
+                Some("session_meta" | "response_item")
+            )
+        {
+            match serde_json::from_value::<RolloutLine>(v.clone()) {
+                Ok(line) => match line.payload {
+                    RolloutPayload::SessionMeta(m) => out.push(RolloutEntry::Meta(m)),
+                    RolloutPayload::ResponseItem(item) => out.push(RolloutEntry::Item(item)),
+                },
+                Err(e) => log::warn!("rollout {}:{} bad envelope: {e}", path.display(), i + 1),
+            }
+            continue;
+        }
+        // Legacy bare format.
         match v.get("conversation_id").and_then(|x| x.as_str()) {
             Some(_) => match serde_json::from_value::<SessionMeta>(v) {
                 Ok(m) => out.push(RolloutEntry::Meta(m)),
@@ -258,29 +381,74 @@ pub fn read(path: &Path) -> Result<Vec<RolloutEntry>> {
     Ok(out)
 }
 
-/// The most recent rollout path for a given conversation id, if any (for resume).
-pub fn latest_for(workspace: &Path, conversation_id: &str) -> Option<PathBuf> {
-    let dir = sessions_dir(workspace);
+/// The most recent rollout path for a given session UUID, if any (for resume).
+/// Walks the `sessions/` tree (codex layout: `YYYY/MM/DD/`), parses the UUID
+/// out of each filename, and matches by exact UUID equality (codex
+/// `parse_timestamp_uuid_from_filename`, `list.rs:964`).
+pub fn latest_for(workspace: &Path, session_uuid: &str) -> Option<PathBuf> {
+    let root = sessions_dir(workspace);
+    let mut files: Vec<(PathBuf, String, String)> = Vec::new(); // (path, ts_key, uuid)
+    collect_rollout_files(&root, &mut files);
+    // Match by exact UUID; among matches keep the lexicographically largest
+    // timestamp (fixed-width `%Y-%m-%dT%H-%M-%S` ⇒ newest).
     let mut best: Option<(PathBuf, String)> = None;
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return None;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+    for (path, ts, uuid) in files {
+        if uuid != session_uuid {
             continue;
         }
-        // filename: rollout-<timestamp>-<id>.jsonl
-        if !name.contains(conversation_id) {
-            continue;
-        }
-        let key = name.clone();
         match &best {
-            Some((_, k)) if key.as_str() <= k.as_str() => {}
-            _ => best = Some((entry.path(), key)),
+            Some((_, k)) if ts.as_str() <= k.as_str() => {}
+            _ => best = Some((path, ts)),
         }
     }
     best.map(|(p, _)| p)
+}
+
+/// Recursively gather `rollout-*.jsonl` files under `root`, parsing each
+/// filename into `(path, timestamp, uuid)`. Mirrors codex's filename grammar
+/// `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
+fn collect_rollout_files(root: &Path, out: &mut Vec<(PathBuf, String, String)>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            collect_rollout_files(&path, out);
+            continue;
+        }
+        if !ft.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(core) = name
+            .strip_prefix("rollout-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        // Scan from the right for a `-` whose suffix parses as a UUID (codex
+        // `parse_timestamp_uuid_from_filename`); the remainder is the timestamp.
+        let Some((ts, uuid)) = parse_ts_uuid(core) else {
+            continue;
+        };
+        out.push((path, ts, uuid));
+    }
+}
+
+/// Split `YYYY-MM-DDThh-mm-ss-<uuid>` into `(timestamp, uuid)` by finding the
+/// rightmost `-` boundary whose suffix is a valid UUID.
+fn parse_ts_uuid(core: &str) -> Option<(String, String)> {
+    for (i, _) in core.rmatch_indices('-') {
+        if let Ok(_) = uuid::Uuid::parse_str(&core[i + 1..]) {
+            return Some((core[..i].to_string(), core[i + 1..].to_string()));
+        }
+    }
+    None
 }
 
 /// Items only (drops the meta header) from a rollout read.
@@ -308,12 +476,16 @@ mod tests {
             .to_string()
     }
 
+    fn new_uuid() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
     #[test]
     fn round_trips_items_and_meta() {
         let dir = std::env::temp_dir().join(format!("rollout-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec = RolloutRecorder::create(ws, "conv-1", "2026-06-29T00:00:00Z").unwrap();
+        let rec = RolloutRecorder::create(ws, "conv-1", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
         rec.append(&ResponseItem::user_message("hello")).unwrap();
         rec.append(&ResponseItem::assistant_message("hi there"))
             .unwrap();
@@ -333,8 +505,10 @@ mod tests {
         assert_eq!(items[0].text().unwrap(), "hello");
         assert!(matches!(items[2], ResponseItem::FunctionCall { .. }));
 
-        // format compatibility: each line is a JSON object with a "type" tag.
+        // Codex wire envelope: each line carries type + payload markers.
         let raw = std::fs::read_to_string(rec.path()).unwrap();
+        assert!(raw.contains("\"type\":\"session_meta\""));
+        assert!(raw.contains("\"type\":\"response_item\""));
         assert!(raw.contains("\"type\":\"message\""));
         assert!(raw.contains("\"type\":\"function_call\""));
         assert!(raw.contains("\"conversation_id\""));
@@ -346,9 +520,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-latest-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        RolloutRecorder::create(ws, "conv-X", "2026-06-01T00:00:00Z").unwrap();
-        RolloutRecorder::create(ws, "conv-X", "2026-06-29T00:00:00Z").unwrap();
-        let latest = latest_for(ws, "conv-X").unwrap();
+        // Same session uuid, two files with different timestamps (different
+        // date dirs); latest_for must walk the tree and pick the newest.
+        let sid = new_uuid();
+        RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-01T00-00-00Z").unwrap();
+        RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-29T00-00-00Z").unwrap();
+        let latest = latest_for(ws, &sid).unwrap();
         let name = latest.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.contains("2026-06-29"), "expected newest, got {name}");
         std::fs::remove_dir_all(&dir).ok();
@@ -361,7 +538,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-open-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec = RolloutRecorder::create(ws, "conv-R", "2026-06-29T00:00:00Z").unwrap();
+        let rec = RolloutRecorder::create(ws, "conv-R", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
         rec.append(&ResponseItem::user_message("first")).unwrap();
 
         // Simulate a restart: reopen the same path and append a new item.
@@ -382,6 +559,45 @@ mod tests {
             .filter(|e| matches!(e, RolloutEntry::Meta(_)))
             .count();
         assert_eq!(headers, 1, "header must not be duplicated on resume");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_sanitizes_colons_in_timestamp_for_windows() {
+        // Regression: an RFC3339 timestamp like `2026-06-29T00:00:00Z`
+        // contains colons, which are illegal in Windows filenames (OS error
+        // 123). The recorder must sanitize them so it works cross-platform
+        // regardless of what the caller passes.
+        let dir = std::env::temp_dir().join(format!("rollout-sanitize-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = RolloutRecorder::create(&dir, "conv-C", &new_uuid(), "2026-06-29T00:00:00Z").unwrap();
+        rec.append(&ResponseItem::user_message("hi")).unwrap();
+        let name = rec.path().file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            !name.contains(':'),
+            "filename must not contain colons (invalid on Windows): {name}"
+        );
+        assert!(
+            name.contains("2026-06-29T00-00-00Z"),
+            "colons should be replaced with dashes: {name}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn latest_for_ignores_other_sessions() {
+        // Two different session uuids; latest_for for one must not return the
+        // other's file (exact-uuid match, not substring).
+        let dir = std::env::temp_dir().join(format!("rollout-isolate-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws: &Path = &dir;
+        let sid_a = new_uuid();
+        let sid_b = new_uuid();
+        RolloutRecorder::create(ws, "conv-A", &sid_a, "2026-06-29T00-00-00Z").unwrap();
+        RolloutRecorder::create(ws, "conv-B", &sid_b, "2026-07-01T00-00-00Z").unwrap();
+        let latest_a = latest_for(ws, &sid_a).unwrap();
+        let name_a = latest_a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name_a.contains(&sid_a), "expected sid_a's file, got {name_a}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
