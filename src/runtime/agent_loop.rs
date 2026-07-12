@@ -63,7 +63,6 @@ pub struct AgentLoop {
     defaults: AgentDefaults,
     /// codex-style history of conversation items.
     history: Arc<Mutex<Vec<ResponseItem>>>,
-    system_prompt: Arc<Mutex<String>>,
     status: AgentStatusLock,
     op_tx: mpsc::Sender<Op>,
     op_rx: Arc<Mutex<mpsc::Receiver<Op>>>,
@@ -74,8 +73,12 @@ pub struct AgentLoop {
     turn_reported: Arc<AtomicBool>,
     /// Append-only rollout recorder (`None` until the first item is written).
     recorder: Arc<Mutex<Option<RolloutRecorder>>>,
-    /// Logical conversation id; `/clear` rolls a new one (new rollout file).
+    /// Logical conversation id (recorded in the rollout meta payload);
+    /// `/clear` rolls a new one (new rollout file).
     conversation_id: Arc<Mutex<String>>,
+    /// Bare UUID identifying the rollout file on disk (codex layout:
+    /// `rollout-<ts>-<uuid>.jsonl`). Stable per session so resume can find it.
+    session_uuid: Arc<Mutex<String>>,
 }
 
 impl AgentLoop {
@@ -92,9 +95,9 @@ impl AgentLoop {
         task_board: TaskBoard,
         defaults: AgentDefaults,
     ) -> Self {
-        let system_prompt = prompts.build_system_prompt(agent, &skills, &workspace);
         let (op_tx, op_rx) = mpsc::channel(64);
-        let conversation_id = format!("{}-{}", agent.as_str(), uuid::Uuid::new_v4());
+        let session_uuid = uuid::Uuid::new_v4().to_string();
+        let conversation_id = format!("{}-{}", agent.as_str(), session_uuid);
         Self {
             agent,
             workspace,
@@ -107,7 +110,6 @@ impl AgentLoop {
             task_board,
             defaults,
             history: Arc::new(Mutex::new(Vec::new())),
-            system_prompt: Arc::new(Mutex::new(system_prompt)),
             status: AgentStatusLock::new(AgentStatus::Idle),
             op_tx,
             op_rx: Arc::new(Mutex::new(op_rx)),
@@ -115,6 +117,7 @@ impl AgentLoop {
             turn_reported: Arc::new(AtomicBool::new(false)),
             recorder: Arc::new(Mutex::new(None)),
             conversation_id: Arc::new(Mutex::new(conversation_id)),
+            session_uuid: Arc::new(Mutex::new(session_uuid)),
         }
     }
 
@@ -126,8 +129,8 @@ impl AgentLoop {
     }
 
     async fn resume_from_rollout(&self) {
-        let cid = self.conversation_id.lock().await.clone();
-        let Some(path) = rollout::latest_for(&self.workspace, &cid) else {
+        let sid = self.session_uuid.lock().await.clone();
+        let Some(path) = rollout::latest_for(&self.workspace, &sid) else {
             return;
         };
         match rollout::read(&path) {
@@ -236,16 +239,14 @@ impl AgentLoop {
     pub async fn clear_context(&self) {
         self.history.lock().await.clear();
         *self.recorder.lock().await = None;
+        let new_uuid = uuid::Uuid::new_v4().to_string();
+        *self.session_uuid.lock().await = new_uuid.clone();
         *self.conversation_id.lock().await =
-            format!("{}-{}", self.agent.as_str(), uuid::Uuid::new_v4());
+            format!("{}-{}", self.agent.as_str(), new_uuid);
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: AgentStatus::Idle,
         });
-    }
-
-    pub async fn reset(&self) {
-        self.clear_context().await;
     }
 
     pub async fn status(&self) -> AgentStatus {
@@ -274,8 +275,9 @@ impl AgentLoop {
         let mut rec = self.recorder.lock().await;
         if rec.is_none() {
             let cid = self.conversation_id.lock().await.clone();
+            let sid = self.session_uuid.lock().await.clone();
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-            *rec = Some(RolloutRecorder::create(&self.workspace, &cid, &ts)?);
+            *rec = Some(RolloutRecorder::create(&self.workspace, &cid, &sid, &ts)?);
         }
         rec.as_ref().unwrap().append(item)?;
         Ok(())
@@ -301,7 +303,7 @@ impl AgentLoop {
                 self.record(ResponseItem::user_message(&prompt)).await;
             }
 
-            let interrupted = self.run_completion_cycle(&turn_token).await;
+            let interrupted = self.run_completion_cycle(&turn_token).await?;
             if interrupted {
                 self.record(ResponseItem::user_message(
                     "[interrupted by user — stop what you are doing and wait for the next instruction.]",
@@ -342,30 +344,37 @@ impl AgentLoop {
 
     /// One completion cycle: stream a response, run any tool calls, repeat
     /// until the model stops emitting tools or the turn is interrupted.
-    /// Returns `true` if interrupted by the cancellation token.
-    async fn run_completion_cycle(&self, turn_token: &tokio_util::sync::CancellationToken) -> bool {
+    /// Returns `Ok(true)` if interrupted by the cancellation token; `Err` if the
+    /// provider call failed (propagated so the user sees it via the bus).
+    async fn run_completion_cycle(
+        &self,
+        turn_token: &tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<bool> {
         let mut iterations: u32 = 0;
         loop {
             self.maybe_compact().await;
             if turn_token.is_cancelled() {
-                return true;
+                return Ok(true);
             }
 
             let messages = self.build_request().await;
             let defs = self.tools.definitions();
-            let (content, reasoning, tool_calls, _usage, intr) =
+            let (content, reasoning, reasoning_sig, tool_calls, _usage, intr) =
                 match self.stream_completion(&messages, &defs, turn_token).await {
                     Ok(v) => v,
                     Err(e) => {
+                        // Surface the failure instead of silently treating it
+                        // as an empty completed turn — the user must learn that
+                        // the model call failed (auth/rate-limit/network).
                         log::warn!("{} stream_completion: {e}", self.agent);
-                        return false;
+                        return Err(e);
                     }
                 };
 
             if intr {
                 if let Some(r) = reasoning {
                     if !r.is_empty() {
-                        self.record(ResponseItem::reasoning(r)).await;
+                        self.record(make_reasoning(r, reasoning_sig)).await;
                     }
                 }
                 if let Some(c) = content {
@@ -373,12 +382,12 @@ impl AgentLoop {
                         self.record(ResponseItem::assistant_message(c)).await;
                     }
                 }
-                return true;
+                return Ok(true);
             }
 
             if let Some(text) = reasoning {
                 if !text.is_empty() {
-                    self.record(ResponseItem::reasoning(text)).await;
+                    self.record(make_reasoning(text, reasoning_sig)).await;
                 }
             }
             if let Some(text) = content {
@@ -387,7 +396,7 @@ impl AgentLoop {
                 }
             }
             if tool_calls.is_empty() {
-                return false;
+                return Ok(false);
             }
             for call in &tool_calls {
                 let args_json = serde_json::to_string(&call.arguments).unwrap_or_default();
@@ -397,15 +406,28 @@ impl AgentLoop {
 
             self.set_status(AgentStatus::RunningTool);
             let mut interrupted = false;
-            for call in &tool_calls {
+            let mut executed = 0;
+            for (idx, call) in tool_calls.iter().enumerate() {
                 if turn_token.is_cancelled() {
                     interrupted = true;
                     break;
                 }
                 self.execute_tool_call(call).await;
+                executed = idx + 1;
             }
             if interrupted {
-                return true;
+                // Record synthetic outputs for calls that never ran, so the
+                // next request doesn't carry a FunctionCall without a matching
+                // FunctionCallOutput (both Anthropic and OpenAI reject that with
+                // a 400). Mirrors codex's `normalize::ensure_call_outputs_present`.
+                for call in tool_calls.iter().skip(executed) {
+                    self.record(ResponseItem::function_call_output(
+                        &call.id,
+                        "[aborted: turn interrupted before this tool ran]",
+                    ))
+                    .await;
+                }
+                return Ok(true);
             }
             self.set_status(AgentStatus::Thinking);
 
@@ -416,6 +438,13 @@ impl AgentLoop {
                      Stop calling tools and summarize what you have so far.",
                 ))
                 .await;
+                // HARD STOP: end the cycle so the turn terminates regardless of
+                // what the model emits next. Without this, a model that keeps
+                // emitting tool calls loops forever — re-appending this same
+                // warning each iteration, growing history/rollout/cost without
+                // bound (the compacter cannot keep up). The warning above is
+                // recorded so it is visible on resume and as an audit marker.
+                return Ok(false);
             }
         }
     }
@@ -528,7 +557,6 @@ impl AgentLoop {
         let instructions =
             self.prompts
                 .build_system_prompt(self.agent, &self.skills, &self.workspace);
-        *self.system_prompt.lock().await = instructions.clone();
         let items = self.history.lock().await.clone();
         let mut out = Vec::with_capacity(items.len() + 1);
         out.push(Message::system(instructions));
@@ -543,6 +571,7 @@ impl AgentLoop {
         defs: &[crate::provider::types::ToolDef],
         cancel: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<(
+        Option<String>,
         Option<String>,
         Option<String>,
         Vec<ProviderToolCall>,
@@ -561,6 +590,7 @@ impl AgentLoop {
 
         let mut content = String::new();
         let mut reasoning = String::new();
+        let mut reasoning_signature: Option<String> = None;
         let mut tool_calls = Vec::new();
         let mut usage = None;
         let mut interrupted = false;
@@ -589,6 +619,9 @@ impl AgentLoop {
                     }
                     if let Some(tc) = chunk.tool_calls { tool_calls = tc; }
                     if let Some(u) = chunk.usage { usage = Some(u); }
+                    if let Some(sig) = chunk.thinking_signature {
+                        reasoning_signature = Some(sig);
+                    }
                     if chunk.done { break; }
                 }
             }
@@ -614,6 +647,7 @@ impl AgentLoop {
             } else {
                 Some(reasoning)
             },
+            reasoning_signature,
             tool_calls,
             usage,
             interrupted,
@@ -631,7 +665,9 @@ impl AgentLoop {
             (_, Some(e)) => Value::String(e.clone()),
             (r, None) => r.clone(),
         };
-        let result_text = serde_json::to_string(&result_value).unwrap_or_else(|_| "{}".into());
+        let result_text = truncate_for_history(
+            serde_json::to_string(&result_value).unwrap_or_else(|_| "{}".into()),
+        );
         self.bus.publish(BusMessage::ToolResult {
             agent_type: self.agent,
             tool_name: call.name.clone(),
@@ -675,40 +711,38 @@ impl AgentLoop {
         if snapshot.len() < 4 {
             return;
         }
-        let transcript = transcript_text(&snapshot);
-        let keep = snapshot.len().saturating_sub(2);
-        let recent: Vec<ResponseItem> = snapshot[keep..].to_vec();
 
-        let summary_prompt = format!(
-            "You are summarizing the conversation so far to compact its context.\n\
-             Write a concise context note preserving: the user's goal/constraints, key decisions, \
-             file paths produced and their purpose, the current sub-task and what remains, and any \
-             blockers. Be terse and factual.\n\n---\n{transcript}"
-        );
-        let req = vec![
-            Message::system(
-                "You are a context-compaction assistant. Reply with only the compacted summary.",
-            ),
-            Message::user(summary_prompt),
-        ];
-        let summary = match self.provider.chat(&req, &[], 0.0, 1024).await {
-            Ok(r) => r.content.unwrap_or_else(|| "(no summary)".into()),
-            Err(e) => {
-                log::warn!("compact failed, trimming instead: {e}");
-                *self.history.lock().await = recent;
-                self.record(ResponseItem::Compaction {
-                    encrypted_content: "[context trimmed]".into(),
-                })
-                .await;
-                return;
-            }
-        };
+        // Preserve every prior user message across compaction so the task
+        // brief survives (codex `compact::collect_user_messages`). Keep the
+        // last couple of non-user items as the live working context; the L1
+        // `ensure_call_outputs_present` normalize pass covers any tool_call
+        // whose output landed outside this window.
+        let user_msgs: Vec<ResponseItem> = snapshot
+            .iter()
+            .filter(|i| matches!(i, ResponseItem::Message { role, .. } if role.as_str() == "user"))
+            .cloned()
+            .collect();
+        let recent: Vec<ResponseItem> = snapshot
+            .iter()
+            .rev()
+            .filter(|i| !matches!(i, ResponseItem::Message { role, .. } if role.as_str() == "user"))
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .cloned()
+            .collect();
+
+        let summary = self.compact_summary(&snapshot).await;
 
         *self.history.lock().await = Vec::new();
         self.record(ResponseItem::Compaction {
             encrypted_content: summary,
         })
         .await;
+        for item in user_msgs {
+            self.record(item).await;
+        }
         for item in recent {
             self.record(item).await;
         }
@@ -719,25 +753,64 @@ impl AgentLoop {
         });
     }
 
+    /// Summarize the conversation for compaction. On provider failure, drop the
+    /// oldest items and retry (codex `compact.rs:284-298`) instead of throwing
+    /// away the whole history; give up with a trimmed marker only when almost
+    /// nothing remains.
+    async fn compact_summary(&self, items: &[ResponseItem]) -> String {
+        const SYS: &str =
+            "You are a context-compaction assistant. Reply with only the compacted summary.";
+        const PREFIX: &str = "You are summarizing the conversation so far to compact its context.\n\
+             Write a concise context note preserving: the user's goal/constraints, key decisions, \
+             file paths produced and their purpose, the current sub-task and what remains, and any \
+             blockers. Be terse and factual.\n\n---\n";
+        let mut cur: Vec<ResponseItem> = items.to_vec();
+        loop {
+            let transcript = transcript_text(&cur);
+            match self
+                .provider
+                .chat(
+                    &[
+                        Message::system(SYS),
+                        Message::user(format!("{PREFIX}{transcript}")),
+                    ],
+                    &[],
+                    0.0,
+                    1024,
+                )
+                .await
+            {
+                Ok(r) => return r.content.unwrap_or_else(|| "(no summary)".into()),
+                Err(e) => {
+                    log::warn!("compact summarizer failed ({} items): {e}", cur.len());
+                    if cur.len() <= 4 {
+                        return "[context trimmed: summarizer unavailable]".into();
+                    }
+                    let drop_n = (cur.len() / 4).max(1);
+                    cur.drain(0..drop_n);
+                }
+            }
+        }
+    }
+
     pub async fn compact(&self) {
         self.compact_internal().await;
         self.set_status(AgentStatus::Idle);
-    }
-
-    pub async fn refresh_system_prompt(&self) {
-        let p = self
-            .prompts
-            .build_system_prompt(self.agent, &self.skills, &self.workspace);
-        *self.system_prompt.lock().await = p;
     }
 }
 
 /// codex `items → messages` conversion: turn `ResponseItem`s into the provider's
 /// chat-message wire format. Consecutive `FunctionCall`s fold into one
-/// assistant message's `tool_calls` (matching how the model emitted them).
+/// assistant message's `tool_calls` (matching how the model emitted them). A
+/// `Reasoning` item preceding an assistant message is attached to it as the
+/// `thinking` field (with its signature), so signed reasoning round-trips
+/// across turns (codex `reasoning.encrypted_content`).
 fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
     let mut pending: Vec<ProviderToolCall> = Vec::new();
+    // (thinking text, signature) carried from a preceding Reasoning item to
+    // the next assistant message.
+    let mut pending_thinking: Option<(String, Option<String>)> = None;
     let flush = |pending: &mut Vec<ProviderToolCall>, out: &mut Vec<Message>| {
         if !pending.is_empty() {
             let calls = std::mem::take(pending);
@@ -747,6 +820,7 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
                 tool_calls: Some(calls),
                 tool_call_id: None,
                 thinking: None,
+                thinking_signature: None,
             });
         }
     };
@@ -755,12 +829,22 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
             ResponseItem::Message { role, content, .. } => {
                 flush(&mut pending, &mut out);
                 let text: String = content.iter().map(|c| c.text().to_string()).collect();
+                let (thinking, signature) = if role == "assistant" {
+                    match pending_thinking.take() {
+                        Some((t, s)) => (Some(t), s),
+                        None => (None, None),
+                    }
+                } else {
+                    pending_thinking = None;
+                    (None, None)
+                };
                 out.push(Message {
                     role: role.clone(),
                     content: text,
                     tool_calls: None,
                     tool_call_id: None,
-                    thinking: None,
+                    thinking,
+                    thinking_signature: signature,
                 });
             }
             ResponseItem::FunctionCall {
@@ -782,16 +866,31 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
                 flush(&mut pending, &mut out);
                 out.push(Message::tool_result(call_id, output));
             }
-            ResponseItem::Reasoning { .. } => {
-                // codex round-trips thinking to the API; our providers don't
-                // accept a bare thinking block, so drop it from the wire view
-                // (it remains in history + rollout for display/resume).
+            ResponseItem::Reasoning {
+                content,
+                encrypted_content,
+                ..
+            } => {
+                // Stash for the next assistant message. Only carry the
+                // signature when present — providers reject unsigned thinking.
+                let text = content
+                    .clone()
+                    .unwrap_or_default()
+                    .join("\n");
+                let sig = encrypted_content.clone();
                 flush(&mut pending, &mut out);
+                if !text.is_empty() {
+                    pending_thinking = Some((
+                        text,
+                        sig.filter(|s| !s.is_empty()),
+                    ));
+                }
             }
             ResponseItem::Compaction { encrypted_content } => {
                 // Re-feed the compaction summary to the model as a context note
                 // (otherwise compact() would trim history and tell nobody).
                 flush(&mut pending, &mut out);
+                pending_thinking = None;
                 let text = format!(
                     "[This conversation was compacted. Summary of prior context:]\n\n{}",
                     encrypted_content
@@ -802,11 +901,34 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
                     tool_calls: None,
                     tool_call_id: None,
                     thinking: None,
+                    thinking_signature: None,
                 });
             }
         }
     }
     flush(&mut pending, &mut out);
+    // Normalize: every assistant tool_call must have a matching tool result,
+    // else providers reject the request with a 400. Inject a synthetic
+    // "[aborted]" result for any orphaned call id. (codex:
+    // `context_manager::normalize::ensure_call_outputs_present`.)
+    let answered: std::collections::HashSet<String> = out
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| m.tool_call_id.clone())
+        .collect();
+    let orphan_ids: Vec<String> = out
+        .iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .flatten()
+        .map(|c| c.id.clone())
+        .filter(|id| !answered.contains(id))
+        .collect();
+    for id in orphan_ids {
+        out.push(Message::tool_result(
+            id,
+            "[aborted: turn interrupted, no tool output]",
+        ));
+    }
     out
 }
 
@@ -865,26 +987,55 @@ fn transcript_text(items: &[ResponseItem]) -> String {
     s
 }
 
-/// Best-effort extraction of the written file path from a tool call, for
+/// Build a Reasoning item, attaching the signed blob when the provider
+/// returned one so it can be echoed back on the next turn.
+fn make_reasoning(text: String, signature: Option<String>) -> ResponseItem {
+    match signature {
+        Some(sig) if !sig.is_empty() => ResponseItem::reasoning_signed(text, sig),
+        _ => ResponseItem::reasoning(text),
+    }
+}
+
+/// Bound the size of a tool result before it enters history/rollout. A chatty
+/// `exec` or a `cat` of a large file can otherwise inject megabytes that flow
+/// straight into the next completion request (and, under a runaway tool loop,
+/// starve the compacter). Truncates at a UTF-8 char boundary so it cannot panic
+/// on multi-byte content.
+fn truncate_for_history(mut s: String) -> String {
+    const MAX_TOOL_OUTPUT_BYTES: usize = 32_000;
+    if s.len() <= MAX_TOOL_OUTPUT_BYTES {
+        return s;
+    }
+    let mut end = MAX_TOOL_OUTPUT_BYTES;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("\n…(truncated)");
+    s
+}
+
+/// Best-effort extraction of the written file paths from a tool call, for
 /// manifest tracking.
-fn extract_paths(tool_name: &str, args: &Value, result: &Value) -> Vec<String> {
+fn extract_paths(tool_name: &str, _args: &Value, result: &Value) -> Vec<String> {
     match tool_name {
-        "write_file" | "edit_file" | "delete_file" => args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|path| vec![path.to_string()])
-            .unwrap_or_default(),
+        // apply_patch's result is `{"applied": [ {"add": p}, {"delete": p},
+        // {"update": p}, {"move": from, "to": to}, ... ]}` — extract every
+        // path value the hunk touched.
         "apply_patch" => {
             let mut out = Vec::new();
             if let Some(applied) = result.get("applied").and_then(|v| v.as_array()) {
                 for item in applied {
-                    if let Some(path) = item.get("path").and_then(|v| v.as_str()) {
-                        out.push(path.to_string());
+                    for key in ["add", "delete", "update", "move", "to"] {
+                        if let Some(path) = item.get(key).and_then(|v| v.as_str()) {
+                            out.push(path.to_string());
+                        }
                     }
                 }
             }
             out
         }
+        // exec reports the workspace paths it observed being written.
         "exec" => result
             .get("written_paths")
             .and_then(|v| v.as_array())
@@ -922,10 +1073,10 @@ mod internal {
             }
         }
         pub fn get(&self) -> AgentStatus {
-            *self.inner.lock().unwrap()
+            *self.inner.lock().unwrap_or_else(|e| e.into_inner())
         }
         pub fn set(&self, s: AgentStatus) {
-            *self.inner.lock().unwrap() = s;
+            *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = s;
         }
     }
 }
@@ -954,6 +1105,48 @@ mod tests {
         assert_eq!(msgs[1].tool_calls.as_ref().unwrap().len(), 2);
         assert_eq!(msgs[2].role, "tool");
         assert_eq!(msgs[3].role, "assistant");
+    }
+
+    #[test]
+    fn items_to_messages_injects_output_for_orphan_tool_call() {
+        // Regression: an interrupted turn can leave a FunctionCall with no
+        // matching output. The wire view must synthesize an "[aborted]" tool
+        // result so the next request isn't rejected with a 400.
+        let items = vec![
+            ResponseItem::user_message("do a thing"),
+            ResponseItem::function_call("c1", "exec", "{\"command\":\"sleep 99\"}".into()),
+            // c1 has NO FunctionCallOutput — simulates a mid-loop interrupt.
+        ];
+        let msgs = items_to_messages(&items);
+        let assistant = msgs
+            .iter()
+            .find(|m| m.role == "assistant" && m.tool_calls.is_some())
+            .expect("assistant tool_call message present");
+        let call_id = assistant.tool_calls.as_ref().unwrap()[0].id.clone();
+        let answered = msgs
+            .iter()
+            .filter(|m| m.role == "tool")
+            .any(|m| m.tool_call_id.as_deref() == Some(call_id.as_str()));
+        assert!(answered, "orphan tool_call must get a synthetic tool result");
+    }
+
+    #[test]
+    fn items_to_messages_pairs_reasoning_with_assistant_message() {
+        // Regression: a signed Reasoning item preceding an assistant message
+        // must round-trip as the assistant message's thinking + signature, so
+        // Anthropic extended thinking continues across turns.
+        let items = vec![
+            ResponseItem::user_message("think then answer"),
+            ResponseItem::reasoning_signed("pondering", "SIG-1234"),
+            ResponseItem::assistant_message("the answer is 42"),
+        ];
+        let msgs = items_to_messages(&items);
+        let assistant = msgs
+            .iter()
+            .find(|m| m.role == "assistant" && m.thinking.is_some())
+            .expect("assistant message should carry the paired thinking");
+        assert_eq!(assistant.thinking.as_deref(), Some("pondering"));
+        assert_eq!(assistant.thinking_signature.as_deref(), Some("SIG-1234"));
     }
 
     #[test]
