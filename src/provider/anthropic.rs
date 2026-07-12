@@ -57,6 +57,18 @@ fn convert_messages(messages: &[Message]) -> (String, Vec<Value>) {
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
                 let mut blocks = Vec::new();
+                // Echo back a signed thinking block BEFORE the text/tool_use so
+                // extended thinking continues across turns. Only emit when we
+                // have a signature — Anthropic rejects unsigned thinking.
+                if let Some(text) = &msg.thinking {
+                    if let Some(sig) = &msg.thinking_signature {
+                        blocks.push(json!({
+                            "type": "thinking",
+                            "thinking": text,
+                            "signature": sig,
+                        }));
+                    }
+                }
                 if !msg.content.is_empty() {
                     blocks.push(json!({"type": "text", "text": msg.content}));
                 }
@@ -276,9 +288,15 @@ fn parse_final(v: &Value) -> LLMResponse {
 }
 
 /// Track per-block state while consuming the SSE stream.
+struct ThinkingAcc {
+    text: String,
+    signature: String,
+}
+
 struct BlockState {
     text: Option<String>,
     tool: Option<(String, String, String)>, // (id, name, accumulated input json)
+    thinking: Option<ThinkingAcc>,
 }
 
 async fn run_stream(
@@ -317,6 +335,7 @@ async fn run_stream(
                                 current = Some(BlockState {
                                     text: Some(String::new()),
                                     tool: None,
+                                    thinking: None,
                                 })
                             }
                             Some("tool_use") => {
@@ -333,6 +352,20 @@ async fn run_stream(
                                 current = Some(BlockState {
                                     text: None,
                                     tool: Some((id, name, String::new())),
+                                    thinking: None,
+                                });
+                            }
+                            Some("thinking") => {
+                                // Extended-thinking block: text streams via
+                                // `thinking_delta`, signature via `signature_delta`.
+                                // Both must be echoed back to continue the turn.
+                                current = Some(BlockState {
+                                    text: None,
+                                    tool: None,
+                                    thinking: Some(ThinkingAcc {
+                                        text: String::new(),
+                                        signature: String::new(),
+                                    }),
                                 });
                             }
                             _ => {}
@@ -347,6 +380,7 @@ async fn run_stream(
                                         .send(Ok(LLMStreamChunk {
                                             delta: Some(t.to_string()),
                                             thinking_delta: None,
+                                            thinking_signature: None,
                                             tool_calls: None,
                                             done: false,
                                             usage: None,
@@ -364,15 +398,35 @@ async fn run_stream(
                             }
                             Some("thinking_delta") => {
                                 if let Some(t) = delta.get("thinking").and_then(|x| x.as_str()) {
+                                    if let Some(acc) =
+                                        current.as_mut().and_then(|c| c.thinking.as_mut())
+                                    {
+                                        acc.text.push_str(t);
+                                    }
                                     let _ = tx
                                         .send(Ok(LLMStreamChunk {
                                             delta: None,
                                             thinking_delta: Some(t.to_string()),
+                                            thinking_signature: None,
                                             tool_calls: None,
                                             done: false,
                                             usage: None,
                                         }))
                                         .await;
+                                }
+                            }
+                            Some("signature_delta") => {
+                                // Anthropic delivers the thinking block's
+                                // signature as a separate delta; accumulate it
+                                // and emit once at content_block_stop.
+                                if let Some(sig) =
+                                    delta.get("signature").and_then(|x| x.as_str())
+                                {
+                                    if let Some(acc) =
+                                        current.as_mut().and_then(|c| c.thinking.as_mut())
+                                    {
+                                        acc.signature.push_str(sig);
+                                    }
                                 }
                             }
                             _ => {}
@@ -384,7 +438,19 @@ async fn run_stream(
                                 let args = if json_str.trim().is_empty() {
                                     Value::Object(Default::default())
                                 } else {
-                                    serde_json::from_str(&json_str).unwrap_or(Value::Null)
+                                    // A parse failure usually means the tool
+                                    // arguments were truncated mid-stream
+                                    // (max_tokens). Fall back to an empty object
+                                    // so the tool surfaces a clean "missing
+                                    // argument" error instead of executing with
+                                    // null arguments.
+                                    serde_json::from_str(&json_str).unwrap_or_else(|e| {
+                                        log::warn!(
+                                            "anthropic tool `{name}` args parse failed ({e}); \
+                                             likely truncated"
+                                        );
+                                        Value::Object(Default::default())
+                                    })
                                 };
                                 tool_calls.push(ToolCall {
                                     id,
@@ -392,15 +458,49 @@ async fn run_stream(
                                     arguments: args,
                                 });
                             }
+                            // Emit the accumulated thinking signature once
+                            // the thinking block closes, so the agent loop can
+                            // store it and echo it back on the next turn.
+                            if let Some(acc) = state.thinking {
+                                if !acc.signature.is_empty() {
+                                    let _ = tx
+                                        .send(Ok(LLMStreamChunk {
+                                            delta: None,
+                                            thinking_delta: None,
+                                            thinking_signature: Some(acc.signature),
+                                            tool_calls: None,
+                                            done: false,
+                                            usage: None,
+                                        }))
+                                        .await;
+                                }
+                            }
                         }
                     }
-                    "message_delta" => {
-                        if let Some(u) = ev.pointer("/usage") {
+                    "message_start" => {
+                        // Anthropic streams input_tokens here (on /message/usage);
+                        // message_delta only carries output_tokens. Without this,
+                        // every streamed turn reports input_tokens = 0.
+                        if let Some(u) = ev.pointer("/message/usage") {
                             usage = Some(Usage {
                                 input_tokens: u
                                     .get("input_tokens")
                                     .and_then(|x| x.as_u64())
                                     .unwrap_or(0),
+                                output_tokens: u
+                                    .get("output_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0),
+                            });
+                        }
+                    }
+                    "message_delta" => {
+                        // message_delta carries the final output_tokens (and
+                        // stop_reason). Preserve input_tokens from message_start.
+                        let in_tok = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0);
+                        if let Some(u) = ev.pointer("/usage") {
+                            usage = Some(Usage {
+                                input_tokens: in_tok,
                                 output_tokens: u
                                     .get("output_tokens")
                                     .and_then(|x| x.as_u64())
@@ -427,6 +527,7 @@ async fn run_stream(
         .send(Ok(LLMStreamChunk {
             delta: None,
             thinking_delta: None,
+            thinking_signature: None,
             tool_calls: if tool_calls.is_empty() {
                 None
             } else {

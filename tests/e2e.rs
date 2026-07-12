@@ -103,6 +103,7 @@ impl LLMProvider for SlowMock {
                 .send(Ok(LLMStreamChunk {
                     delta: Some("thinking".into()),
                     thinking_delta: None,
+                    thinking_signature: None,
                     tool_calls: None,
                     done: false,
                     usage: None,
@@ -114,6 +115,7 @@ impl LLMProvider for SlowMock {
                 .send(Ok(LLMStreamChunk {
                     delta: None,
                     thinking_delta: None,
+                    thinking_signature: None,
                     tool_calls: None,
                     done: true,
                     usage: None,
