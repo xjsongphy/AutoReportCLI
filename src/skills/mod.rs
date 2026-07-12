@@ -1,7 +1,7 @@
 //! Skill loader.
 //!
 //! Codex loads local skills from per-skill directories containing `SKILL.md`.
-//! We follow that layout for `references/skills/*/SKILL.md` and
+//! We follow that layout for `References/skills/*/SKILL.md` and
 //! `.autoreport/skills/*/SKILL.md`, while keeping compatibility with the older
 //! flat-cache layout `.autoreport/skills/<name>.md`.
 
@@ -40,7 +40,7 @@ pub struct SkillLoader {
 impl SkillLoader {
     pub fn new(workspace: &Path) -> Self {
         let roots = vec![
-            workspace.join("references").join("skills"),
+            workspace.join("References").join("skills"),
             workspace.join(".autoreport").join("skills"),
         ];
         for root in &roots {
@@ -55,11 +55,25 @@ impl SkillLoader {
     pub fn list(&self) -> Vec<Skill> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        for root in &self.roots {
+        // Iterate roots in reverse so a user override in `.autoreport/skills`
+        // wins over a same-named built-in under `References/skills` (codex
+        // keeps both via path-dedupe; we keep one, user-precedence).
+        for root in self.roots.iter().rev() {
             for path in discover_skill_files(root) {
-                if let Ok(skill) = parse_skill(&path)
-                    && seen.insert(skill.name.clone())
-                {
+                let Ok(skill) = parse_skill(&path) else {
+                    continue;
+                };
+                // codex requires a description (MissingField); a blank one
+                // would pollute the catalog, so skip rather than inject
+                // "no description".
+                if skill.description.is_empty() {
+                    log::warn!(
+                        "skill {}: missing description, not injecting",
+                        skill.source.display()
+                    );
+                    continue;
+                }
+                if seen.insert(skill.name.clone()) {
                     out.push(skill);
                 }
             }
@@ -91,7 +105,7 @@ impl SkillLoader {
         out.push_str("A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.\n");
         out.push_str("### Skill roots\n");
         for (idx, root) in self.roots.iter().enumerate() {
-            let _ = writeln!(&mut out, "- `r{idx}` => `{}`", root.display());
+            let _ = writeln!(&mut out, "- `r{idx}` = `{}`", root.display());
         }
         out.push_str("### Available skills\n");
         for skill in &skills {
@@ -99,11 +113,7 @@ impl SkillLoader {
                 &mut out,
                 "- {}: {} (file: {})",
                 skill.name,
-                if skill.description.is_empty() {
-                    "no description"
-                } else {
-                    &skill.description
-                },
+                skill.description,
                 self.short_skill_path(&skill.source)
             );
         }
@@ -113,7 +123,7 @@ impl SkillLoader {
         out.push_str("- Missing/blocked: If a named skill is not in the list or the path cannot be read, say so briefly and continue with the best fallback.\n");
         out.push_str("- How to use a skill:\n");
         out.push_str("  1. After deciding to use a skill, expand the listed short path with the matching alias from `### Skill roots`, then read its `SKILL.md` completely with `exec` using commands like `cat`, `sed -n`, or `rg`. If a read is partial, continue until EOF.\n");
-        out.push_str("  2. When `SKILL.md` references relative paths such as `scripts/foo.py` or `references/bar.md`, resolve them relative to the directory containing that `SKILL.md` first.\n");
+        out.push_str("  2. When `SKILL.md` references relative paths such as `scripts/foo.py` or `References/bar.md`, resolve them relative to the directory containing that `SKILL.md` first.\n");
         out.push_str("  3. If `scripts/`, templates, or assets exist, prefer reusing or patching them instead of retyping large blocks from scratch.\n");
         out.push_str("- Coordination and sequencing:\n");
         out.push_str("  - If multiple skills apply, choose the minimal set that covers the request and state the order you will use them.\n");

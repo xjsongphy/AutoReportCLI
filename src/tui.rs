@@ -26,7 +26,7 @@ use ratatui::{Frame, Terminal};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -131,6 +131,10 @@ const SLASH_COMMANDS: &[SlashCommandItem] = &[
         description: "rebuild @ file index",
     },
     SlashCommandItem {
+        name: "ide",
+        description: "toggle IDE context injection",
+    },
+    SlashCommandItem {
         name: "quit",
         description: "exit",
     },
@@ -154,6 +158,11 @@ pub struct Tui {
     overlay: Option<ConfigScreen>,
     want_config: bool,
     tick: usize,
+    // `/ide` toggle state — mirrors codex's IdeContextState. When enabled, each
+    // outgoing user turn is prefixed with IDE context fetched over the codex
+    // IPC socket (`\\.\pipe\codex-ipc` / `$TMPDIR/codex-ipc/ipc-<uid>.sock`).
+    ide_enabled: bool,
+    ide_warned: bool,
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -186,6 +195,8 @@ impl Tui {
             overlay: None,
             want_config: false,
             tick: 0,
+            ide_enabled: false,
+            ide_warned: false,
         }
     }
 
@@ -704,15 +715,92 @@ impl Tui {
             agent: self.focused,
             text: text.clone(),
         });
-        let expanded = self.expand_mentions(&text);
+        let mut expanded = self.expand_mentions(&text);
+        // When `/ide` is on, fetch fresh IDE context for this turn and prefix it
+        // into the outgoing message — same shape codex uses (see ide_context.rs).
+        if self.ide_enabled {
+            match crate::ide_context::fetch_ide_context(&self.workspace) {
+                Ok(context) => {
+                    self.ide_warned = false;
+                    if let Some(prefixed) =
+                        crate::ide_context::apply_ide_context_to_text(&context, &expanded)
+                    {
+                        expanded = prefixed;
+                    }
+                }
+                Err(err) => {
+                    if !self.ide_warned {
+                        self.ide_warned = true;
+                        self.system(
+                            &format!("IDE context skipped: {}", err.prompt_skip_hint()),
+                            SysKind::Info,
+                        );
+                    }
+                }
+            }
+        }
         self.manager
             .submit(self.focused, expanded, crate::types::MessageSource::User);
+    }
+
+    /// `/ide [on|off|status]` — mirrors codex's IdeContextState toggle. Toggling
+    /// on probes the IPC socket once so the user gets immediate feedback.
+    fn handle_ide_command(&mut self, args: &str) {
+        let on = match args.trim().to_ascii_lowercase().as_str() {
+            "" => !self.ide_enabled,
+            "on" => true,
+            "off" => false,
+            "status" => {
+                if self.ide_enabled {
+                    self.system("IDE context is on.", SysKind::Info);
+                } else {
+                    self.system("IDE context is off.", SysKind::Info);
+                }
+                return;
+            }
+            _ => {
+                self.system("usage: /ide [on|off|status]", SysKind::Error);
+                return;
+            }
+        };
+        self.ide_enabled = on;
+        self.ide_warned = false;
+        if on {
+            match crate::ide_context::fetch_ide_context(&self.workspace) {
+                Ok(context) => {
+                    if crate::ide_context::has_prompt_context(&context) {
+                        self.system(
+                            "IDE context is on. Future messages will include your current IDE selection and open tabs.",
+                            SysKind::Info,
+                        );
+                    } else {
+                        self.system(
+                            "IDE context is on. Connected to your IDE.",
+                            SysKind::Info,
+                        );
+                    }
+                }
+                Err(err) => {
+                    self.ide_enabled = false;
+                    self.system(
+                        &format!(
+                            "IDE context could not be enabled: {}",
+                            err.user_facing_hint()
+                        ),
+                        SysKind::Error,
+                    );
+                }
+            }
+        } else {
+            self.system("IDE context is off.", SysKind::Info);
+        }
     }
 
     /// Expand `@rel/path` references: the visible text is unchanged, but the
     /// message handed to the agent has each referenced file's contents appended
     /// so the model can see them (codex expands mentions into context).
     fn expand_mentions(&self, text: &str) -> String {
+        const MENTION_CAP: usize = 16_000;
         let refs = extract_mentions(text);
         if refs.is_empty() {
             return text.to_string();
@@ -721,16 +809,11 @@ impl Tui {
         out.push_str("\n\n# Referenced files");
         for rel in refs {
             let path = self.workspace.join(&rel);
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    let truncated = if content.len() > 16_000 {
-                        format!("{}\n…(truncated)", &content[..16_000])
-                    } else {
-                        content
-                    };
-                    out.push_str(&format!("\n\n## @{rel}\n```\n{truncated}\n```"));
+            match read_capped(&path, MENTION_CAP) {
+                Some(content) => {
+                    out.push_str(&format!("\n\n## @{rel}\n```\n{content}\n```"));
                 }
-                Err(_) => {
+                None => {
                     out.push_str(&format!("\n\n## @{rel}\n(not found)"));
                 }
             }
@@ -744,7 +827,7 @@ impl Tui {
         let rest: String = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit provider settings\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /quit             exit",
+                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit provider settings\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
                 SysKind::Info,
             ),
             "config" => {
@@ -786,6 +869,7 @@ impl Tui {
                 self.index.refresh();
                 self.system("@ file index rebuilt", SysKind::Info);
             }
+            "ide" => self.handle_ide_command(&rest),
             "manifest" => {
                 let snap = self.manager.manifest_snapshot(None);
                 self.system(&format!("manifests:\n{}", pretty(&snap)), SysKind::Info);
@@ -852,6 +936,13 @@ impl Tui {
                     .fg(Color::Green),
             ),
         ];
+        if self.ide_enabled {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                "IDE●",
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         for a in AgentType::ALL {
             let st = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
             spans.push(Span::raw("  "));
@@ -871,7 +962,7 @@ impl Tui {
         let total = lines.len();
         let visible = area.height as usize;
         let start = if total > visible {
-            total.saturating_sub(visible + self.scroll)
+            total.saturating_sub(visible.saturating_add(self.scroll))
         } else {
             0
         };
@@ -1184,6 +1275,27 @@ fn is_mention_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')
 }
 
+/// Read up to `cap` bytes from `path` as a string. Bounded so a `@mention` of
+/// a huge file never loads it whole (and never blocks the TUI event loop on a
+/// multi-megabyte read). Uses `from_utf8_lossy` so a truncation that splits a
+/// multi-byte char cannot panic (the previous `&content[..cap]` sliced at an
+/// arbitrary byte offset and panicked on CJK/emoji straddling the boundary).
+fn read_capped(path: &Path, cap: usize) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    // Read at most cap+1 bytes: the +1 lets us detect truncation without a
+    // second stat/read call.
+    let mut buf = vec![0u8; cap + 1];
+    let n = file.read(&mut buf).ok()?;
+    let truncated = n > cap;
+    buf.truncate(n.min(cap));
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        s.push_str("\n…(truncated)");
+    }
+    Some(s)
+}
+
 /// Pull `@rel/path` tokens out of arbitrary text (for expansion).
 fn extract_mentions(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -1439,19 +1551,19 @@ mod tests {
 
     #[test]
     fn extracts_mentions_skipping_emails() {
-        let m = extract_mentions("see @data/raw.csv and contact me@example.com and @tex/main.tex");
+        let m = extract_mentions("see @Data/Raw.csv and contact me@example.com and @Tex/main.tex");
         assert_eq!(
             m,
-            vec!["data/raw.csv".to_string(), "tex/main.tex".to_string()]
+            vec!["Data/Raw.csv".to_string(), "Tex/main.tex".to_string()]
         );
     }
 
     #[test]
     fn apply_patch_tool_result_renders_patch_not_json() {
         let args = serde_json::json!({
-            "patch": "*** Begin Patch\n*** Update File: code/main.py\n@@\n-old\n+new\n*** End Patch\n"
+            "patch": "*** Begin Patch\n*** Update File: Plots/Scripts/main.py\n@@\n-old\n+new\n*** End Patch\n"
         });
-        let result = serde_json::json!({"applied": [{"update": "/tmp/code/main.py"}]});
+        let result = serde_json::json!({"applied": [{"update": "/tmp/Plots/Scripts/main.py"}]});
 
         let lines = render_tool_result_lines("apply_patch", &args, Some(&result), None);
 
