@@ -15,20 +15,53 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Signed reasoning blob to echo back (Anthropic thinking `signature`).
+    /// Sent as the `signature` of a thinking content block; absent on providers
+    /// that don't sign reasoning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_signature: Option<String>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into(), tool_calls: None, tool_call_id: None, thinking: None }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking: None,
+            thinking_signature: None,
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into(), tool_calls: None, tool_call_id: None, thinking: None }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking: None,
+            thinking_signature: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: content.into(), tool_calls: None, tool_call_id: None, thinking: None }
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking: None,
+            thinking_signature: None,
+        }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: "tool".into(), content: content.into(), tool_calls: None, tool_call_id: Some(tool_call_id.into()), thinking: None }
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            thinking: None,
+            thinking_signature: None,
+        }
     }
 }
 
@@ -70,6 +103,10 @@ pub struct LLMStreamChunk {
     pub delta: Option<String>,
     /// Incremental reasoning text, if the provider exposes it.
     pub thinking_delta: Option<String>,
+    /// Signed reasoning blob, when the provider returns one (Anthropic
+    /// `signature_delta`). Must be echoed back on the next turn to continue
+    /// an extended-thinking session; sending unsigned thinking is rejected.
+    pub thinking_signature: Option<String>,
     /// Final tool calls, present once on the terminating chunk.
     pub tool_calls: Option<Vec<ToolCall>>,
     pub done: bool,

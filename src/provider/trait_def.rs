@@ -34,6 +34,7 @@ pub trait LLMProvider: Send + Sync {
                         let _ = tx.try_send(Ok(LLMStreamChunk {
                             delta: Some(content),
                             thinking_delta: None,
+                            thinking_signature: None,
                             tool_calls: None,
                             done: false,
                             usage: None,
@@ -42,6 +43,7 @@ pub trait LLMProvider: Send + Sync {
                     let _ = tx.try_send(Ok(LLMStreamChunk {
                         delta: None,
                         thinking_delta: None,
+                        thinking_signature: None,
                         tool_calls: if r.tool_calls.is_empty() {
                             None
                         } else {

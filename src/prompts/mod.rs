@@ -1,6 +1,6 @@
 //! Prompt loading. Each agent's identity + full instructions live in
 //! `templates/agents/*.md` (compiled into the binary). Users may override any
-//! of them by placing a file of the same name in `references/agents/`.
+//! of them by placing a file of the same name in `References/agents/`.
 
 use crate::skills::SkillLoader;
 use crate::types::AgentType;
@@ -28,12 +28,8 @@ impl PromptLoader {
 
     /// User override path for an agent file, if present.
     fn override_path(&self, file: &str) -> Option<PathBuf> {
-        let p = self.workspace.join("references").join("agents").join(file);
-        if p.exists() {
-            Some(p)
-        } else {
-            None
-        }
+        let p = self.workspace.join("References").join("agents").join(file);
+        if p.exists() { Some(p) } else { None }
     }
 
     fn read(&self, file: &str, default: &str) -> String {
@@ -58,7 +54,7 @@ impl PromptLoader {
     }
 
     /// Assemble the full system prompt: shared context + agent instructions +
-    /// skills summary + workspace layout.
+    /// Codex-style skills context + workspace layout.
     pub fn build_system_prompt(
         &self,
         agent: AgentType,
@@ -68,18 +64,62 @@ impl PromptLoader {
         let mut parts = Vec::new();
         parts.push(self.common());
         parts.push(self.agent_prompt(agent));
+        let write_scope = match agent.write_dir() {
+            Some(dir) => format!("You may write only under `{dir}/`."),
+            None => "You may write only under `Outline/`.".to_string(),
+        };
         parts.push(format!(
             "\n\n## Workspace\nYou are operating in: `{}`. The project has fixed directories: \
-             `data/` (raw + `data/processed/` analysis output), `references/` (reference PDFs, \
-             images, custom templates/skills), `theory/`, `code/` (plots + scripts), `tex/` \
-             (LaTeX sources + compiled PDF), `outline/` (Main's report outline). You may only \
-             write to your assigned directory.",
-            workspace.display()
+             `Data/` (raw + `Data/Processed/` analysis output), `References/` (reference PDFs, \
+             images, custom templates/skills), `Theory/`, `Plots/` (`Plots/Fig/` figures + \
+             `Plots/Scripts/` code), `Tex/` (LaTeX sources + compiled PDF), `Outline/` (Main's \
+             report outline). {} \
+             Read files with `exec` (`cat`, `sed -n`, `rg`) and directory trees with `list_dir`. \
+             Edit files with `apply_patch`. Use `exec` for running programs, but any writes inside \
+             the workspace must stay within your write directory.",
+            workspace.display(),
+            write_scope
         ));
-        let summary = skills.summary();
-        if !summary.is_empty() {
-            parts.push(format!("\n\n## Skills\n{summary}"));
+        let skills_context = skills.render_context();
+        if !skills_context.is_empty() {
+            parts.push(skills_context);
         }
         parts.join("\n\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_system_prompt_reads_agent_override_each_time() {
+        let workspace = std::env::temp_dir().join(format!("prompts-{}", stamp()));
+        let agents = workspace.join("References").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let prompt_path = agents.join("main_agent.md");
+        std::fs::write(&prompt_path, "first prompt").unwrap();
+
+        let loader = PromptLoader::new(&workspace);
+        let skills = SkillLoader::new(&workspace);
+
+        let first = loader.build_system_prompt(AgentType::Main, &skills, &workspace);
+        std::fs::write(&prompt_path, "second prompt").unwrap();
+        let second = loader.build_system_prompt(AgentType::Main, &skills, &workspace);
+
+        assert!(first.contains("first prompt"));
+        assert!(second.contains("second prompt"));
+        assert!(!second.contains("first prompt"));
+
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    fn stamp() -> String {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
     }
 }

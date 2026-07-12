@@ -12,9 +12,9 @@
 //! under the same per-agent write-directory isolation as the other file tools.
 
 use crate::tools::file_tools::FsCtx;
-use crate::tools::registry::{arg_str, Tool, ToolOutput};
+use crate::tools::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct ApplyPatchTool {
@@ -78,8 +78,13 @@ pub mod engine {
 
     #[derive(Debug, Clone)]
     pub enum Hunk {
-        AddFile { path: PathBuf, contents: String },
-        DeleteFile { path: PathBuf },
+        AddFile {
+            path: PathBuf,
+            contents: String,
+        },
+        DeleteFile {
+            path: PathBuf,
+        },
         UpdateFile {
             path: PathBuf,
             move_path: Option<PathBuf>,
@@ -130,28 +135,37 @@ pub mod engine {
             }
             // allow leading `apply_patch <<'EOF'` lines
             if lines.len() <= 1 {
-                return Err("patch must contain `*** Begin Patch`".into());
+                return Err("The first line of the patch must be '*** Begin Patch'".into());
             }
             lines.remove(0);
         }
         let Some(first) = lines.first() else {
-            return Err("patch must contain `*** Begin Patch`".into());
+            return Err("The first line of the patch must be '*** Begin Patch'".into());
         };
         if first.trim_start() != BEGIN_PATCH_MARKER {
-            return Err("first patch line must be `*** Begin Patch`".into());
+            return Err("The first line of the patch must be '*** Begin Patch'".into());
         }
         lines.remove(0);
 
+        let invalid_header = |trimmed: &str| {
+            format!(
+                "'{trimmed}' is not a valid hunk header. Valid hunk headers: \
+                 '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}'"
+            )
+        };
+
         let mut hunks = Vec::new();
         let mut i = 0;
+        let mut saw_end = false;
         while i < lines.len() {
             let line = lines[i];
             if line == END_PATCH_MARKER {
+                saw_end = true;
                 break;
             }
             if let Some(path) = line.strip_prefix(ADD_FILE_MARKER) {
                 i += 1;
-                let (contents, consumed) = parse_add_body(&lines[i..]);
+                let (contents, consumed) = parse_add_body(&lines[i..])?;
                 i += consumed;
                 hunks.push(Hunk::AddFile {
                     path: PathBuf::from(path.trim()),
@@ -171,11 +185,11 @@ pub mod engine {
                         i += 1;
                     }
                 }
-                let (chunks, consumed) = parse_update_chunks(&lines[i..]);
+                let (chunks, consumed) = parse_update_chunks(&lines[i..])?;
                 i += consumed;
                 if chunks.is_empty() {
                     return Err(format!(
-                        "Update File hunk for `{}` has no change chunks",
+                        "Update file hunk for path '{}' is empty",
                         path.trim()
                     ));
                 }
@@ -185,103 +199,174 @@ pub mod engine {
                     chunks,
                 });
             } else {
-                // Unknown line at hunk-header position.
-                i += 1;
+                // Unknown line at a hunk-header position is an error, not
+                // silently skipped (codex `streaming_parser`: invalid hunk
+                // header). Lets the model self-correct on the next try.
+                return Err(invalid_header(line.trim()));
             }
+        }
+        if !saw_end {
+            return Err("The last line of the patch must be '*** End Patch'".into());
         }
         Ok(hunks)
     }
 
     /// Collect `+`-prefixed add lines (codex: each line's first `+` stripped,
-    /// joined by `\n` with a trailing newline).
-    fn parse_add_body(lines: &[&str]) -> (String, usize) {
+    /// joined by `\n` with a trailing newline). Any non-`+` line that is not a
+    /// hunk header / End Patch is an error — previously it was silently turned
+    /// into a blank line, corrupting the created file.
+    fn parse_add_body(lines: &[&str]) -> Result<(String, usize), String> {
         let mut out = String::new();
         let mut consumed = 0;
         for line in lines {
             if line.starts_with("***") {
                 break;
             }
-            // Only `+` lines belong to an add body.
             if let Some(rest) = line.strip_prefix('+') {
                 out.push_str(rest);
+                out.push('\n');
+                consumed += 1;
+            } else {
+                return Err(format!(
+                    "'{}' is not a valid hunk header. Valid hunk headers: \
+                     '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}'",
+                    line.trim()
+                ));
             }
-            out.push('\n');
-            consumed += 1;
         }
-        (out, consumed)
+        Ok((out, consumed))
     }
 
     /// Parse one or more `@@`-delimited change chunks for an Update File hunk.
-    fn parse_update_chunks(lines: &[&str]) -> (Vec<UpdateFileChunk>, usize) {
-        let mut chunks = Vec::new();
+    /// Error strings mirror codex's `streaming_parser` so model self-correction
+    /// heuristics key off the same substrings.
+    fn parse_update_chunks(lines: &[&str]) -> Result<(Vec<UpdateFileChunk>, usize), String> {
+        let invalid_line = |line: &str| {
+            format!(
+                "Unexpected line found in update hunk: '{line}'. Every line should start with \
+                 ' ' (context line), '+' (added line), or '-' (removed line)"
+            )
+        };
+        let mut chunks: Vec<UpdateFileChunk> = Vec::new();
         let mut i = 0;
         while i < lines.len() {
             let line = lines[i];
-            if line.starts_with("***") {
-                break;
-            }
-            // Each chunk may start with @@ / @@ <ctx>. The first chunk requires
-            // a context marker (codex lenient mode tolerates its absence).
-            let (change_context, start) = if line == EMPTY_CHANGE_CONTEXT_MARKER {
-                (None, 1)
-            } else if let Some(ctx) = line.strip_prefix(CHANGE_CONTEXT_MARKER) {
-                (Some(ctx.to_string()), 1)
-            } else if !chunks.is_empty() {
-                // No new context marker and we already have a chunk → done.
-                break;
-            } else {
-                (None, 0)
-            };
-            i += start;
+            let update_line = line.trim_end();
 
-            let mut chunk = UpdateFileChunk {
-                change_context,
-                old_lines: Vec::new(),
-                new_lines: Vec::new(),
-                is_end_of_file: false,
-            };
-            let mut parsed = 0;
-            while i < lines.len() {
-                let l = lines[i];
-                if l == EOF_MARKER {
-                    chunk.is_end_of_file = true;
-                    i += 1;
-                    break;
+            // End of File marker belongs to the current chunk (note: it
+            // starts with `***`, so handle it before the hunk-header break).
+            if update_line == EOF_MARKER {
+                if chunks
+                    .last()
+                    .is_some_and(|c| c.old_lines.is_empty() && c.new_lines.is_empty())
+                {
+                    return Err("Update hunk does not contain any lines".to_string());
                 }
-                if l.starts_with("***") || l == EMPTY_CHANGE_CONTEXT_MARKER || l.starts_with(CHANGE_CONTEXT_MARKER) {
-                    break;
+                if let Some(c) = chunks.last_mut() {
+                    c.is_end_of_file = true;
                 }
-                match l.chars().next() {
-                    None => {
-                        chunk.old_lines.push(String::new());
-                        chunk.new_lines.push(String::new());
-                    }
-                    Some(' ') => {
-                        let body = l[1..].to_string();
-                        chunk.old_lines.push(body.clone());
-                        chunk.new_lines.push(body);
-                    }
-                    Some('+') => chunk.new_lines.push(l[1..].to_string()),
-                    Some('-') => chunk.old_lines.push(l[1..].to_string()),
-                    Some(_) => {
-                        if parsed == 0 {
-                            // unexpected; bail to outer loop
-                            break;
-                        }
-                        break;
-                    }
-                }
-                parsed += 1;
                 i += 1;
+                continue;
             }
-            if parsed > 0 || chunk.is_end_of_file {
-                chunks.push(chunk);
-            } else if chunks.is_empty() {
-                // no progress possible
+
+            // A hunk header or End Patch ends this update's chunks.
+            if update_line.starts_with("***") {
                 break;
             }
+
+            // After an end-of-file marker, only a new @@ context marker (or a
+            // hunk header, handled above) may follow.
+            if chunks.last().is_some_and(|c| c.is_end_of_file) {
+                if update_line.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                if update_line != EMPTY_CHANGE_CONTEXT_MARKER
+                    && !update_line.starts_with(CHANGE_CONTEXT_MARKER)
+                {
+                    return Err(format!(
+                        "Expected update hunk to start with a @@ context marker, got: '{line}'"
+                    ));
+                }
+            }
+
+            // @@ context marker starts a new chunk. Reject if the previous
+            // chunk is still empty (codex: unexpected line in update hunk).
+            if update_line == EMPTY_CHANGE_CONTEXT_MARKER
+                || update_line.starts_with(CHANGE_CONTEXT_MARKER)
+            {
+                if chunks
+                    .last()
+                    .is_some_and(|c| c.old_lines.is_empty() && c.new_lines.is_empty())
+                {
+                    return Err(invalid_line(line));
+                }
+                let ctx = update_line
+                    .strip_prefix(CHANGE_CONTEXT_MARKER)
+                    .map(String::from);
+                chunks.push(UpdateFileChunk {
+                    change_context: ctx,
+                    old_lines: Vec::new(),
+                    new_lines: Vec::new(),
+                    is_end_of_file: false,
+                });
+                i += 1;
+                continue;
+            }
+
+            // Bare empty line → empty context (preserved on both sides).
+            if line.is_empty() {
+                if chunks.is_empty() {
+                    chunks.push(UpdateFileChunk {
+                        change_context: None,
+                        old_lines: Vec::new(),
+                        new_lines: Vec::new(),
+                        is_end_of_file: false,
+                    });
+                }
+                if let Some(c) = chunks.last_mut() {
+                    c.old_lines.push(String::new());
+                    c.new_lines.push(String::new());
+                }
+                i += 1;
+                continue;
+            }
+
+            // Body line. Auto-open a chunk if none exists yet (lenient: the
+            // first chunk may omit its `@@` marker — matches the prior
+            // behaviour and codex's empty-line auto-chunk).
+            if chunks.is_empty() {
+                chunks.push(UpdateFileChunk {
+                    change_context: None,
+                    old_lines: Vec::new(),
+                    new_lines: Vec::new(),
+                    is_end_of_file: false,
+                });
+            }
+            match line.chars().next() {
+                Some(' ') => {
+                    let body = line[1..].to_string();
+                    if let Some(c) = chunks.last_mut() {
+                        c.old_lines.push(body.clone());
+                        c.new_lines.push(body);
+                    }
+                }
+                Some('+') => {
+                    if let Some(c) = chunks.last_mut() {
+                        c.new_lines.push(line[1..].to_string());
+                    }
+                }
+                Some('-') => {
+                    if let Some(c) = chunks.last_mut() {
+                        c.old_lines.push(line[1..].to_string());
+                    }
+                }
+                Some(_) => return Err(invalid_line(line)),
+                None => {}
+            }
+            i += 1;
         }
-        (chunks, i)
+        Ok((chunks, i))
     }
 
     // ---- codex seek_sequence (verbatim) ----
@@ -339,13 +424,13 @@ pub mod engine {
                 s.trim()
                     .chars()
                     .map(|c| match c {
-                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
-                        | '\u{2212}' => '-',
+                        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
+                        | '\u{2015}' | '\u{2212}' => '-',
                         '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
                         '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
-                        | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}'
-                        | '\u{205F}' | '\u{3000}' => ' ',
+                        '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}'
+                        | '\u{2006}' | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}'
+                        | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
                         other => other,
                     })
                     .collect::<String>()
@@ -378,9 +463,12 @@ pub mod engine {
 
         for chunk in chunks {
             if let Some(ctx_line) = &chunk.change_context {
-                if let Some(idx) =
-                    seek_sequence::seek_sequence(original_lines, std::slice::from_ref(ctx_line), line_index, false)
-                {
+                if let Some(idx) = seek_sequence::seek_sequence(
+                    original_lines,
+                    std::slice::from_ref(ctx_line),
+                    line_index,
+                    false,
+                ) {
                     line_index = idx + 1;
                 } else {
                     return Err(format!(
@@ -402,8 +490,12 @@ pub mod engine {
             }
 
             let mut pattern: &[String] = &chunk.old_lines;
-            let mut found =
-                seek_sequence::seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+            let mut found = seek_sequence::seek_sequence(
+                original_lines,
+                pattern,
+                line_index,
+                chunk.is_end_of_file,
+            );
             let mut new_slice: &[String] = &chunk.new_lines;
 
             if found.is_none() && pattern.last().is_some_and(String::is_empty) {
@@ -411,7 +503,12 @@ pub mod engine {
                 if new_slice.last().is_some_and(String::is_empty) {
                     new_slice = &new_slice[..new_slice.len() - 1];
                 }
-                found = seek_sequence::seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
+                found = seek_sequence::seek_sequence(
+                    original_lines,
+                    pattern,
+                    line_index,
+                    chunk.is_end_of_file,
+                );
             }
 
             if let Some(start_idx) = found {
@@ -464,19 +561,26 @@ pub mod engine {
             match hunk {
                 Hunk::AddFile { path, contents } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
+                    ctx.assert_write_allowed(&resolved)?;
                     write_with_parents(&resolved, contents)?;
                     report.push(json!({"add": resolved.display().to_string()}));
                 }
                 Hunk::DeleteFile { path } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
+                    ctx.assert_write_allowed(&resolved)?;
                     if resolved.is_dir() {
                         return Err(format!("{} is a directory", resolved.display()));
                     }
-                    if resolved.exists() {
-                        std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
+                    // A delete targeting a missing file is an error, not a
+                    // silent success — the model should learn the path was
+                    // wrong (codex aborts the patch on NotFound).
+                    if !resolved.exists() {
+                        return Err(format!(
+                            "Failed to delete file {}: not found",
+                            resolved.display()
+                        ));
                     }
+                    std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
                     report.push(json!({"delete": resolved.display().to_string()}));
                 }
                 Hunk::UpdateFile {
@@ -485,9 +589,8 @@ pub mod engine {
                     chunks,
                 } => {
                     let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
-                    check_write(ctx, &resolved)?;
-                    let original =
-                        std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
+                    ctx.assert_write_allowed(&resolved)?;
+                    let original = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
                     let mut original_lines: Vec<String> =
                         original.split('\n').map(String::from).collect();
                     if original_lines.last().is_some_and(String::is_empty) {
@@ -502,7 +605,7 @@ pub mod engine {
 
                     if let Some(dest) = move_path {
                         let dest_abs = resolve_within(&dest.to_string_lossy(), &ctx.workspace)?;
-                        check_write(ctx, &dest_abs)?;
+                        ctx.assert_write_allowed(&dest_abs)?;
                         write_with_parents(&dest_abs, &new_contents)?;
                         std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
                         report.push(json!({"move": resolved.display().to_string(), "to": dest_abs.display().to_string()}));
@@ -514,22 +617,6 @@ pub mod engine {
             }
         }
         Ok(report)
-    }
-
-    fn check_write(ctx: &FsCtx, target: &Path) -> Result<(), String> {
-        let metadata = ctx.workspace.join(".autoreport");
-        if target == metadata || target.starts_with(&metadata) {
-            return Err("writing inside .autoreport is not permitted".into());
-        }
-        match &ctx.write_dir {
-            Some(dir) if target.starts_with(dir) => Ok(()),
-            Some(dir) => Err(format!(
-                "this agent may only write under {}; '{}' is outside it",
-                dir.display(),
-                target.display()
-            )),
-            None => Err("this agent has no write access".into()),
-        }
     }
 
     fn write_with_parents(path: &Path, contents: &str) -> Result<(), String> {
@@ -582,8 +669,14 @@ pub mod engine {
 *** End Patch";
             let report = apply(patch, &ctx(&dir)).unwrap();
             assert!(report.iter().any(|r| r.get("update").is_some()));
-            assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "alpha\nBETA\ngamma\n");
-            assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "hello\nworld\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+                "alpha\nBETA\ngamma\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+                "hello\nworld\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -600,7 +693,51 @@ pub mod engine {
 *** End of File
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
-            assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "one\ntwo\nthree\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+                "one\ntwo\nthree\n"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn missing_end_patch_is_rejected() {
+            // Regression: a patch without `*** End Patch` (e.g. truncated by the
+            // model) must error, not silently apply partial hunks.
+            let dir = std::env::temp_dir().join(format!("ap-end-{}", stamp()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = "*** Begin Patch\n*** Add File: a.txt\n+hi\n";
+            let err = apply(patch, &ctx(&dir)).unwrap_err();
+            assert!(
+                err.contains("must be '*** End Patch'"),
+                "expected end-patch error, got: {err}"
+            );
+            assert!(!dir.join("a.txt").exists(), "no partial write on error");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn dirty_add_body_line_is_rejected() {
+            // A non-`+` line in an Add File body is an error, not a silent
+            // blank-line corruption (codex streaming_parser InvalidHunkError).
+            let dir = std::env::temp_dir().join(format!("ap-dirty-{}", stamp()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = "*** Begin Patch\n*** Add File: a.txt\n+ok\nbare line\n*** End Patch";
+            let err = apply(patch, &ctx(&dir)).unwrap_err();
+            assert!(
+                err.contains("is not a valid hunk header"),
+                "expected invalid-hunk-header error, got: {err}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[test]
+        fn delete_missing_file_is_rejected() {
+            let dir = std::env::temp_dir().join(format!("ap-del-{}", stamp()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let patch = "*** Begin Patch\n*** Delete File: nope.txt\n*** End Patch";
+            let err = apply(patch, &ctx(&dir)).unwrap_err();
+            assert!(err.contains("not found"), "expected not-found error, got: {err}");
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -620,7 +757,10 @@ pub mod engine {
 +BAR
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
-            assert_eq!(std::fs::read_to_string(dir.join("g.txt")).unwrap(), "foo\nBAR\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("g.txt")).unwrap(),
+                "foo\nBAR\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -638,7 +778,10 @@ pub mod engine {
 *** End Patch";
             apply(patch, &ctx(&dir)).unwrap();
             assert!(!dir.join("old.txt").exists());
-            assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "X\ny\n");
+            assert_eq!(
+                std::fs::read_to_string(dir.join("new.txt")).unwrap(),
+                "X\ny\n"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 

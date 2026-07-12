@@ -1,51 +1,80 @@
-//! Shell execution tool with an allowlist-based security policy, mirroring
-//! AutoReport's `exec_tools.py`. Commands are tokenized with `shlex`; the base
-//! program must be on the allowlist. Paths into `.autoreport` are blocked.
+//! Shell execution tool with an allowlist-based security policy.
+//!
+//! Commands are validated as a plain shell command sequence, then executed
+//! through the same detected shell backend used by the rest of the CLI. We also
+//! snapshot the workspace before and after execution to reject writes outside
+//! the agent's allowed write directory.
 
-use crate::tools::registry::{arg_str, Tool, ToolOutput};
+use crate::tools::codex_shell::{CodexShell, validate_command_for_shell};
+use crate::tools::file_tools::{FsCtx, resolve_within};
+use crate::tools::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
-use serde_json::{json, Value};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::process::Command;
+use std::time::{Duration, SystemTime};
 
-/// Programs an agent may invoke. Build/plot/compute oriented — deliberately
-/// narrow, like the original.
+/// Programs an agent may invoke. Build/plot/compute oriented.
 fn allowlist() -> HashSet<&'static str> {
     [
-        "python", "python3", "pip", "pip3", "uv",
-        "xelatex", "lualatex", "pdflatex", "latexmk", "bibtex", "makeindex",
-        "ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "sort", "uniq", "cut", "tr", "sed", "awk",
-        "cp", "mv", "rm", "mkdir", "touch", "rmdir", "chmod",
+        "python",
+        "python3",
+        "pip",
+        "pip3",
+        "uv",
+        "xelatex",
+        "lualatex",
+        "pdflatex",
+        "latexmk",
+        "bibtex",
+        "makeindex",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "grep",
+        "rg",
+        "find",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "sed",
+        "awk",
+        "cp",
+        "mv",
+        "rm",
+        "mkdir",
+        "touch",
+        "rmdir",
+        "chmod",
         "git",
-        "echo", "printf",
-        "which", "fc-list", "mineru-open-api",
+        "echo",
+        "printf",
+        "which",
+        "fc-list",
+        "mineru-open-api",
     ]
     .into_iter()
     .collect()
 }
 
 pub struct ExecTool {
-    working_dir: PathBuf,
+    ctx: FsCtx,
     timeout: Duration,
+    shell: Arc<CodexShell>,
 }
 
 impl ExecTool {
-    pub fn new(working_dir: PathBuf, timeout_secs: u64) -> Self {
+    pub fn new(ctx: FsCtx, timeout_secs: u64) -> Self {
         Self {
-            working_dir,
+            ctx,
             timeout: Duration::from_secs(timeout_secs),
+            shell: Arc::new(CodexShell::new()),
         }
     }
-}
-
-fn block_internal_paths(command: &str) -> Result<(), String> {
-    if command.contains(".autoreport") {
-        return Err("accessing .autoreport metadata via exec is not permitted".to_string());
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -54,13 +83,13 @@ impl Tool for ExecTool {
         "exec"
     }
     fn description(&self) -> &str {
-        "Run an allow-listed shell command in the project root. Use for data analysis, plotting and LaTeX compilation. The base program must be on the allowlist."
+        "Run an allow-listed shell command in the project root via the detected user shell. Writes inside the workspace are restricted to this agent's write directory."
     }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Full command line, e.g. `python3 analyze.py`."},
+                "command": {"type": "string", "description": "Full shell command line, e.g. `python3 analyze.py && rg result Data/Processed`."},
                 "command_description": {"type": "string", "description": "Short human description of what this does."}
             },
             "required": ["command"]
@@ -74,118 +103,269 @@ impl Tool for ExecTool {
         if let Err(e) = block_internal_paths(&command) {
             return ToolOutput::err(e);
         }
-
-        // Split into program + args using a simple shell-quoter (handles quotes).
-        let parts = match shell_split(&command) {
-            Ok(p) => p,
+        let parsed = match validate_command_for_shell(&command, &allowlist(), self.shell.detected_shell().shell_type) {
+            Ok(commands) => commands,
             Err(e) => return ToolOutput::err(e),
         };
-        if parts.is_empty() {
-            return ToolOutput::err("empty command");
+        let referenced_paths = match detect_workspace_paths(&parsed, &self.ctx.workspace) {
+            Ok(paths) => paths,
+            Err(e) => return ToolOutput::err(e),
+        };
+        if let Err(e) = validate_declared_write_targets(&self.ctx, &parsed) {
+            return ToolOutput::err(e);
         }
-        let program = parts[0].as_str();
-        let allowed = allowlist();
+        let before = match WorkspaceSnapshot::capture(&self.ctx.workspace) {
+            Ok(snapshot) => snapshot,
+            Err(e) => return ToolOutput::err(format!("failed to snapshot workspace: {e}")),
+        };
+        let output = match self
+            .shell
+            .run(
+                &self.ctx.workspace,
+                &command,
+                self.timeout,
+                None,
+                &HashMap::new(),
+            )
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return ToolOutput::err(e),
+        };
+        let after = match WorkspaceSnapshot::capture(&self.ctx.workspace) {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                return ToolOutput::err(format!("failed to snapshot workspace after exec: {e}"));
+            }
+        };
+        let written_paths = after.diff(&before);
+        if let Err(e) = ensure_writes_are_isolated(&self.ctx, &written_paths) {
+            return ToolOutput::err(e);
+        }
+        ToolOutput::ok(json!({
+            "command": command,
+            "stdout": output.stdout,
+            "stderr": output.stderr,
+            "returncode": output.returncode,
+            "timed_out": output.timed_out,
+            "shell": self.shell.detected_shell().name(),
+            "allowed_write_dir": self.ctx.allowed_write_dir().map(|p| p.display().to_string()),
+            "referenced_paths": referenced_paths.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "written_paths": written_paths.into_iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        }))
+    }
+}
+
+fn block_internal_paths(command: &str) -> Result<(), String> {
+    // Reject any token that references the internal `.autoreport` metadata
+    // tree. Tokenize by whitespace (respecting quotes) so this is a
+    // path-aware check, not a brittle whole-string substring match — a
+    // command like `cat report.autoreport-notes.txt` is fine, while
+    // `cat .autoreport/sessions/x.jsonl` is blocked.
+    for token in command.split_whitespace() {
+        let mut probe = token.trim_matches(|c: char| c == '"' || c == '\'');
+        // Drop leading `./` so `.autoreport` and `./.autoreport` match.
+        if let Some(rest) = probe.strip_prefix("./") {
+            probe = rest;
+        }
+        if probe == ".autoreport" || probe.starts_with(".autoreport/") || probe.starts_with(".autoreport\\") {
+            return Err("accessing .autoreport metadata via exec is not permitted".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn detect_workspace_paths(
+    commands: &[Vec<String>],
+    workspace: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    for command in commands {
+        for arg in command.iter().skip(1) {
+            if let Some(path) = maybe_workspace_path(arg, workspace)? {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn maybe_workspace_path(arg: &str, workspace: &Path) -> Result<Option<PathBuf>, String> {
+    if arg.starts_with('-') {
+        return Ok(None);
+    }
+    let looks_like_path = arg.starts_with('/')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.contains('/')
+        || arg.contains('\\');
+    if !looks_like_path {
+        let candidate = workspace.join(arg);
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+        return Ok(None);
+    }
+    match resolve_within(arg, workspace) {
+        Ok(path) => Ok(Some(path)),
+        Err(e) => Err(e),
+    }
+}
+
+fn ensure_writes_are_isolated(ctx: &FsCtx, written_paths: &[PathBuf]) -> Result<(), String> {
+    for path in written_paths {
+        ctx.assert_write_allowed(path).map_err(|_| {
+            format!(
+                "exec modified '{}' outside the allowed write directory",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_declared_write_targets(ctx: &FsCtx, commands: &[Vec<String>]) -> Result<(), String> {
+    for command in commands {
+        let Some(program) = command.first() else {
+            continue;
+        };
         let base = std::path::Path::new(program)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(program);
-        if !allowed.contains(base) {
-            return ToolOutput::err(format!(
-                "command '{base}' is not on the allowlist"
-            ));
-        }
-
-        let mut cmd = Command::new(program);
-        cmd.args(&parts[1..]);
-        cmd.current_dir(&self.working_dir);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => return ToolOutput::err(format!("spawn failed: {e}")),
-        };
-
-        match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(Ok(out)) => {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                ToolOutput::ok(json!({
-                    "command": command,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "returncode": out.status.code().unwrap_or(-1),
-                    "timed_out": false,
-                }))
+        let mut targets = Vec::new();
+        match base {
+            "touch" | "mkdir" | "rm" | "rmdir" | "chmod" => {
+                targets.extend(
+                    command
+                        .iter()
+                        .skip(1)
+                        .filter(|arg| !arg.starts_with('-'))
+                        .cloned(),
+                );
             }
-            Ok(Err(e)) => ToolOutput::err(format!("exec failed: {e}")),
-            Err(_) => ToolOutput::err(format!(
-                "command timed out after {}s",
-                self.timeout.as_secs()
-            )),
+            "cp" | "mv" => {
+                if let Some(last) = command.iter().rev().find(|arg| !arg.starts_with('-')) {
+                    targets.push(last.clone());
+                }
+            }
+            // Destructive git subcommands operate workspace-wide (e.g.
+            // `git clean -fdx` wipes untracked files, `git rm -rf` removes
+            // tracked ones). The post-hoc workspace snapshot would detect
+            // the damage only AFTER it is done — irreversible for `rm`/clean.
+            // Require an explicit path target inside the write dir up front;
+            // bare `git clean` / `git rm` are rejected pre-emptively.
+            "git" => {
+                let sub = command.get(1).map(String::as_str).unwrap_or("");
+                if !matches!(sub, "clean" | "rm") {
+                    continue;
+                }
+                let path_args: Vec<&String> = command
+                    .iter()
+                    .skip(2)
+                    .filter(|a| !a.starts_with('-'))
+                    .collect();
+                if path_args.is_empty() {
+                    return Err(format!(
+                        "git {sub} without an explicit path inside your write directory is not permitted \
+                         (it would affect files outside your allowed write dir)"
+                    ));
+                }
+                for target in path_args {
+                    let path = resolve_within(target, &ctx.workspace)?;
+                    ctx.assert_write_allowed(&path)?;
+                }
+                continue;
+            }
+            _ => continue,
         }
+        for target in targets {
+            let path = resolve_within(&target, &ctx.workspace)?;
+            ctx.assert_write_allowed(&path)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntryFingerprint {
+    is_dir: bool,
+    len: u64,
+    modified_ms: u128,
+}
+
+#[derive(Debug, Clone, Default)]
+struct WorkspaceSnapshot {
+    entries: HashMap<PathBuf, EntryFingerprint>,
+}
+
+impl WorkspaceSnapshot {
+    fn capture(workspace: &Path) -> std::io::Result<Self> {
+        let mut snapshot = Self::default();
+        walk_workspace(workspace, workspace, &mut snapshot.entries)?;
+        Ok(snapshot)
+    }
+
+    fn diff(&self, before: &Self) -> Vec<PathBuf> {
+        let mut changed = Vec::new();
+        for (path, after_entry) in &self.entries {
+            match before.entries.get(path) {
+                None => changed.push(path.clone()),
+                Some(before_entry) if before_entry != after_entry && !after_entry.is_dir => {
+                    changed.push(path.clone())
+                }
+                _ => {}
+            }
+        }
+        for path in before.entries.keys() {
+            if !self.entries.contains_key(path) {
+                changed.push(path.clone());
+            }
+        }
+        changed.sort();
+        changed.dedup();
+        changed
     }
 }
 
-/// Minimal shell-style splitter (handles single/double quotes and escapes).
-fn shell_split(input: &str) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
-    let mut in_word = false;
-    while let Some(c) = chars.next() {
-        match c {
-            ' ' | '\t' | '\n' => {
-                if in_word {
-                    out.push(std::mem::take(&mut current));
-                    in_word = false;
-                }
-            }
-            '\'' => {
-                in_word = true;
-                while let Some(&n) = chars.peek() {
-                    if n == '\'' {
-                        chars.next();
-                        break;
-                    }
-                    current.push(chars.next().unwrap());
-                }
-            }
-            '"' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => {
-                            if let Some(e) = chars.next() {
-                                current.push(e);
-                            }
-                        }
-                        Some(n) => current.push(n),
-                        None => break,
-                    }
-                }
-            }
-            '\\' => {
-                in_word = true;
-                if let Some(n) = chars.next() {
-                    current.push(n);
-                }
-            }
-            _ => {
-                in_word = true;
-                current.push(c);
-            }
+fn walk_workspace(
+    root: &Path,
+    current: &Path,
+    entries: &mut HashMap<PathBuf, EntryFingerprint>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.file_name().and_then(|s| s.to_str()) == Some(".autoreport") {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let is_dir = metadata.is_dir();
+        entries.insert(
+            root.join(relative),
+            EntryFingerprint {
+                is_dir,
+                len: metadata.len(),
+                modified_ms: modified,
+            },
+        );
+        if is_dir {
+            walk_workspace(root, &path, entries)?;
         }
     }
-    if in_word || !current.is_empty() {
-        out.push(current);
-    }
-    Ok(out)
+    Ok(())
 }
 
 /// Convenience constructor.
-pub fn make(working_dir: PathBuf, timeout_secs: u64) -> Arc<dyn Tool> {
-    Arc::new(ExecTool::new(working_dir, timeout_secs))
+pub fn make(ctx: FsCtx, timeout_secs: u64) -> Arc<dyn Tool> {
+    Arc::new(ExecTool::new(ctx, timeout_secs))
 }

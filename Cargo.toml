@@ -53,6 +53,8 @@ tracing = "0.1"
 # fuzzy @ file search — same engine codex uses (nucleo) + gitignore-aware walker
 nucleo = "0.5"
 ignore = "0.4"
+# unified diff rendering for apply_patch/edit (codex uses diffy)
+diffy = "0.4"
 
 # misc
 uuid = { version = "1", features = ["v4"] }
@@ -64,6 +66,22 @@ dirs = "5"
 shellexpand = "3"
 log = "0.4"
 env_logger = "0.11"
+which = "6"
+libc = "0.2"
+tree-sitter = "0.24"
+tree-sitter-bash = "0.23"
+
+# Windows named-pipe client for the codex IDE-context IPC (`/ide`).
+# Vendored verbatim from codex-rs/tui; keep the same version + feature set.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3"

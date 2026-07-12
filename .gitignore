@@ -6,3 +6,5 @@ autoreport.config.yaml
 .autoreport/
 docs
 templates/external/
+
+TODO.md

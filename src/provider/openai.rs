@@ -3,10 +3,10 @@
 
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub struct OpenAICompatProvider {
@@ -46,8 +46,14 @@ impl OpenAICompatProvider {
 fn defaults(kind: &str) -> (&'static str, &'static str) {
     match kind {
         "deepseek" => ("https://api.deepseek.com/v1", "deepseek-chat"),
-        "openrouter" => ("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.5"),
-        "google" => ("https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash"),
+        "openrouter" => (
+            "https://openrouter.ai/api/v1",
+            "anthropic/claude-sonnet-4.5",
+        ),
+        "google" => (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.0-flash",
+        ),
         "openai" => ("https://api.openai.com/v1", "gpt-4o"),
         _ => ("https://api.openai.com/v1", "gpt-4o"),
     }
@@ -61,7 +67,12 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
                 let mut m = json!({"role": "assistant", "content": msg.content});
-                if let Some(calls) = &msg.tool_calls {
+                if let Some(calls) = &msg.tool_calls
+                    && !calls.is_empty()
+                {
+                    // When tool_calls are present, content must be null (not "");
+                    // several OpenAI-compatible backends 400 on an empty string
+                    // here.
                     let arr: Vec<Value> = calls
                         .iter()
                         .map(|c| {
@@ -75,6 +86,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                             })
                         })
                         .collect();
+                    m["content"] = Value::Null;
                     m["tool_calls"] = Value::Array(arr);
                 }
                 out.push(m);
@@ -123,6 +135,11 @@ fn build_body(
     });
     if !tools.is_empty() {
         body["tools"] = json!(tools);
+    }
+    if stream {
+        // Required to receive a usage block in the terminal stream chunk;
+        // without it, streaming cost tracking is impossible.
+        body["stream_options"] = json!({ "include_usage": true });
     }
     body
 }
@@ -200,7 +217,10 @@ impl LLMProvider for OpenAICompatProvider {
 }
 
 fn parse_final(v: &Value) -> LLMResponse {
-    let choice = v.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
+    let choice = v
+        .pointer("/choices/0/message")
+        .cloned()
+        .unwrap_or(Value::Null);
     let content = choice
         .get("content")
         .and_then(|c| c.as_str())
@@ -211,7 +231,11 @@ fn parse_final(v: &Value) -> LLMResponse {
         .map(|arr| {
             arr.iter()
                 .map(|c| {
-                    let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let id = c
+                        .get("id")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let name = c
                         .pointer("/function/name")
                         .and_then(|x| x.as_str())
@@ -221,15 +245,27 @@ fn parse_final(v: &Value) -> LLMResponse {
                         .pointer("/function/arguments")
                         .and_then(|x| x.as_str())
                         .unwrap_or("{}");
-                    let arguments = serde_json::from_str(args_str).unwrap_or(Value::Null);
-                    ToolCall { id, name, arguments }
+                    let arguments = serde_json::from_str(args_str).unwrap_or_else(|_| {
+                        // Truncated/invalid tool args → empty object (clean
+                        // "missing argument" error) rather than null, which
+                        // tools would try to execute against.
+                        Value::Object(Default::default())
+                    });
+                    ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    }
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let usage = v.get("usage").map(|u| Usage {
         input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        output_tokens: u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+        output_tokens: u
+            .get("completion_tokens")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0),
     });
     LLMResponse {
         content,
@@ -290,6 +326,7 @@ async fn run_stream(
                             .send(Ok(LLMStreamChunk {
                                 delta: Some(content.to_string()),
                                 thinking_delta: None,
+                                thinking_signature: None,
                                 tool_calls: None,
                                 done: false,
                                 usage: None,
@@ -297,15 +334,13 @@ async fn run_stream(
                             .await;
                     }
                 }
-                if let Some(reasoning) = delta
-                    .get("reasoning_content")
-                    .and_then(|c| c.as_str())
-                {
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
                     if !reasoning.is_empty() {
                         let _ = tx
                             .send(Ok(LLMStreamChunk {
                                 delta: None,
                                 thinking_delta: Some(reasoning.to_string()),
+                                thinking_signature: None,
                                 tool_calls: None,
                                 done: false,
                                 usage: None,
@@ -323,7 +358,8 @@ async fn run_stream(
                         if let Some(name) = c.pointer("/function/name").and_then(|x| x.as_str()) {
                             entry.name = name.to_string();
                         }
-                        if let Some(args) = c.pointer("/function/arguments").and_then(|x| x.as_str())
+                        if let Some(args) =
+                            c.pointer("/function/arguments").and_then(|x| x.as_str())
                         {
                             entry.args.push_str(args);
                         }
@@ -341,7 +377,7 @@ async fn run_stream(
             arguments: if a.args.trim().is_empty() {
                 Value::Object(Default::default())
             } else {
-                serde_json::from_str(&a.args).unwrap_or(Value::Null)
+                serde_json::from_str(&a.args).unwrap_or_else(|_| Value::Object(Default::default()))
             },
         })
         .collect();
@@ -350,7 +386,12 @@ async fn run_stream(
         .send(Ok(LLMStreamChunk {
             delta: None,
             thinking_delta: None,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            thinking_signature: None,
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             done: true,
             usage: None,
         }))

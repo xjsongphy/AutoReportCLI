@@ -878,4 +878,3 @@ fn slice_line_spans<'a>(
         spans: acc,
     }
 }
-
