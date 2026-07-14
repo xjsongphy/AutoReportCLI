@@ -528,7 +528,8 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         ));
     };
     let source = std::path::PathBuf::from(&program);
-    let helper = crate::windows_sandbox::resolve_exe_for_launch(source.as_path(), autoreport_home);
+    let helper =
+        autoreport_windows_sandbox::resolve_exe_for_launch(source.as_path(), autoreport_home);
     *program = helper.to_string_lossy().into_owned();
 
     let inner_command = std::mem::take(&mut request.command);
@@ -568,7 +569,7 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         overrides.additional_deny_write_paths.as_slice()
     });
     let mut wrapper_args =
-        crate::windows_sandbox::create_windows_sandbox_command_args_for_permission_profile(
+        autoreport_windows_sandbox::create_windows_sandbox_command_args_for_permission_profile(
             inner_command,
             &native_cwd,
             workspace_roots,

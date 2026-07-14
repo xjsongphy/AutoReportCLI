@@ -21,6 +21,17 @@ use ts_rs::TS;
 use crate::permissions::default_read_only_subpaths_for_writable_root;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 
+/// W3C trace context propagated between AutoReport processes.
+///
+/// This is the protocol shape used by the upstream OTEL provider and is kept
+/// here so the Windows sandbox setup helper can preserve trace context without
+/// depending on the application API crate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct W3cTraceContext {
+    pub traceparent: Option<String>,
+    pub tracestate: Option<String>,
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, Default, JsonSchema, TS,
 )]

@@ -19,6 +19,8 @@ members = [
     "autoreport-rs/bwrap",
     "autoreport-rs/utils/pty",
     "autoreport-rs/utils/string",
+    "autoreport-rs/otel",
+    "autoreport-rs/windows-sandbox",
 ]
 resolver = "2"
 

@@ -15,6 +15,7 @@ pub mod permissions;
 pub mod protocol_types;
 
 pub use config_types::WindowsSandboxLevel;
+pub use config_types::WindowsSandboxProxySettingsMode;
 pub use error::CodexErr;
 pub use exec_output::ExecToolCallOutput;
 pub use exec_output::StreamOutput;
@@ -36,4 +37,5 @@ pub use permissions::PROTECTED_METADATA_PATH_NAMES;
 pub use permissions::ReadDenyMatcher;
 pub use protocol_types::NetworkAccess;
 pub use protocol_types::SandboxPolicy;
+pub use protocol_types::W3cTraceContext;
 pub use protocol_types::WritableRoot;

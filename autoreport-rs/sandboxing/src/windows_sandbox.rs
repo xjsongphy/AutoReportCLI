@@ -7,6 +7,8 @@
 //! are copied verbatim from `codex-rs/windows-sandbox-rs` — the deny-read
 //! resolver is self-contained (policy types + `dunce`), so it compiles as-is.
 
+pub use autoreport_protocol::WindowsSandboxProxySettingsMode;
+
 use autoreport_protocol::permissions::FileSystemAccessMode;
 use autoreport_protocol::permissions::FileSystemPath;
 use autoreport_protocol::permissions::FileSystemSandboxEntry;
@@ -16,16 +18,6 @@ use autoreport_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-
-/// Controls whether a Windows sandbox launch reconciles persistent proxy
-/// firewall settings or preserves the settings established by another launch.
-/// Verbatim from `codex-rs/windows-sandbox-rs/src/lib.rs`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WindowsSandboxProxySettingsMode {
-    #[default]
-    Reconcile,
-    Preserve,
-}
 
 struct GlobScanPlan {
     root: PathBuf,
