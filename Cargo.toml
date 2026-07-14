@@ -15,6 +15,7 @@ members = [
     "autoreport-rs/utils/home-dir",
     "autoreport-rs/utils/rustls-provider",
     "autoreport-rs/network-proxy",
+    "autoreport-rs/linux-sandbox",
 ]
 resolver = "2"
 
@@ -44,6 +45,7 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 libc = "0.2"
+landlock = "0.4.4"
 log = "0.4"
 nucleo = "0.5"
 pulldown-cmark = { version = "0.12", default-features = false }
@@ -57,6 +59,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+seccompiler = "0.5.0"
 shellexpand = "3"
 strum = "0.27"
 strum_macros = "0.28"

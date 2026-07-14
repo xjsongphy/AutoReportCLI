@@ -2,7 +2,7 @@
 use super::bwrap::WSL1_BWRAP_WARNING;
 #[cfg(target_os = "linux")]
 use super::bwrap::is_wsl1;
-use super::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use super::landlock::AUTOREPORT_LINUX_SANDBOX_ARG0;
 use super::landlock::allow_network_for_proxy;
 use super::landlock::create_linux_sandbox_command_args_for_permission_profile;
 use super::policy_transforms::effective_permission_profile;
@@ -138,7 +138,7 @@ pub struct SandboxTransformRequest<'a> {
     // to make shared ownership explicit across runtime/sandbox plumbing.
     pub network: Option<&'a NetworkProxy>,
     pub sandbox_policy_cwd: &'a PathUri,
-    pub codex_linux_sandbox_exe: Option<&'a Path>,
+    pub autoreport_linux_sandbox_exe: Option<&'a Path>,
     pub use_legacy_landlock: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
     pub windows_sandbox_private_desktop: bool,
@@ -236,7 +236,7 @@ impl std::fmt::Display for SandboxTransformError {
                 "sandbox policy cwd URI `{cwd}` is not valid on this host: {source}"
             ),
             Self::MissingLinuxSandboxExecutable => {
-                write!(f, "missing codex-linux-sandbox executable path")
+                write!(f, "missing autoreport-linux-sandbox executable path")
             }
             Self::EnvironmentNetworkProxy(err) => {
                 write!(f, "failed to prepare environment network proxy: {err}")
@@ -331,7 +331,7 @@ impl SandboxManager {
             environment_id,
             network,
             sandbox_policy_cwd,
-            codex_linux_sandbox_exe,
+            autoreport_linux_sandbox_exe,
             use_legacy_landlock,
             windows_sandbox_level,
             windows_sandbox_private_desktop,
@@ -385,7 +385,7 @@ impl SandboxManager {
             SandboxType::MacosSeatbelt => return Err(SandboxTransformError::SeatbeltUnavailable),
             SandboxType::LinuxSeccomp => {
                 let pending = pending_sandboxed_request?;
-                let exe = codex_linux_sandbox_exe
+                let exe = autoreport_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);
                 #[cfg(target_os = "linux")]
@@ -690,10 +690,10 @@ fn os_string_to_command_component(value: OsString) -> String {
 }
 
 fn linux_sandbox_arg0_override(exe: &Path) -> String {
-    if exe.file_name().and_then(|name| name.to_str()) == Some(CODEX_LINUX_SANDBOX_ARG0) {
+    if exe.file_name().and_then(|name| name.to_str()) == Some(AUTOREPORT_LINUX_SANDBOX_ARG0) {
         os_string_to_command_component(exe.as_os_str().to_owned())
     } else {
-        CODEX_LINUX_SANDBOX_ARG0.to_string()
+        AUTOREPORT_LINUX_SANDBOX_ARG0.to_string()
     }
 }
 
