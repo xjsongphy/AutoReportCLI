@@ -71,35 +71,39 @@ def prepare(path: Path, force: bool) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def native_binaries(item: PlatformPackage, vendor_src: Path | None) -> tuple[Path, Path | None, Path | None]:
+def native_binaries(item: PlatformPackage, vendor_src: Path | None) -> tuple[Path, list[tuple[Path, Path]]]:
     name = "autoreport.exe" if item.os == "win32" else "autoreport"
-    helper_name = "autoreport-linux-sandbox"
-    bwrap_name = "bwrap"
+    resources = {
+        "linux": (("autoreport-linux-sandbox", Path("autoreport-linux-sandbox")), ("bwrap", Path("autoreport-resources") / "bwrap")),
+        "win32": (("autoreport-windows-sandbox-setup.exe", Path("autoreport-resources") / "autoreport-windows-sandbox-setup.exe"), ("autoreport-command-runner.exe", Path("autoreport-resources") / "autoreport-command-runner.exe")),
+    }.get(item.os, ())
     if vendor_src:
         candidate = vendor_src / item.target / "bin" / name
         if candidate.is_file():
-            helper = vendor_src / item.target / "bin" / helper_name
-            if item.os == "linux" and not helper.is_file():
-                raise SystemExit(f"Linux sandbox helper not found: {helper}")
-            bwrap = vendor_src / item.target / "bin" / bwrap_name
-            if item.os == "linux" and not bwrap.is_file():
-                raise SystemExit(f"Bundled bubblewrap binary not found: {bwrap}")
-            return candidate, helper if item.os == "linux" else None, bwrap if item.os == "linux" else None
+            assets = []
+            for source_name, relative_destination in resources:
+                source = vendor_src / item.target / "bin" / source_name
+                if not source.is_file():
+                    raise SystemExit(f"sandbox resource not found: {source}")
+                assets.append((source, relative_destination))
+            return candidate, assets
         raise SystemExit(f"prebuilt binary not found: {candidate}")
     packages = ["-p", "autoreport-cli"]
     if item.os == "linux":
         packages.extend(["-p", "autoreport-linux-sandbox", "-p", "autoreport-bwrap"])
+    elif item.os == "win32":
+        packages.extend(["-p", "autoreport-windows-sandbox"])
     subprocess.run(["cargo", "build", "--release", *packages, "--target", item.target], cwd=ROOT, check=True)
     candidate = ROOT / "target" / item.target / "release" / name
     if not candidate.is_file():
         raise SystemExit(f"cargo did not produce {candidate}")
-    helper = ROOT / "target" / item.target / "release" / helper_name
-    if item.os == "linux" and not helper.is_file():
-        raise SystemExit(f"cargo did not produce {helper}")
-    bwrap = ROOT / "target" / item.target / "release" / bwrap_name
-    if item.os == "linux" and not bwrap.is_file():
-        raise SystemExit(f"cargo did not produce {bwrap}")
-    return candidate, helper if item.os == "linux" else None, bwrap if item.os == "linux" else None
+    assets = []
+    for source_name, relative_destination in resources:
+        source = ROOT / "target" / item.target / "release" / source_name
+        if not source.is_file():
+            raise SystemExit(f"cargo did not produce {source}")
+        assets.append((source, relative_destination))
+    return candidate, assets
 
 
 def stage_main(destination: Path, version: str) -> None:
@@ -111,21 +115,17 @@ def stage_main(destination: Path, version: str) -> None:
 
 
 def stage_platform(destination: Path, item: PlatformPackage, version: str, vendor_src: Path | None) -> None:
-    binary, linux_sandbox_helper, bundled_bwrap = native_binaries(item, vendor_src)
+    binary, sandbox_assets = native_binaries(item, vendor_src)
     target_dir = destination / "vendor" / item.target / "bin"
     target_dir.mkdir(parents=True)
     output = target_dir / binary.name
     shutil.copy2(binary, output)
     output.chmod(output.stat().st_mode | 0o111)
-    if linux_sandbox_helper:
-        helper_output = target_dir / linux_sandbox_helper.name
-        shutil.copy2(linux_sandbox_helper, helper_output)
-        helper_output.chmod(helper_output.stat().st_mode | 0o111)
-    if bundled_bwrap:
-        bwrap_output = target_dir / "autoreport-resources" / bundled_bwrap.name
-        bwrap_output.parent.mkdir()
-        shutil.copy2(bundled_bwrap, bwrap_output)
-        bwrap_output.chmod(bwrap_output.stat().st_mode | 0o111)
+    for source, relative_destination in sandbox_assets:
+        resource_output = target_dir / relative_destination
+        resource_output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, resource_output)
+        resource_output.chmod(resource_output.stat().st_mode | 0o111)
     manifest = {"name": item.npm_name, "version": version, "license": "MIT", "os": [item.os], "cpu": [item.cpu], "files": ["vendor"]}
     (destination / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
