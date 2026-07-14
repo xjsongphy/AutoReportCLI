@@ -1,19 +1,28 @@
 //! High-level sandbox integration for the `exec` tool.
 //!
-//! Maps a coarse [`SandboxMode`] preset (the three codex `PermissionProfile`
-//! flavors AutoReportCLI exposes) to codex's split [`FileSystemSandboxPolicy`]
-//! and platform launchers. macOS uses the vendored `sandbox-exec` backend;
-//! Linux uses Bubblewrap. Restrictive modes fail closed on platforms without
-//! a backend instead of silently running an unrestricted command.
+//! Maps a coarse [`SandboxMode`] preset to the native Codex-derived
+//! [`crate::sandboxing::SandboxManager`] request model. Restrictive modes fail
+//! closed on platforms without a backend instead of silently running an
+//! unrestricted command.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use autoreport_protocol::NetworkSandboxPolicy;
+use autoreport_protocol::config_types::WindowsSandboxLevel;
+use autoreport_protocol::models::PermissionProfile;
 use autoreport_protocol::{
     FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSandboxPolicy,
     FileSystemSpecialPath,
 };
 use autoreport_utils_absolute_path::AbsolutePathBuf;
+use autoreport_utils_path_uri::PathUri;
+
+use crate::sandboxing::SandboxCommand;
+use crate::sandboxing::SandboxManager;
+use crate::sandboxing::SandboxTransformRequest;
+use crate::sandboxing::SandboxablePreference;
 
 /// Coarse sandbox preset, mirroring the codex `PermissionProfile` flavors that
 /// matter for an unattended report-writing CLI.
@@ -123,7 +132,7 @@ pub fn build_filesystem_policy(
     }
 }
 
-/// Build the codex network policy for a preset.
+/// Build the network policy for a preset.
 pub fn build_network_policy(spec: &SandboxSpec) -> NetworkSandboxPolicy {
     if spec.network_enabled {
         NetworkSandboxPolicy::Enabled
@@ -133,34 +142,14 @@ pub fn build_network_policy(spec: &SandboxSpec) -> NetworkSandboxPolicy {
 }
 
 /// On macOS, return the full `sandbox-exec` argv that runs `command` under the
-/// seatbelt policy for `spec`.
+/// manager-produced seatbelt policy for `spec`.
 #[cfg(target_os = "macos")]
 pub fn seatbelt_command_argv(
     command: Vec<String>,
     cwd: &Path,
     spec: &SandboxSpec,
 ) -> Option<Vec<String>> {
-    if matches!(spec.mode, SandboxMode::DangerFullAccess) {
-        return None;
-    }
-    let file_system_sandbox_policy = build_filesystem_policy(spec, cwd);
-    let network_sandbox_policy = build_network_policy(spec);
-    let params = crate::sandboxing::seatbelt::CreateSeatbeltCommandArgsParams {
-        command,
-        file_system_sandbox_policy: &file_system_sandbox_policy,
-        network_sandbox_policy,
-        sandbox_policy_cwd: cwd,
-        enforce_managed_network: false,
-        managed_network: None,
-        environment_id: None,
-        network: None,
-        extra_allow_unix_sockets: &[],
-    };
-    let tail = crate::sandboxing::seatbelt::create_seatbelt_command_args(params).ok()?;
-    let mut argv = Vec::with_capacity(tail.len() + 1);
-    argv.push(crate::sandboxing::seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE.to_string());
-    argv.extend(tail);
-    Some(argv)
+    sandbox_command_argv(command, cwd, spec).ok().flatten()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -173,68 +162,83 @@ pub fn seatbelt_command_argv(
 }
 
 /// Return a platform sandbox launcher for `command`. `None` means explicitly
-/// unrestricted `DangerFullAccess`; restrictive modes either return a launcher
-/// or an error, never an unrestricted fallback.
-#[allow(clippy::needless_return)]
+/// unrestricted `DangerFullAccess`; restrictive modes are constructed by the
+/// shared `SandboxManager`, never by a hand-written platform argv builder.
 pub fn sandbox_command_argv(
     command: Vec<String>,
     cwd: &Path,
     spec: &SandboxSpec,
 ) -> Result<Option<Vec<String>>, String> {
-    // Each platform arm lives in its own `#[cfg]` block that `return`s; clippy
-    // reads the macOS block as a needless tail-return, but the cfg structure
-    // (multiple gated arms + a fallthrough) requires explicit returns.
     if matches!(spec.mode, SandboxMode::DangerFullAccess) {
         return Ok(None);
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        return seatbelt_command_argv(command, cwd, spec)
-            .map(Some)
-            .ok_or_else(|| "failed to build the macOS seatbelt sandbox command".to_string());
-    }
+    let file_system_sandbox_policy = build_filesystem_policy(spec, cwd);
+    let network_sandbox_policy = build_network_policy(spec);
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_sandbox_policy,
+        network_sandbox_policy,
+    );
+    let cwd_uri = PathUri::from_host_native_path(cwd)
+        .map_err(|err| format!("sandbox cwd is invalid: {err}"))?;
+    let (program, args) = command
+        .split_first()
+        .ok_or_else(|| "cannot sandbox an empty command".to_string())?;
+    let manager = SandboxManager::new();
+    let sandbox = manager.select_initial(
+        &file_system_sandbox_policy,
+        network_sandbox_policy,
+        SandboxablePreference::Require,
+        WindowsSandboxLevel::Disabled,
+        false,
+    );
+    let linux_helper = resolve_linux_sandbox_executable()?;
+    let transformed = manager
+        .transform(SandboxTransformRequest {
+            command: SandboxCommand {
+                program: OsString::from(program),
+                args: args.to_vec(),
+                cwd: cwd_uri.clone(),
+                env: HashMap::new(),
+                managed_network: None,
+                additional_permissions: None,
+            },
+            permissions: &permission_profile,
+            sandbox,
+            enforce_managed_network: false,
+            environment_id: None,
+            network: None,
+            sandbox_policy_cwd: &cwd_uri,
+            autoreport_linux_sandbox_exe: linux_helper.as_deref(),
+            use_legacy_landlock: false,
+            windows_sandbox_level: WindowsSandboxLevel::Disabled,
+            windows_sandbox_private_desktop: false,
+        })
+        .map_err(|err| format!("failed to prepare sandbox: {err}"))?;
+    Ok(Some(transformed.command))
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        let bubblewrap = std::process::Command::new("bwrap")
-            .arg("--version")
-            .output()
-            .map_err(|e| format!("failed to locate bubblewrap: {e}"))?;
-        if !bubblewrap.status.success() {
-            return Err("workspace-write/read-only requires bubblewrap (bwrap) on Linux; install it or select danger-full-access".to_string());
-        }
-        let mut argv = vec![
-            "bwrap".to_string(),
-            "--die-with-parent".to_string(),
-            "--new-session".to_string(),
-            "--ro-bind".to_string(),
-            "/".to_string(),
-            "/".to_string(),
-            "--tmpfs".to_string(),
-            "/tmp".to_string(),
-        ];
-        if matches!(spec.mode, SandboxMode::WorkspaceWrite) {
-            if let Some(root) = spec.writable_root.as_deref() {
-                let root = root.to_string_lossy().into_owned();
-                argv.extend(["--bind".to_string(), root.clone(), root]);
-            }
-        }
-        if !spec.network_enabled {
-            argv.push("--unshare-net".to_string());
-        }
-        argv.extend([
-            "--chdir".to_string(),
-            cwd.to_string_lossy().into_owned(),
-            "--".to_string(),
-        ]);
-        argv.extend(command);
-        return Ok(Some(argv));
+#[cfg(target_os = "linux")]
+fn resolve_linux_sandbox_executable() -> Result<Option<PathBuf>, String> {
+    let helper = std::env::var_os("AUTOREPORT_LINUX_SANDBOX_EXE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("autoreport-linux-sandbox")))
+        })
+        .ok_or_else(|| "could not resolve the autoreport-linux-sandbox helper".to_string())?;
+    if helper.is_file() {
+        Ok(Some(helper))
+    } else {
+        Err(format!(
+            "missing autoreport-linux-sandbox helper at {}; reinstall the matching AutoReport package or set AUTOREPORT_LINUX_SANDBOX_EXE",
+            helper.display()
+        ))
     }
+}
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (command, cwd, spec);
-        Err("workspace-write/read-only sandboxing is not available on this platform; select danger-full-access to run commands".to_string())
-    }
+#[cfg(not(target_os = "linux"))]
+fn resolve_linux_sandbox_executable() -> Result<Option<PathBuf>, String> {
+    Ok(None)
 }

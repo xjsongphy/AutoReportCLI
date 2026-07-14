@@ -71,18 +71,28 @@ def prepare(path: Path, force: bool) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def native_binary(item: PlatformPackage, vendor_src: Path | None) -> Path:
+def native_binaries(item: PlatformPackage, vendor_src: Path | None) -> tuple[Path, Path | None]:
     name = "autoreport.exe" if item.os == "win32" else "autoreport"
+    helper_name = "autoreport-linux-sandbox"
     if vendor_src:
         candidate = vendor_src / item.target / "bin" / name
         if candidate.is_file():
-            return candidate
+            helper = vendor_src / item.target / "bin" / helper_name
+            if item.os == "linux" and not helper.is_file():
+                raise SystemExit(f"Linux sandbox helper not found: {helper}")
+            return candidate, helper if item.os == "linux" else None
         raise SystemExit(f"prebuilt binary not found: {candidate}")
-    subprocess.run(["cargo", "build", "--release", "-p", "autoreport-cli", "--target", item.target], cwd=ROOT, check=True)
+    packages = ["-p", "autoreport-cli"]
+    if item.os == "linux":
+        packages.extend(["-p", "autoreport-linux-sandbox"])
+    subprocess.run(["cargo", "build", "--release", *packages, "--target", item.target], cwd=ROOT, check=True)
     candidate = ROOT / "target" / item.target / "release" / name
     if not candidate.is_file():
         raise SystemExit(f"cargo did not produce {candidate}")
-    return candidate
+    helper = ROOT / "target" / item.target / "release" / helper_name
+    if item.os == "linux" and not helper.is_file():
+        raise SystemExit(f"cargo did not produce {helper}")
+    return candidate, helper if item.os == "linux" else None
 
 
 def stage_main(destination: Path, version: str) -> None:
@@ -94,12 +104,16 @@ def stage_main(destination: Path, version: str) -> None:
 
 
 def stage_platform(destination: Path, item: PlatformPackage, version: str, vendor_src: Path | None) -> None:
-    binary = native_binary(item, vendor_src)
+    binary, linux_sandbox_helper = native_binaries(item, vendor_src)
     target_dir = destination / "vendor" / item.target / "bin"
     target_dir.mkdir(parents=True)
     output = target_dir / binary.name
     shutil.copy2(binary, output)
     output.chmod(output.stat().st_mode | 0o111)
+    if linux_sandbox_helper:
+        helper_output = target_dir / linux_sandbox_helper.name
+        shutil.copy2(linux_sandbox_helper, helper_output)
+        helper_output.chmod(helper_output.stat().st_mode | 0o111)
     manifest = {"name": item.npm_name, "version": version, "license": "MIT", "os": [item.os], "cpu": [item.cpu], "files": ["vendor"]}
     (destination / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
