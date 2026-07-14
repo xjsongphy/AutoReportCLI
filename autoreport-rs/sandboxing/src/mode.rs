@@ -274,8 +274,57 @@ fn resolve_linux_sandbox_executable() -> Result<Option<PathBuf>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::SandboxMode;
+    use super::SandboxSpec;
     use super::WindowsSandboxLevel;
+    use super::build_filesystem_policy;
+    use super::build_network_policy;
     use super::default_windows_sandbox_level;
+    use autoreport_protocol::NetworkSandboxPolicy;
+
+    #[test]
+    fn workspace_write_preserves_metadata_protection() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
+            .with_writable_root(Some(workspace.path()));
+        let policy = build_filesystem_policy(&spec, workspace.path());
+
+        assert!(
+            policy.can_write_path_with_cwd(&workspace.path().join("report.md"), workspace.path())
+        );
+        for protected_path in [".git/config", ".agents/state", ".autoreport/config.toml"] {
+            assert!(
+                !policy.can_write_path_with_cwd(
+                    &workspace.path().join(protected_path),
+                    workspace.path()
+                ),
+                "workspace-write must protect {protected_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_spec_maps_network_and_full_access_without_downgrade() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let offline = SandboxSpec::new(SandboxMode::ReadOnly, false);
+        assert_eq!(
+            build_network_policy(&offline),
+            NetworkSandboxPolicy::Restricted
+        );
+
+        let full_access = SandboxSpec::new(SandboxMode::DangerFullAccess, true);
+        assert_eq!(
+            build_network_policy(&full_access),
+            NetworkSandboxPolicy::Enabled
+        );
+        let policy = build_filesystem_policy(&full_access, workspace.path());
+        assert!(
+            policy.can_write_path_with_cwd(
+                &workspace.path().join("unrestricted.txt"),
+                workspace.path()
+            )
+        );
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
