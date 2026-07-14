@@ -7,10 +7,10 @@ use crate::provider::openai::OpenAICompatProvider;
 use anyhow::Result;
 use std::sync::Arc;
 
-pub fn build_provider(cfg: &ProviderConfig) -> Result<Arc<dyn LLMProvider>> {
+pub fn build_provider(cfg: &ProviderConfig, model: &str) -> Result<Arc<dyn LLMProvider>> {
     let api_key = crate::config::resolve_api_key(cfg)?;
     let base = cfg.api_base.clone();
-    let model = cfg.model.clone();
+    let model = model.to_string();
     Ok(match cfg.kind.as_str() {
         "anthropic" => {
             Arc::new(AnthropicProvider::new(api_key, base, model)) as Arc<dyn LLMProvider>

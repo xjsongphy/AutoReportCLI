@@ -1,10 +1,10 @@
 //! AutoReportCLI — entry point.
 //!
-//! Resolves the active provider, ensures the workspace folder layout exists,
+//! Resolves the main/sub model bindings, ensures the workspace folder layout exists,
 //! spins up the loop manager (one persistent agent loop per agent type), then
 //! runs the codex-style TUI.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
@@ -20,6 +20,7 @@ use autoreport_cli::bus::Bus;
 use autoreport_cli::config;
 use autoreport_cli::config::Settings;
 use autoreport_cli::config_ui::{ConfigScreen, Outcome};
+use autoreport_cli::model_ui::ModelScreen;
 use autoreport_cli::provider::build_provider;
 use autoreport_cli::runtime::LoopManager;
 use autoreport_cli::tui::Tui;
@@ -34,10 +35,6 @@ struct Cli {
     /// Workspace directory (defaults to the current working directory).
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
-
-    /// Override the active provider key from the config.
-    #[arg(long, value_name = "KEY")]
-    provider: Option<String>,
 
     /// Force a full re-sync of the cc-switch presets and skills repos, then exit.
     #[arg(long)]
@@ -72,9 +69,6 @@ async fn main() -> Result<()> {
 
     // 2) Load config.
     let mut settings = config::load_settings(&workspace)?;
-    if let Some(key) = &cli.provider {
-        settings.active_provider = Some(key.clone());
-    }
 
     // 3) Sync the two upstream repositories (cc-switch presets + skills), like
     //    AutoReport does on startup. Best-effort: network failure keeps the
@@ -130,8 +124,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // First-run wizard: no config file and no resolvable provider key.
-    if config::needs_config(&workspace, &settings) {
+    // API setup is always first: an existing config file with expired/missing
+    // credentials must re-open this page just like a first launch does.
+    if config::needs_api_config(&settings) {
         match run_wizard(&workspace, settings.clone()) {
             Outcome::Saved => {
                 // Re-read the just-written config and continue startup.
@@ -143,29 +138,42 @@ async fn main() -> Result<()> {
         }
     }
 
-    let active_key = settings
-        .active_provider
-        .clone()
-        .or_else(|| settings.providers.keys().next().cloned())
-        .ok_or_else(|| {
-            anyhow!(
-                "no provider configured. Set an API key env var (e.g. ANTHROPIC_API_KEY) or \
-                 create autoreport.config.yaml with a providers entry."
-            )
-        })?;
-    let provider_cfg = settings
-        .providers
-        .get(&active_key)
-        .ok_or_else(|| anyhow!("provider '{active_key}' not found in config"))?;
-    let provider = build_provider(provider_cfg)?;
-    let provider_id = provider.id().to_string();
+    if config::needs_api_config(&settings) {
+        anyhow::bail!(
+            "no usable API is configured; add an API key in /config or the relevant environment variable"
+        );
+    }
+
+    // API setup and model selection are deliberately separate. After API
+    // configuration is complete, the first-run flow asks for main/sub models.
+    if config::needs_model_config(&settings) {
+        match run_model_wizard(&workspace, settings.clone()) {
+            Outcome::Saved => settings = config::load_settings(&workspace)?,
+            Outcome::Cancelled => {}
+        }
+    }
+
+    let (main_api, main_model) = config::resolve_model(&settings, &settings.models.main, "main")?;
+    let (sub_api, sub_model) = config::resolve_model(&settings, &settings.models.sub, "sub")?;
+    let main_provider = build_provider(main_api, main_model)?;
+    let sub_provider = build_provider(sub_api, sub_model)?;
+    let provider_id = format!("main: {} · sub: {}", main_provider.id(), sub_provider.id());
 
     log::info!("workspace: {}", workspace.display());
-    log::info!("active provider: {}", provider_id);
+    log::info!("{}", provider_id);
 
     // 3) Start the agent loops (one per type, all persistent).
     let bus = Bus::new();
-    let mut manager = LoopManager::new(&workspace, provider, bus.clone(), settings.agents.clone());
+    let sandbox =
+        autoreport_cli::sandbox::SandboxSpec::new(settings.sandbox_mode, settings.sandbox_network);
+    let mut manager = LoopManager::new(
+        &workspace,
+        main_provider,
+        sub_provider,
+        bus.clone(),
+        settings.agents.clone(),
+        sandbox,
+    );
     manager.start()?;
 
     // 4) Run the codex-style TUI.
@@ -174,6 +182,28 @@ async fn main() -> Result<()> {
     tui.run().await?;
 
     Ok(())
+}
+
+/// Open the full-screen model-selection wizard after API setup.
+fn run_model_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
+    enable_raw_mode().ok();
+    let _ = execute!(io::stdout(), EnterAlternateScreen);
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Outcome::Cancelled;
+        }
+    };
+    let mut screen = ModelScreen::new(settings, workspace.to_path_buf());
+    let outcome = screen
+        .run_fullscreen(&mut terminal)
+        .unwrap_or(Outcome::Cancelled);
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    outcome
 }
 
 /// Open the full-screen config wizard. Owns terminal setup/teardown.

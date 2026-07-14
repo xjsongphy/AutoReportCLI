@@ -1,4 +1,4 @@
-//! Codex-login-page-style full-screen config screen.
+//! Full-screen API configuration screen.
 //!
 //! Two lifecycle modes share one render + key-handling implementation:
 //! `run_fullscreen` (first-run wizard, standalone loop) and the `/config`
@@ -36,29 +36,18 @@ pub enum Step {
 /// Editable form field. `Save`/`Cancel` are pseudo-fields rendered as actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
-    Model,
     ApiBase,
     ApiKey,
-    Active,
     Save,
     Cancel,
 }
 
 impl Field {
-    pub const ALL: [Field; 6] = [
-        Field::Model,
-        Field::ApiBase,
-        Field::ApiKey,
-        Field::Active,
-        Field::Save,
-        Field::Cancel,
-    ];
+    pub const ALL: [Field; 4] = [Field::ApiBase, Field::ApiKey, Field::Save, Field::Cancel];
     pub fn label(self) -> &'static str {
         match self {
-            Field::Model => "model",
             Field::ApiBase => "api_base",
             Field::ApiKey => "api_key",
-            Field::Active => "set as active",
             Field::Save => "► Save",
             Field::Cancel => "✕ Cancel",
         }
@@ -68,13 +57,6 @@ impl Field {
     pub fn validate(self, value: &str) -> Result<(), String> {
         let trimmed = value.trim();
         match self {
-            Field::Model => {
-                if trimmed.is_empty() {
-                    Err("model must not be empty".into())
-                } else {
-                    Ok(())
-                }
-            }
             Field::ApiBase => {
                 if trimmed.is_empty() {
                     Ok(())
@@ -163,10 +145,7 @@ pub struct ConfigScreen {
 impl ConfigScreen {
     pub fn new(settings: Settings, workspace: PathBuf) -> Self {
         let groups = provider_groups(&settings);
-        let active = settings
-            .active_provider
-            .clone()
-            .or_else(|| groups.first().and_then(|g| g.keys.first().cloned()));
+        let active = groups.first().and_then(|g| g.keys.first().cloned());
         let (group_selected, selected_in_group) = active
             .as_deref()
             .and_then(|active_key| {
@@ -185,7 +164,7 @@ impl ConfigScreen {
             group_selected,
             selected_in_group,
             step: Step::Select,
-            field: Field::Model,
+            field: Field::ApiBase,
             editing: false,
             input: String::new(),
             cursor: 0,
@@ -251,15 +230,37 @@ impl ConfigScreen {
         self.selected_in_group = selected_in_group;
     }
 
-    /// Toggle the selected provider as the active one.
-    pub fn toggle_active(&mut self) {
-        if let Some(k) = self.selected_key() {
-            self.settings.active_provider = Some(k.to_string());
-        }
-    }
-
-    fn selected_is_active(&self) -> bool {
-        self.settings.active_provider.as_deref() == self.selected_key()
+    /// Add an OpenAI-compatible API entry so first-run setup remains usable
+    /// even when preset sync did not provide any provider entries.
+    pub fn add_custom_api(&mut self) {
+        let mut suffix = 1usize;
+        let key = loop {
+            let candidate = if suffix == 1 {
+                "custom".to_string()
+            } else {
+                format!("custom-{suffix}")
+            };
+            if !self.settings.providers.contains_key(&candidate) {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        self.settings.providers.insert(
+            key.clone(),
+            ProviderConfig {
+                kind: "openai".to_string(),
+                legacy_model: None,
+                api_key: None,
+                api_base: None,
+                api_key_env: None,
+                temperature: 0.1,
+                max_tokens: 8192,
+            },
+        );
+        self.select_provider_key(Some(&key));
+        self.step = Step::Edit;
+        self.field = Field::ApiBase;
+        self.error = None;
     }
 
     /// Validate and write a field's value into the selected provider. Returns
@@ -279,7 +280,6 @@ impl ConfigScreen {
             }
         };
         match field {
-            Field::Model => provider.model = value,
             Field::ApiBase => provider.api_base = if value.is_empty() { None } else { Some(value) },
             Field::ApiKey => provider.api_key = if value.is_empty() { None } else { Some(value) },
             _ => {}
@@ -295,7 +295,7 @@ impl ConfigScreen {
         f.render_widget(Clear, area);
 
         let dialog = centered_rect(area, 92, 82);
-        let title = " AutoReportCLI · provider setup ";
+        let title = " AutoReportCLI · API configuration ";
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -336,14 +336,9 @@ impl ConfigScreen {
             kv_label("group"),
             kv_value(&self.group_summary(), Color::Cyan),
             Span::raw("    "),
-            kv_label("provider"),
+            kv_label("API"),
             kv_value(self.selected_key().unwrap_or("-"), Color::Yellow),
             Span::raw("    "),
-            kv_label("startup"),
-            kv_value(
-                self.settings.active_provider.as_deref().unwrap_or("-"),
-                Color::LightGreen,
-            ),
         ]);
         let groups_line = Line::from(vec![
             kv_label("groups"),
@@ -378,7 +373,6 @@ impl ConfigScreen {
             .iter()
             .enumerate()
             .map(|(_, k)| {
-                let active = self.settings.active_provider.as_deref() == Some(k.as_str());
                 let ok = self
                     .settings
                     .providers
@@ -391,24 +385,8 @@ impl ConfigScreen {
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
-                let name_style = if active {
-                    Style::default()
-                        .fg(Color::LightGreen)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().add_modifier(Modifier::BOLD)
-                };
+                let name_style = Style::default().add_modifier(Modifier::BOLD);
                 let mut spans = vec![Span::styled(format!("{k:<20}"), name_style)];
-                if active {
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(
-                        "startup",
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::LightGreen)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(format!("{key_icon:>8}"), key_style));
                 let line = Line::from(spans);
@@ -495,30 +473,18 @@ impl ConfigScreen {
             )),
             Line::raw(""),
             detail_line("kind", &provider.kind),
-            detail_line("model", &provider.model),
             detail_line("api_base", api_base),
             detail_line("api_key_env", &api_key_env),
             detail_line("key", key_state),
-            detail_line(
-                "startup",
-                if self.settings.active_provider.as_deref() == Some(key_name) {
-                    "enabled"
-                } else {
-                    "inactive"
-                },
-            ),
             Line::raw(""),
             Line::from(vec![
-                Span::styled("Space", Style::default().fg(Color::White)),
-                Span::styled(
-                    " to set as startup provider",
-                    Style::default().fg(Color::Gray),
-                ),
+                Span::styled("Enter", Style::default().fg(Color::White)),
+                Span::styled(" to edit selected API", Style::default().fg(Color::Gray)),
             ]),
             Line::from(vec![
-                Span::styled("Enter", Style::default().fg(Color::White)),
+                Span::styled("n", Style::default().fg(Color::White)),
                 Span::styled(
-                    " to edit selected provider",
+                    " to add a custom OpenAI-compatible API",
                     Style::default().fg(Color::Gray),
                 ),
             ]),
@@ -540,7 +506,7 @@ impl ConfigScreen {
         };
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
-            format!("Editing provider: {}", self.selected_key().unwrap_or("?")),
+            format!("Editing API: {}", self.selected_key().unwrap_or("?")),
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Yellow),
@@ -549,20 +515,12 @@ impl ConfigScreen {
 
         for field in Field::ALL {
             let value: String = match field {
-                Field::Model => provider.model.clone(),
                 Field::ApiBase => provider.api_base.clone().unwrap_or_default(),
                 Field::ApiKey => provider
                     .api_key
                     .clone()
                     .map(|k| format!("{}••••", &k[..k.len().min(4)]))
                     .unwrap_or_else(|| "(env)".into()),
-                Field::Active => {
-                    if self.settings.active_provider.as_deref() == self.selected_key() {
-                        "[X]".into()
-                    } else {
-                        "[ ]".into()
-                    }
-                }
                 Field::Save | Field::Cancel => String::new(),
             };
 
@@ -617,8 +575,8 @@ impl ConfigScreen {
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
         let hint = match (self.step, self.editing) {
             (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
-            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: provider   Space: set startup   Enter: edit   Esc: cancel".to_string(),
-            (Step::Edit, _) => " ↑/↓: field   Enter: edit/toggle   Esc: back".to_string(),
+            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: API   n: add custom API   Enter: edit   Esc: cancel".to_string(),
+            (Step::Edit, _) => " ↑/↓: field   Enter: edit/action   Esc: back".to_string(),
             (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
         };
         let mut text = hint;
@@ -653,6 +611,10 @@ impl ConfigScreen {
 
     fn handle_select_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
+            KeyCode::Char('n') => {
+                self.add_custom_api();
+                None
+            }
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.group_selected > 0 {
                     self.group_selected -= 1;
@@ -682,15 +644,9 @@ impl ConfigScreen {
                 }
                 None
             }
-            KeyCode::Char(' ') | KeyCode::Char('a') => {
-                if !self.selected_is_active() {
-                    self.toggle_active();
-                }
-                None
-            }
             KeyCode::Enter => {
                 self.step = Step::Edit;
-                self.field = Field::Model;
+                self.field = Field::ApiBase;
                 None
             }
             KeyCode::Esc => Some(Outcome::Cancelled),
@@ -717,12 +673,8 @@ impl ConfigScreen {
                 None
             }
             KeyCode::Enter => match self.field {
-                Field::Model | Field::ApiBase | Field::ApiKey => {
+                Field::ApiBase | Field::ApiKey => {
                     self.begin_edit();
-                    None
-                }
-                Field::Active => {
-                    self.toggle_active();
                     None
                 }
                 Field::Save => {
@@ -760,7 +712,6 @@ impl ConfigScreen {
 
     fn begin_edit(&mut self) {
         let cur = match self.field {
-            Field::Model => self.selected_provider().map(|p| p.model.clone()),
             Field::ApiBase => self.selected_provider().and_then(|p| p.api_base.clone()),
             Field::ApiKey => self.selected_provider().and_then(|p| p.api_key.clone()),
             _ => None,
@@ -893,26 +844,19 @@ mod tests {
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();
         s.providers.insert(provider.into(), cfg);
-        s.active_provider = Some(provider.into());
         s
     }
 
-    fn provider(model: &str) -> ProviderConfig {
+    fn provider() -> ProviderConfig {
         ProviderConfig {
             kind: "anthropic".into(),
-            model: model.into(),
+            legacy_model: None,
             api_key: Some("sk-test".into()),
             api_base: None,
             api_key_env: None,
             temperature: 0.1,
             max_tokens: 8192,
         }
-    }
-
-    #[test]
-    fn validate_rejects_empty_model() {
-        assert!(Field::Model.validate("").is_err());
-        assert!(Field::Model.validate("claude-x").is_ok());
     }
 
     #[test]
@@ -928,23 +872,9 @@ mod tests {
     }
 
     #[test]
-    fn set_active_mutates_settings() {
-        let mut s = settings_with("a", provider("m-a"));
-        let mut b = provider("m-b");
-        b.kind = "google".into();
-        s.providers.insert("b".into(), b);
-        let mut screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
-        assert_eq!(screen.settings.active_provider.as_deref(), Some("a"));
-        screen.group_selected = 1;
-        screen.selected_in_group = 0;
-        screen.toggle_active();
-        assert_eq!(screen.settings.active_provider.as_deref(), Some("b"));
-    }
-
-    #[test]
     fn groups_are_built_by_provider_kind() {
-        let mut s = settings_with("a", provider("m-a"));
-        let mut b = provider("m-b");
+        let mut s = settings_with("a", provider());
+        let mut b = provider();
         b.kind = "google".into();
         s.providers.insert("b".into(), b);
         let screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
@@ -954,24 +884,25 @@ mod tests {
     }
 
     #[test]
-    fn select_page_can_activate_provider_directly() {
-        let mut s = settings_with("a", provider("m-a"));
-        let mut b = provider("m-b");
-        b.kind = "google".into();
-        s.providers.insert("b".into(), b);
+    fn commit_field_writes_into_selected_api() {
+        let s = settings_with("a", provider());
         let mut screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
-        screen.group_selected = 1;
-        screen.selected_in_group = 0;
-        screen.handle_select_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert_eq!(screen.settings.active_provider.as_deref(), Some("b"));
+        screen
+            .commit(Field::ApiBase, "https://api.example.com/v1".into())
+            .unwrap();
+        assert_eq!(
+            screen.settings.providers["a"].api_base.as_deref(),
+            Some("https://api.example.com/v1")
+        );
     }
 
     #[test]
-    fn commit_field_writes_into_selected_provider() {
-        let s = settings_with("a", provider("old"));
-        let mut screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
-        screen.commit(Field::Model, "new-model".into()).unwrap();
-        assert_eq!(screen.settings.providers["a"].model, "new-model");
+    fn add_custom_api_works_with_an_empty_provider_list() {
+        let mut screen = ConfigScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        screen.add_custom_api();
+        assert_eq!(screen.selected_key(), Some("custom"));
+        assert_eq!(screen.settings.providers["custom"].kind, "openai");
+        assert_eq!(screen.step, Step::Edit);
     }
 
     #[test]
@@ -980,7 +911,7 @@ mod tests {
         let s = Settings::default();
         let mut screen = ConfigScreen::new(s, dir.path().to_path_buf());
         // Simulate cancel: no save_settings call happens, only in-memory edits.
-        screen.commit(Field::Model, "ignored".into()).ok();
+        screen.commit(Field::ApiKey, "ignored".into()).ok();
         assert!(needs_config(dir.path(), &screen.settings));
         // save_settings was never invoked, so the file is absent:
         assert!(!dir.path().join("autoreport.config.yaml").exists());

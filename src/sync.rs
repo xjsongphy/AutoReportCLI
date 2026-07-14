@@ -33,14 +33,18 @@ const PRESET_FILES: &[&str] = &[
 ];
 
 /// Skills to pull from the skills repo (name → path within repo).
+///
+/// Mirrors AutoReport's `core/preset_sync.py`: only `latex-compile` and
+/// `experiment-report-writer` are external skills. `mineru` is not pulled —
+/// it is exposed as a tool (the `mineru-open-api` CLI is on the exec
+/// allowlist), not a skill. `md-report-writer` is not pulled — report
+/// writing is AutoReport's own purpose and lives in the agent templates.
 const SKILL_FILES: &[(&str, &str)] = &[
     (
         "experiment-report-writer",
         "experiment-report-writer/SKILL.md",
     ),
     ("latex-compile", "latex-compile/SKILL.md"),
-    ("md-report-writer", "md-report-writer/SKILL.md"),
-    ("mineru", "mineru/SKILL.md"),
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -544,12 +548,11 @@ pub fn register_providers(settings: &mut Settings, presets: &[PresetProvider]) {
         if settings.providers.contains_key(&p.name) {
             continue;
         }
-        let model = p.models.first().cloned().unwrap_or_default();
         settings.providers.insert(
             p.name.clone(),
             ProviderConfig {
                 kind: p.kind.clone(),
-                model,
+                legacy_model: None,
                 api_key: None,
                 api_base: if p.base_url.is_empty() {
                     None
@@ -639,7 +642,7 @@ mod tests {
             "anthropic".into(),
             ProviderConfig {
                 kind: "anthropic".into(),
-                model: "x".into(),
+                legacy_model: None,
                 api_key: None,
                 api_base: None,
                 api_key_env: None,
@@ -655,7 +658,10 @@ mod tests {
             env_key: None,
         }];
         register_providers(&mut settings, &presets);
-        assert_eq!(settings.providers.get("anthropic").unwrap().model, "x");
+        assert_eq!(
+            settings.providers.get("anthropic").unwrap().legacy_model,
+            None
+        );
     }
 
     #[test]

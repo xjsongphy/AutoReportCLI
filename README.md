@@ -51,7 +51,7 @@ single codex-style TUI.
 - **Codex-Style Interface** — full-screen terminal UI with agent panes, streaming output, markdown rendering, and keyboard-first navigation
 - **Persistent Agent Sessions** — each agent keeps its own conversation history and resumes on the next launch
 - **`@` File Mentions** — fuzzy-search workspace files and inject them into prompts directly from the input box
-- **Slash Commands** — `/agents`, `/switch`, `/config`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
+- **Slash Commands** — `/agents`, `/switch`, `/config`, `/models`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
 
 ## Quick Start
 
@@ -98,12 +98,12 @@ Configure a provider in any of these ways:
 
 - Set an API key environment variable such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`
 - Create `autoreport.config.yaml` from `autoreport.config.example.yaml`
+- Use `/config` to configure APIs, then `/models` to bind separate main and sub-agent model names to an API. First launch opens these pages in that order when needed.
 - Let the first-run full-screen setup page guide you through provider selection and saving
 
 Useful CLI flags:
 
 - `--workspace <dir>` to run on a different project folder
-- `--provider <key>` to override the active provider
 - `--no-sync` to skip startup sync and use cache only
 - `--sync-presets` to force a refresh and exit
 - `-v` for verbose logs

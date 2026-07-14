@@ -49,7 +49,7 @@ codex 风格的 TUI 协调五个智能体完成整份报告。
 - **Codex 风格界面** — 全屏终端 UI，支持流式输出、Markdown 渲染和键盘优先操作
 - **持久化会话** — 每个智能体各自维护上下文，下次启动可继续之前的对话
 - **`@` 文件提及** — 在输入框中模糊搜索工作区文件并直接注入上下文
-- **斜杠命令** — `/agents`、`/switch`、`/config`、`/clear`、`/compact`、`/new`、`/manifest`、`/index`、`/help`
+- **斜杠命令** — `/agents`、`/switch`、`/config`、`/models`、`/clear`、`/compact`、`/new`、`/manifest`、`/index`、`/help`
 
 ## 快速开始
 
@@ -97,11 +97,11 @@ Provider 可以通过以下任一方式配置：
 - 设置环境变量，例如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`
 - 参考 `autoreport.config.example.yaml` 创建 `autoreport.config.yaml`
 - 在首次启动时使用全屏配置页交互式完成设置
+- `/config` 只配置 API；再用 `/models` 先选择 API、后填写模型名，分别绑定主 agent 与四个 sub agent。首次启动会按 API、模型的顺序打开缺失的配置页。
 
 常用 CLI 参数：
 
 - `--workspace <dir>` 指定工作目录
-- `--provider <key>` 临时覆盖当前 provider
 - `--no-sync` 跳过启动同步，仅使用本地缓存
 - `--sync-presets` 强制刷新预设后退出
 - `-v` 输出详细日志

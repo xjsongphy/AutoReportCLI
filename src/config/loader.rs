@@ -1,6 +1,7 @@
 //! Settings loading, API-key resolution and workspace folder creation.
 
-use crate::config::schema::Settings;
+use crate::config::schema::{ModelConfig, Settings};
+use crate::policy::AskForApproval;
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
@@ -45,11 +46,7 @@ pub fn ensure_workspace(workspace: &Path) -> Result<()> {
                 let _ = std::fs::create_dir_all(parent);
             }
             std::fs::rename(&old_path, &new_path).with_context(|| {
-                format!(
-                    "migrating {} -> {}",
-                    old_path.display(),
-                    new_path.display()
-                )
+                format!("migrating {} -> {}", old_path.display(), new_path.display())
             })?;
             log::info!("migrated directory {} -> {}", legacy, current);
         }
@@ -78,6 +75,7 @@ pub fn load_settings(workspace: &Path) -> Result<Settings> {
         let mut settings: Settings =
             serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         apply_env_overrides(&mut settings);
+        normalize(&mut settings);
         Ok(settings)
     } else {
         log::info!(
@@ -86,6 +84,7 @@ pub fn load_settings(workspace: &Path) -> Result<Settings> {
         );
         let mut settings = Settings::default();
         apply_env_overrides(&mut settings);
+        normalize(&mut settings);
         Ok(settings)
     }
 }
@@ -124,8 +123,55 @@ fn apply_env_overrides(settings: &mut Settings) {
             Some("https://openrouter.ai/api/v1"),
         );
     }
-    if settings.active_provider.is_none() {
-        settings.active_provider = settings.providers.keys().next().cloned();
+}
+
+/// Post-parse normalization. Today this only clamps the approval policy: only
+/// `AskForApproval::Never` is wired into the agent loop, so any other codex
+/// variant the user set is logged and forced to `Never` (rather than silently
+/// behaving as if honored). Once interactive approval is implemented, this
+/// clamp moves aside.
+fn normalize(settings: &mut Settings) {
+    if settings.agents.approval_policy != AskForApproval::Never {
+        log::warn!(
+            "approval_policy: only 'never' is currently supported (got '{}'); treating as 'never'",
+            settings.agents.approval_policy
+        );
+        settings.agents.approval_policy = AskForApproval::Never;
+    }
+    // Mirror the top-level user-facing `context_window` into the per-agent
+    // defaults that runtime code (auto-compaction) actually reads.
+    settings.agents.context_window = settings.context_window;
+    migrate_legacy_model_settings(settings);
+}
+
+/// Populate the new model bindings from an older `active_provider` plus its
+/// `model`, but only when a binding has not already been configured.
+fn migrate_legacy_model_settings(settings: &mut Settings) {
+    let fallback_provider = settings
+        .legacy_active_provider
+        .clone()
+        .filter(|key| settings.providers.contains_key(key))
+        .or_else(|| settings.providers.keys().next().cloned());
+    let Some(provider) = fallback_provider else {
+        return;
+    };
+    let legacy_model = settings
+        .providers
+        .get(&provider)
+        .and_then(|cfg| cfg.legacy_model.clone())
+        .unwrap_or_default();
+    for selection in [&mut settings.models.main, &mut settings.models.sub] {
+        let inherited_provider = selection.provider.is_empty();
+        if selection.provider.is_empty() {
+            selection.provider = provider.clone();
+        }
+        // Never copy a model name from one API onto an explicitly selected
+        // different API. A partially migrated config must still open the model
+        // page instead of silently sending (for example) a Claude model to an
+        // OpenAI endpoint.
+        if selection.model.is_empty() && (inherited_provider || selection.provider == provider) {
+            selection.model = legacy_model.clone();
+        }
     }
 }
 
@@ -135,7 +181,7 @@ fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_b
             key.to_string(),
             crate::config::schema::ProviderConfig {
                 kind: kind.to_string(),
-                model: String::new(), // factory picks a default per kind
+                legacy_model: None,
                 api_key: None,
                 api_base: api_base.map(String::from),
                 api_key_env: None,
@@ -144,6 +190,45 @@ fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_b
             },
         );
     }
+}
+
+/// True when both runtime model bindings are complete and reference known APIs.
+pub fn needs_model_config(settings: &Settings) -> bool {
+    [&settings.models.main, &settings.models.sub]
+        .iter()
+        .any(|model| {
+            model.provider.is_empty()
+                || model.model.is_empty()
+                || settings
+                    .providers
+                    .get(&model.provider)
+                    .is_none_or(|provider| resolve_api_key(provider).is_err())
+        })
+}
+
+/// True when startup needs the API configuration page. An API is usable only
+/// when its key can be resolved from inline config or the environment.
+pub fn needs_api_config(settings: &Settings) -> bool {
+    settings
+        .providers
+        .values()
+        .all(|provider| resolve_api_key(provider).is_err())
+}
+
+/// Resolve one model binding to its API configuration and model identifier.
+pub fn resolve_model<'a>(
+    settings: &'a Settings,
+    model: &'a ModelConfig,
+    label: &str,
+) -> Result<(&'a crate::config::schema::ProviderConfig, &'a str)> {
+    if model.provider.trim().is_empty() || model.model.trim().is_empty() {
+        return Err(anyhow!("{label} model is not configured; run /models"));
+    }
+    let provider = settings
+        .providers
+        .get(&model.provider)
+        .ok_or_else(|| anyhow!("{label} model references unknown API '{}'", model.provider))?;
+    Ok((provider, model.model.trim()))
 }
 
 /// Resolve the effective API key for a provider: YAML value → preset env var →
@@ -198,16 +283,8 @@ pub fn save_settings(workspace: &Path, settings: &Settings) -> Result<()> {
 /// True when there is no config file AND no provider key is resolvable — the
 /// first-run wizard trigger.
 pub fn needs_config(workspace: &Path, settings: &Settings) -> bool {
-    if workspace.join("autoreport.config.yaml").exists() {
-        return false;
-    }
-    if settings.providers.is_empty() {
-        return true;
-    }
-    settings
-        .providers
-        .values()
-        .all(|p| resolve_api_key(p).is_err())
+    let _ = workspace;
+    needs_api_config(settings)
 }
 
 #[cfg(test)]
@@ -257,7 +334,7 @@ mod tests {
             "anthropic".into(),
             ProviderConfig {
                 kind: "anthropic".into(),
-                model: "claude-x".into(),
+                legacy_model: None,
                 api_key: Some("sk-test".into()),
                 api_base: None,
                 api_key_env: None,
@@ -265,14 +342,18 @@ mod tests {
                 max_tokens: 8192,
             },
         );
-        settings.active_provider = Some("anthropic".into());
+        settings.models.main = ModelConfig {
+            provider: "anthropic".into(),
+            model: "claude-x".into(),
+        };
+        settings.models.sub = settings.models.main.clone();
 
         save_settings(dir.path(), &settings).unwrap();
         assert!(dir.path().join("autoreport.config.yaml").exists());
 
         let reloaded = load_settings(dir.path()).unwrap();
-        assert_eq!(reloaded.active_provider.as_deref(), Some("anthropic"));
-        assert_eq!(reloaded.providers["anthropic"].model, "claude-x");
+        assert_eq!(reloaded.models.main.provider, "anthropic");
+        assert_eq!(reloaded.models.main.model, "claude-x");
         assert_eq!(
             reloaded.providers["anthropic"].api_key.as_deref(),
             Some("sk-test")
@@ -291,10 +372,99 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(
             dir.path().join("autoreport.config.yaml"),
-            "active_provider: x\n",
+            "providers:\n  openai:\n    api_key: test\n",
         )
         .unwrap();
-        let settings = Settings::default();
+        let settings = load_settings(dir.path()).unwrap();
         assert!(!needs_config(dir.path(), &settings));
+    }
+
+    #[test]
+    fn default_approval_policy_is_never() {
+        let settings = Settings::default();
+        assert_eq!(
+            settings.agents.approval_policy,
+            crate::policy::AskForApproval::Never
+        );
+    }
+
+    #[test]
+    fn loader_clamps_non_never_approval_to_never() {
+        let dir = tempdir().unwrap();
+        // Valid codex value, but unsupported here — loader must warn + clamp.
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "agents:\n  approval_policy: on-request\n",
+        )
+        .unwrap();
+        let settings = load_settings(dir.path()).unwrap();
+        assert_eq!(
+            settings.agents.approval_policy,
+            crate::policy::AskForApproval::Never
+        );
+    }
+
+    #[test]
+    fn loader_keeps_never_approval() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "agents:\n  approval_policy: never\n",
+        )
+        .unwrap();
+        let settings = load_settings(dir.path()).unwrap();
+        assert_eq!(
+            settings.agents.approval_policy,
+            crate::policy::AskForApproval::Never
+        );
+    }
+
+    #[test]
+    fn needs_api_config_when_existing_file_has_no_resolvable_key() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "providers:\n  openai:\n    kind: openai\n",
+        )
+        .unwrap();
+        let settings = load_settings(dir.path()).unwrap();
+        assert!(needs_config(dir.path(), &settings));
+    }
+
+    #[test]
+    fn partial_migration_never_crosses_api_and_model() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "active_provider: anthropic\nproviders:\n  anthropic:\n    kind: anthropic\n    model: claude-legacy\n    api_key: test\n  openai:\n    kind: openai\n    api_key: test\nmodels:\n  main:\n    provider: openai\n",
+        )
+        .unwrap();
+        let settings = load_settings(dir.path()).unwrap();
+        assert_eq!(settings.models.main.provider, "openai");
+        assert!(settings.models.main.model.is_empty());
+        assert!(needs_model_config(&settings));
+    }
+
+    #[test]
+    fn legacy_active_provider_and_model_migrate_to_main_and_sub() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("autoreport.config.yaml"),
+            "active_provider: legacy\nproviders:\n  legacy:\n    kind: openai\n    model: gpt-legacy\n    api_key: test\n",
+        )
+        .unwrap();
+
+        let settings = load_settings(dir.path()).unwrap();
+        assert_eq!(settings.models.main.provider, "legacy");
+        assert_eq!(settings.models.main.model, "gpt-legacy");
+        assert_eq!(settings.models.sub.provider, "legacy");
+        assert_eq!(settings.models.sub.model, "gpt-legacy");
+
+        save_settings(dir.path(), &settings).unwrap();
+        let saved = std::fs::read_to_string(dir.path().join("autoreport.config.yaml")).unwrap();
+        assert!(!saved.contains("active_provider"));
+        let saved_yaml: serde_yaml::Value = serde_yaml::from_str(&saved).unwrap();
+        assert!(saved_yaml["providers"]["legacy"].get("model").is_none());
+        assert!(saved.contains("models:"));
     }
 }

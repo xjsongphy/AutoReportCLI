@@ -27,17 +27,21 @@ pub struct LoopManager {
     skills: SkillLoader,
     prompts: PromptLoader,
     defaults: AgentDefaults,
+    sandbox: crate::sandbox::SandboxSpec,
     loops: HashMap<AgentType, Arc<AgentLoop>>,
-    provider_storage: Arc<dyn LLMProvider>,
+    main_provider: Arc<dyn LLMProvider>,
+    sub_provider: Arc<dyn LLMProvider>,
 }
 
 impl LoopManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: &Path,
-        provider: Arc<dyn LLMProvider>,
+        main_provider: Arc<dyn LLMProvider>,
+        sub_provider: Arc<dyn LLMProvider>,
         bus: Bus,
         defaults: AgentDefaults,
+        sandbox: crate::sandbox::SandboxSpec,
     ) -> Self {
         let task_board = TaskBoard::new();
         let manifest = ManifestStore::new(workspace);
@@ -51,16 +55,22 @@ impl LoopManager {
             skills,
             prompts,
             defaults,
+            sandbox,
             loops: HashMap::new(),
-            provider_storage: provider,
+            main_provider,
+            sub_provider,
         }
     }
 
     /// Build each agent loop and start it. Agents persist until the process
     /// exits (they are never shut down); only their context can be cleared.
     pub fn start(&mut self) -> Result<()> {
-        let provider = self.provider_storage.clone();
         for agent in AgentType::ALL {
+            let provider = if agent == AgentType::Main {
+                self.main_provider.clone()
+            } else {
+                self.sub_provider.clone()
+            };
             let tools = self.build_tools(agent);
             let loop_ = Arc::new(AgentLoop::new(
                 agent,
@@ -156,6 +166,7 @@ impl LoopManager {
         registry.register(crate::tools::exec_tool::make(
             ctx,
             self.defaults.exec_timeout_secs,
+            self.sandbox.clone(),
         ));
 
         // Manifest.
