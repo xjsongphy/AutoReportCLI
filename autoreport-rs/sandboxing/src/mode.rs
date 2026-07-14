@@ -361,6 +361,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regular_workspaces_keep_temporary_file_write_access() {
+        let workspace = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("workspace");
+        let agent_root = workspace.path().join("agent");
+        std::fs::create_dir_all(&agent_root).expect("agent root");
+        let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
+            .with_writable_root(Some(&agent_root));
+        let policy = build_filesystem_policy(&spec, workspace.path());
+
+        assert!(policy.can_write_path_with_cwd(
+            &std::env::temp_dir().join("autoreport-sandbox-temp-probe"),
+            workspace.path()
+        ));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn network_enabled_modes_use_the_unelevated_windows_backend() {
