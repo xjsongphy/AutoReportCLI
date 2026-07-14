@@ -533,6 +533,39 @@ mod tests {
     }
 
     #[test]
+    fn npm_platform_package_keeps_target_level_resources() -> std::io::Result<()> {
+        let package_root = tempfile::tempdir()?;
+        let package_dir = package_root.path().join("vendor/x86_64-unknown-linux-musl");
+        let bin_dir = package_dir.join(BIN_DIRNAME);
+        let resources_dir = package_dir.join(RESOURCES_DIRNAME);
+        fs::create_dir_all(&bin_dir)?;
+        fs::create_dir_all(&resources_dir)?;
+        fs::write(package_dir.join(PACKAGE_METADATA_FILENAME), "{}")?;
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "autoreport"
+        });
+        let helper_path = resources_dir.join("bwrap");
+        fs::write(&exe_path, "")?;
+        fs::write(&helper_path, "")?;
+        let canonical_helper_path =
+            AbsolutePathBuf::from_absolute_path(helper_path.canonicalize()?)?;
+
+        let context = InstallContext::from_exe(
+            /*is_macos*/ false,
+            /*current_exe*/ Some(&exe_path),
+            /*method_override*/ Some(InstallMethod::Npm),
+        );
+        assert_eq!(context.method, InstallMethod::Npm);
+        assert_eq!(
+            context.bundled_resource("bwrap"),
+            Some(canonical_helper_path)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn standalone_package_rg_falls_back_when_codex_path_is_missing() -> std::io::Result<()> {
         let package_dir = tempfile::tempdir()?;
         let bin_dir = package_dir.path().join(BIN_DIRNAME);
