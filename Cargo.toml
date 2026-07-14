@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "codex-rs/cli",
-    "codex-rs/core",
-    "codex-rs/protocol",
-    "codex-rs/rollout",
-    "codex-rs/runtime",
-    "codex-rs/tui",
-    "codex-rs/tools",
-    "codex-rs/utils/absolute-path",
-    "codex-rs/utils/path-uri",
-    "codex-rs/sandboxing",
+    "autoreport-rs/cli",
+    "autoreport-rs/core",
+    "autoreport-rs/protocol",
+    "autoreport-rs/rollout",
+    "autoreport-rs/runtime",
+    "autoreport-rs/tui",
+    "autoreport-rs/tools",
+    "autoreport-rs/utils/absolute-path",
+    "autoreport-rs/utils/path-uri",
+    "autoreport-rs/sandboxing",
 ]
 resolver = "2"
 

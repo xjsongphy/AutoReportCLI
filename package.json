@@ -3,10 +3,10 @@
   "private": true,
   "description": "Repository maintenance and release tooling for AutoReportCLI.",
   "scripts": {
-    "format": "prettier --check '*.json' '*.md' 'autoreport/**/*.js'",
-    "format:fix": "prettier --write '*.json' '*.md' 'autoreport/**/*.js'",
-    "build:npm": "python3 autoreport/scripts/build_npm_package.py",
-    "pack:npm": "cd autoreport && npm pack --dry-run"
+    "format": "prettier --check '*.json' '*.md' 'autoreport-cli/**/*.js'",
+    "format:fix": "prettier --write '*.json' '*.md' 'autoreport-cli/**/*.js'",
+    "build:npm": "python3 autoreport-cli/scripts/build_npm_package.py",
+    "pack:npm": "cd autoreport-cli && npm pack --dry-run"
   },
   "devDependencies": {
     "prettier": "^3.5.3"

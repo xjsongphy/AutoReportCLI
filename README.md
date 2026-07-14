@@ -67,7 +67,7 @@ cargo build --release
 Install globally if you want `autoreport` available from any directory:
 
 ```bash
-cargo install --path codex-rs/cli
+cargo install --path autoreport-rs/cli
 ```
 
 Or run the built binary directly:
@@ -127,7 +127,7 @@ The Rust source follows Codex's workspace layout rather than a monolithic
 `src/` tree:
 
 ```text
-codex-rs/
+autoreport-rs/
 ├── cli/          executable entry point
 ├── core/         configuration, providers, agents, skills, and domain types
 ├── protocol/     shared policy and sandbox protocol types
@@ -149,7 +149,7 @@ Build an npm package with a native binary for the current Rust target:
 
 ```bash
 npm run build:npm
-(cd autoreport && npm pack --dry-run)
+(cd autoreport-cli && npm pack --dry-run)
 ```
 
 For implementation status and parity notes, see

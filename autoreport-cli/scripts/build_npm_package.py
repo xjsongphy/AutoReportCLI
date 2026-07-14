@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and stage the native CLI exactly where the npm launcher expects it.
 
-Usage: python3 autoreport/scripts/build_npm_package.py [--target <rust-target>]
+Usage: python3 autoreport-cli/scripts/build_npm_package.py [--target <rust-target>]
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGE = ROOT / "autoreport"
+PACKAGE = ROOT / "autoreport-cli"
 TARGETS = {
     ("Darwin", "arm64"): "aarch64-apple-darwin",
     ("Darwin", "x86_64"): "x86_64-apple-darwin",
