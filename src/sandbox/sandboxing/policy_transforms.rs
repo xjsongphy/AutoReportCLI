@@ -1,3 +1,5 @@
+use crate::sandbox::absolute_path::AbsolutePathBuf;
+use crate::sandbox::absolute_path::canonicalize_preserving_symlinks;
 use crate::sandbox::protocol::models::AdditionalPermissionProfile;
 use crate::sandbox::protocol::models::FileSystemPermissions;
 use crate::sandbox::protocol::models::NetworkPermissions;
@@ -10,8 +12,6 @@ use crate::sandbox::protocol::permissions::FileSystemSandboxPolicy;
 use crate::sandbox::protocol::permissions::FileSystemSpecialPath;
 use crate::sandbox::protocol::permissions::NetworkSandboxPolicy;
 use crate::sandbox::protocol::permissions::ReadDenyMatcher;
-use crate::sandbox::absolute_path::AbsolutePathBuf;
-use crate::sandbox::absolute_path::canonicalize_preserving_symlinks;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;

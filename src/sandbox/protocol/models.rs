@@ -9,8 +9,8 @@ use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde::Serializer;
 use serde::Serialize;
+use serde::Serializer;
 use serde::de::Deserializer;
 use ts_rs::TS;
 

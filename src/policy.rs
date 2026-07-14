@@ -257,7 +257,11 @@ pub fn summarize_command(argv: &[String]) -> Vec<ParsedCommand> {
     let Some(bin) = argv.first().map(|s| s.as_str()).map(str::to_lowercase) else {
         return vec![];
     };
-    let stem = bin.rsplit('/').next().unwrap_or(&bin).trim_start_matches(".\\");
+    let stem = bin
+        .rsplit('/')
+        .next()
+        .unwrap_or(&bin)
+        .trim_start_matches(".\\");
     let joined = argv.join(" ");
     vec![match stem {
         "cat" | "head" | "tail" | "less" | "more" | "nl" => {

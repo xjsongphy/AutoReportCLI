@@ -93,9 +93,7 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::new();
     for msg in messages {
         match msg.role.as_str() {
-            "system" | "developer" => {
-                out.push(json!({"role": "system", "content": msg.content}))
-            }
+            "system" | "developer" => out.push(json!({"role": "system", "content": msg.content})),
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
                 let mut m = json!({"role": "assistant", "content": msg.content});

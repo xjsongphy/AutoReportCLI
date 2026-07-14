@@ -203,4 +203,3 @@ fn effective_glob_scan_max_depth(
         max_depth.min(components.len())
     }))
 }
-

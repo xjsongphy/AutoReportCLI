@@ -13,16 +13,16 @@ use super::resolve_windows_elevated_filesystem_overrides;
 use super::resolve_windows_restricted_token_filesystem_overrides;
 #[cfg(target_os = "windows")]
 use super::windows_sandbox_uses_elevated_backend;
+use crate::sandbox::absolute_path::AbsolutePathBuf;
 use crate::sandbox::network_proxy::ManagedNetworkSandboxContext;
 use crate::sandbox::network_proxy::NetworkProxy;
+use crate::sandbox::path_uri::PathUri;
 use crate::sandbox::protocol::config_types::WindowsSandboxLevel;
 use crate::sandbox::protocol::models::AdditionalPermissionProfile;
 use crate::sandbox::protocol::models::PermissionProfile;
 use crate::sandbox::protocol::permissions::FileSystemSandboxPolicy;
 use crate::sandbox::protocol::permissions::NetworkSandboxPolicy;
 use crate::sandbox::protocol::protocol_types::SandboxPolicy;
-use crate::sandbox::absolute_path::AbsolutePathBuf;
-use crate::sandbox::path_uri::PathUri;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
@@ -152,7 +152,8 @@ pub struct SandboxTransformRequest<'a> {
 pub struct SandboxDirectSpawnTransformRequest<'a> {
     pub transform: SandboxTransformRequest<'a>,
     pub workspace_roots: &'a [AbsolutePathBuf],
-    pub windows_sandbox_proxy_settings_mode: crate::sandbox::windows_sandbox::WindowsSandboxProxySettingsMode,
+    pub windows_sandbox_proxy_settings_mode:
+        crate::sandbox::windows_sandbox::WindowsSandboxProxySettingsMode,
 }
 
 // TODO(anp): Revisit this preparation type once this module's PathUri migration is complete.
@@ -527,7 +528,8 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         ));
     };
     let source = std::path::PathBuf::from(&program);
-    let helper = crate::sandbox::windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home);
+    let helper =
+        crate::sandbox::windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home);
     *program = helper.to_string_lossy().into_owned();
 
     let inner_command = std::mem::take(&mut request.command);

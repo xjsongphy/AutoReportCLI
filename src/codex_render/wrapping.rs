@@ -1119,11 +1119,17 @@ mod mixed_url_tests {
     fn prose_words_stay_whole_with_a_url_present() {
         // Narrow width: the long URL can't fit, but prose words must NOT be
         // char-split (the old 2-branch path split them at every char).
-        let lines = reflow("see https://example.com/very/long/path/abc/def for details", 16);
+        let lines = reflow(
+            "see https://example.com/very/long/path/abc/def for details",
+            16,
+        );
         let joined = lines.join(" | ");
         assert!(joined.contains("see"), "lost 'see': {joined}");
         assert!(joined.contains("for"), "lost 'for': {joined}");
-        assert!(joined.contains("details"), "'details' was char-split: {joined}");
+        assert!(
+            joined.contains("details"),
+            "'details' was char-split: {joined}"
+        );
     }
 
     #[test]
@@ -1139,6 +1145,9 @@ mod mixed_url_tests {
         // break (otherwise the line overflows width indefinitely).
         let lines = reflow("aaaaaaaaaaaaaaaaaaaaaaaaaa bb", 10);
         // the 'a' run is split across multiple lines
-        assert!(lines.len() >= 2, "expected the long token to split: {lines:?}");
+        assert!(
+            lines.len() >= 2,
+            "expected the long token to split: {lines:?}"
+        );
     }
 }

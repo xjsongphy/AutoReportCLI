@@ -9,7 +9,7 @@
 //!
 //! Defaults match codex: `request_max_retries = 4`, base delay 1 s.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -66,7 +66,11 @@ where
         let resp = match build().await {
             Ok(r) => r,
             Err(e) if attempt + 1 < max_attempts && is_retryable_send_err(&e) => {
-                log::warn!("{id} request failed ({e}); retry {}/{}", attempt + 1, max_attempts - 1);
+                log::warn!(
+                    "{id} request failed ({e}); retry {}/{}",
+                    attempt + 1,
+                    max_attempts - 1
+                );
                 sleep(backoff(base_delay, attempt)).await;
                 attempt += 1;
                 continue;
