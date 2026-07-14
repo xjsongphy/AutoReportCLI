@@ -56,6 +56,20 @@ ignore = "0.4"
 # unified diff rendering for apply_patch/edit (codex uses diffy)
 diffy = "0.4"
 
+# codex cross-system sandbox (vendored from codex-rs/{protocol,sandboxing,utils}).
+# These derive crates are required because the vendored source files are copied
+# byte-for-byte (JsonSchema / TS / strum derives on the policy types).
+schemars = "0.8"
+ts-rs = { version = "11", features = ["serde-json-impl", "no-serde-warnings"] }
+strum = "0.27"
+strum_macros = "0.28"
+globset = "0.4"
+base64 = "0.22"
+dunce = "1"
+# Exec output encoding detection (vendored codex-rs/protocol/src/exec_output.rs).
+chardetng = "0.1"
+encoding_rs = "0.8"
+
 # misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -85,6 +99,8 @@ windows-sys = { version = "0.52", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# Required by the vendored codex protocol/sandbox test modules.
+pretty_assertions = "1"
 
 [profile.release]
 opt-level = 3
