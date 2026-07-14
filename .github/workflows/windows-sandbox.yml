@@ -1,0 +1,36 @@
+name: Windows sandbox
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-sandbox:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test native Windows sandbox backend
+        shell: bash
+        run: |
+          cargo test -p autoreport-windows-sandbox -p autoreport-sandboxing
+      - name: Build native sandbox payload inputs
+        shell: bash
+        run: |
+          cargo build --release -p autoreport-cli
+          cargo build --release -p autoreport-windows-sandbox \
+            --bin autoreport-windows-sandbox-setup \
+            --bin autoreport-command-runner
+      - name: Stage Windows npm payload
+        shell: bash
+        run: |
+          mkdir -p .sandbox-payload/x86_64-pc-windows-msvc/bin
+          cp target/release/autoreport.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          cp target/release/autoreport-windows-sandbox-setup.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          cp target/release/autoreport-command-runner.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          python autoreport-cli/scripts/build_npm_package.py --package win32-x64 --vendor-src .sandbox-payload --force
+      - name: Verify bundled sandbox payload
+        shell: bash
+        run: |
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/bin/autoreport-resources/autoreport-windows-sandbox-setup.exe
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/bin/autoreport-resources/autoreport-command-runner.exe
