@@ -576,7 +576,11 @@ mod tests {
     fn load_scans_agent_directory_and_preserves_annotations() {
         let workspace = temp_workspace();
         std::fs::create_dir_all(workspace.path().join("Plots/Scripts")).unwrap();
-        std::fs::write(workspace.path().join("Plots/Scripts/plot.py"), "print('x')\n").unwrap();
+        std::fs::write(
+            workspace.path().join("Plots/Scripts/plot.py"),
+            "print('x')\n",
+        )
+        .unwrap();
 
         let store = ManifestStore::new(workspace.path());
         let mut manifest = store.load(AgentType::Plotting);
@@ -585,7 +589,11 @@ mod tests {
         manifest.files[0].description_updated_at = Some("2026-01-01T00:00:00Z".into());
         store.save(AgentType::Plotting, manifest);
 
-        std::fs::write(workspace.path().join("Plots/Scripts/other.py"), "print('y')\n").unwrap();
+        std::fs::write(
+            workspace.path().join("Plots/Scripts/other.py"),
+            "print('y')\n",
+        )
+        .unwrap();
         let loaded = store.load(AgentType::Plotting);
         assert_eq!(loaded.files.len(), 2);
         let plot = loaded

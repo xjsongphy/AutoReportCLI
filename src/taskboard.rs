@@ -266,7 +266,13 @@ impl TaskBoard {
     }
 
     pub fn all(&self) -> Vec<TaskItem> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).tasks.values().cloned().collect()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tasks
+            .values()
+            .cloned()
+            .collect()
     }
 }
 
