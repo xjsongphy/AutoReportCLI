@@ -2,6 +2,13 @@
 #![allow(clippy::unwrap_used)]
 
 use autoreport_protocol::models::PermissionProfile;
+use autoreport_protocol::permissions::FileSystemAccessMode;
+use autoreport_protocol::permissions::FileSystemPath;
+use autoreport_protocol::permissions::FileSystemSandboxEntry;
+use autoreport_protocol::permissions::FileSystemSandboxPolicy;
+use autoreport_protocol::permissions::FileSystemSpecialPath;
+use autoreport_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::io::Read;
@@ -171,6 +178,81 @@ async fn managed_proxy_mode_fails_closed_without_proxy_env() {
         stderr.contains("managed proxy mode requires proxy environment variables"),
         "expected fail-closed managed-proxy message, got stderr: {stderr}"
     );
+}
+
+#[tokio::test]
+async fn workspace_write_allows_agent_root_and_denies_sibling_paths() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap filesystem test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let agent_root = workspace.path().join("agent");
+    std::fs::create_dir_all(&agent_root).expect("agent root");
+    let agent_root = AbsolutePathBuf::from_absolute_path(agent_root).expect("absolute agent root");
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Root,
+            },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: agent_root.clone(),
+            },
+            access: FileSystemAccessMode::Write,
+        },
+    ]);
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+    let allowed = agent_root.join("allowed.txt");
+    let denied = workspace.path().join("sibling.txt");
+    let mut env = create_env_from_core_vars();
+    strip_proxy_env(&mut env);
+
+    let allowed_output = run_linux_sandbox_direct(
+        &[
+            "bash",
+            "-c",
+            &format!("printf allowed > {}", allowed.display()),
+        ],
+        &permission_profile,
+        /*allow_network_for_proxy*/ false,
+        env.clone(),
+        NETWORK_TIMEOUT_MS,
+    )
+    .await;
+    assert!(
+        allowed_output.status.success(),
+        "agent-root write should succeed: {}",
+        String::from_utf8_lossy(&allowed_output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&allowed).expect("allowed output"),
+        "allowed"
+    );
+
+    let denied_output = run_linux_sandbox_direct(
+        &[
+            "bash",
+            "-c",
+            &format!("printf denied > {}", denied.display()),
+        ],
+        &permission_profile,
+        /*allow_network_for_proxy*/ false,
+        env,
+        NETWORK_TIMEOUT_MS,
+    )
+    .await;
+    assert!(
+        !denied_output.status.success(),
+        "sibling write must be denied"
+    );
+    assert!(!denied.exists(), "sibling output must not be created");
 }
 
 #[tokio::test]
