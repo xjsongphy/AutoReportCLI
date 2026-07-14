@@ -1,16 +1,16 @@
 //! Write-directory isolation: an agent may only write into its assigned folder.
 
-use autoreport_cli::tools::apply_patch::ApplyPatchTool;
-use autoreport_cli::tools::exec_tool::ExecTool;
-use autoreport_cli::tools::file_tools::{FsCtx, resolve_within};
-use autoreport_cli::tools::registry::Tool;
+use autoreport_tools::apply_patch::ApplyPatchTool;
+use autoreport_tools::exec_tool::ExecTool;
+use autoreport_tools::file_tools::{FsCtx, resolve_within};
+use autoreport_tools::registry::Tool;
 use serde_json::json;
 use std::path::PathBuf;
 
 fn workspace() -> PathBuf {
     let d = std::env::temp_dir().join(format!("autoreport-iso-{}", stamp()));
     std::fs::create_dir_all(&d).unwrap();
-    autoreport_cli::config::ensure_workspace(&d).unwrap();
+    autoreport_core::config::ensure_workspace(&d).unwrap();
     d
 }
 

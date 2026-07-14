@@ -12,18 +12,23 @@
 //!   file (`.autoreport/sessions/rollout-<ts>-<id>.jsonl`); on startup the
 //!   latest rollout for the agent is resumed.
 
-use crate::bus::Bus;
-use crate::config::AgentDefaults;
-use crate::prompts::PromptLoader;
-use crate::provider::LLMProvider;
-use crate::provider::types::{Message, ToolCall as ProviderToolCall};
-use crate::rollout::{self, ResponseItem, RolloutRecorder};
-use crate::runtime::agent_loop::internal::AgentStatusLock;
-use crate::skills::SkillLoader;
-use crate::taskboard::TaskBoard;
-use crate::tools::ToolRegistry;
-use crate::tools::manifest::ManifestStore;
-use crate::types::{AgentStatus, AgentType, BusMessage, MessageSource};
+use crate::codex_thread::internal::AgentStatusLock;
+use crate::history::{
+    extract_paths, inject_before_last_user, items_to_messages, make_reasoning, transcript_text,
+    truncate_for_history,
+};
+use autoreport_core::bus::Bus;
+use autoreport_core::config::AgentDefaults;
+use autoreport_core::prompts::PromptLoader;
+use autoreport_core::provider::LLMProvider;
+use autoreport_core::provider::types::{Message, ToolCall as ProviderToolCall};
+use autoreport_core::skills::SkillLoader;
+use autoreport_core::taskboard::TaskBoard;
+use autoreport_core::types::{AgentStatus, AgentType, BusMessage, MessageSource};
+use autoreport_rollout as rollout;
+use autoreport_rollout::{ResponseItem, RolloutRecorder};
+use autoreport_tools::ToolRegistry;
+use autoreport_tools::manifest::ManifestStore;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -291,7 +296,7 @@ impl AgentLoop {
         // instructions without `cat`-ing the file (codex skill injection).
         let skill_injection = self
             .skills
-            .render_injections(&crate::skills::extract_skill_mentions(content));
+            .render_injections(&autoreport_core::skills::extract_skill_mentions(content));
 
         let turn_token = tokio_util::sync::CancellationToken::new();
         *self.current_turn.lock().await = Some(turn_token.clone());
@@ -471,7 +476,7 @@ impl AgentLoop {
                 return GuardOutcome::Allow;
             }
             *retries += 1;
-            let active: Vec<crate::types::TaskItem> = self
+            let active: Vec<autoreport_core::types::TaskItem> = self
                 .task_board
                 .todolist(self.agent)
                 .into_iter()
@@ -576,7 +581,9 @@ impl AgentLoop {
         // Per-turn `developer` fragment: current time (codex
         // `current_time_reminder`). Kept out of the static system base so the
         // system prompt stays byte-stable across turns (prefix-caching ready).
-        out.push(Message::developer(crate::prompts::current_time_reminder()));
+        out.push(Message::developer(
+            autoreport_core::prompts::current_time_reminder(),
+        ));
         out.extend(items_to_messages(&items));
         if !skill_injection.is_empty() {
             inject_before_last_user(&mut out, Message::user(skill_injection.to_string()));
@@ -588,14 +595,14 @@ impl AgentLoop {
     async fn stream_completion(
         &self,
         messages: &[Message],
-        defs: &[crate::provider::types::ToolDef],
+        defs: &[autoreport_core::provider::types::ToolDef],
         cancel: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<(
         Option<String>,
         Option<String>,
         Option<String>,
         Vec<ProviderToolCall>,
-        Option<crate::provider::types::Usage>,
+        Option<autoreport_core::provider::types::Usage>,
         bool,
     )> {
         let mut rx = self
@@ -685,7 +692,7 @@ impl AgentLoop {
         debug_assert!(
             matches!(
                 self.defaults.approval_policy,
-                crate::policy::AskForApproval::Never
+                autoreport_core::policy::AskForApproval::Never
             ),
             "non-never approval policy reached the dispatch site; loader should have clamped it"
         );
@@ -834,151 +841,6 @@ impl AgentLoop {
     }
 }
 
-/// Insert `msg` immediately before the last user-role message in `out`, so it
-/// sits adjacent to the request that triggered it (codex
-/// `InitialContextInjection::BeforeLastUserMessage`). If there is no user
-/// message, append at the end.
-fn inject_before_last_user(out: &mut Vec<Message>, msg: Message) {
-    let pos = out.iter().rposition(|m| m.role == "user");
-    match pos {
-        Some(i) => out.insert(i, msg),
-        None => out.push(msg),
-    }
-}
-
-/// codex `items → messages` conversion: turn `ResponseItem`s into the provider's
-/// chat-message wire format. Consecutive `FunctionCall`s fold into one
-/// assistant message's `tool_calls` (matching how the model emitted them). A
-/// `Reasoning` item preceding an assistant message is attached to it as the
-/// `thinking` field (with its signature), so signed reasoning round-trips
-/// across turns (codex `reasoning.encrypted_content`).
-fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
-    let mut out: Vec<Message> = Vec::new();
-    let mut pending: Vec<ProviderToolCall> = Vec::new();
-    // (thinking text, signature) carried from a preceding Reasoning item to
-    // the next assistant message.
-    let mut pending_thinking: Option<(String, Option<String>)> = None;
-    let flush = |pending: &mut Vec<ProviderToolCall>, out: &mut Vec<Message>| {
-        if !pending.is_empty() {
-            let calls = std::mem::take(pending);
-            out.push(Message {
-                role: "assistant".into(),
-                content: String::new(),
-                tool_calls: Some(calls),
-                tool_call_id: None,
-                thinking: None,
-                thinking_signature: None,
-            });
-        }
-    };
-    for item in items {
-        match item {
-            ResponseItem::Message { role, content, .. } => {
-                flush(&mut pending, &mut out);
-                let text: String = content.iter().map(|c| c.text().to_string()).collect();
-                let (thinking, signature) = if role == "assistant" {
-                    match pending_thinking.take() {
-                        Some((t, s)) => (Some(t), s),
-                        None => (None, None),
-                    }
-                } else {
-                    pending_thinking = None;
-                    (None, None)
-                };
-                out.push(Message {
-                    role: role.clone(),
-                    content: text,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    thinking,
-                    thinking_signature: signature,
-                });
-            }
-            ResponseItem::FunctionCall {
-                call_id,
-                name,
-                arguments,
-                ..
-            } => {
-                let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
-                pending.push(ProviderToolCall {
-                    id: call_id.clone(),
-                    name: name.clone(),
-                    arguments: args,
-                });
-            }
-            ResponseItem::FunctionCallOutput {
-                call_id, output, ..
-            } => {
-                flush(&mut pending, &mut out);
-                out.push(Message::tool_result(call_id, output));
-            }
-            ResponseItem::Reasoning {
-                content,
-                encrypted_content,
-                ..
-            } => {
-                // Stash for the next assistant message. Only carry the
-                // signature when present — providers reject unsigned thinking.
-                let text = content.clone().unwrap_or_default().join("\n");
-                let sig = encrypted_content.clone();
-                flush(&mut pending, &mut out);
-                if !text.is_empty() {
-                    pending_thinking = Some((text, sig.filter(|s| !s.is_empty())));
-                }
-            }
-            ResponseItem::Compaction { encrypted_content } => {
-                // Re-feed the compaction summary to the model as a context note
-                // (otherwise compact() would trim history and tell nobody).
-                flush(&mut pending, &mut out);
-                pending_thinking = None;
-                let text = format!(
-                    "[This conversation was compacted. Summary of prior context:]\n\n{}",
-                    encrypted_content
-                );
-                out.push(Message {
-                    role: "user".into(),
-                    content: text,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    thinking: None,
-                    thinking_signature: None,
-                });
-            }
-            ResponseItem::Other => {
-                // Unknown / codex-only item (local_shell_call, web_search_call,
-                // compaction_trigger, …). Tolerated on resume via
-                // `#[serde(other)]`; not part of the request history we send.
-            }
-        }
-    }
-    flush(&mut pending, &mut out);
-    // Normalize: every assistant tool_call must have a matching tool result,
-    // else providers reject the request with a 400. Inject a synthetic
-    // "[aborted]" result for any orphaned call id. (codex:
-    // `context_manager::normalize::ensure_call_outputs_present`.)
-    let answered: std::collections::HashSet<String> = out
-        .iter()
-        .filter(|m| m.role == "tool")
-        .filter_map(|m| m.tool_call_id.clone())
-        .collect();
-    let orphan_ids: Vec<String> = out
-        .iter()
-        .filter_map(|m| m.tool_calls.as_ref())
-        .flatten()
-        .map(|c| c.id.clone())
-        .filter(|id| !answered.contains(id))
-        .collect();
-    for id in orphan_ids {
-        out.push(Message::tool_result(
-            id,
-            "[aborted: turn interrupted, no tool output]",
-        ));
-    }
-    out
-}
-
-/// Forward a bus message into the session Op queue (codex session input).
 async fn forward_message(
     agent: AgentType,
     msg: &BusMessage,
@@ -1016,89 +878,8 @@ async fn forward_message(
     let _ = op_tx.send(op).await;
 }
 
-fn transcript_text(items: &[ResponseItem]) -> String {
-    let mut s = String::new();
-    for item in items {
-        let label = match item {
-            ResponseItem::Message { role, .. } => role.as_str(),
-            ResponseItem::FunctionCall { name, .. } => name.as_str(),
-            ResponseItem::FunctionCallOutput { .. } => "tool",
-            ResponseItem::Reasoning { .. } => "reasoning",
-            ResponseItem::Compaction { .. } => "compaction",
-            ResponseItem::Other => "other",
-        };
-        if let Some(t) = item.text() {
-            s.push_str(&format!("[{label}] {t}\n"));
-        }
-    }
-    s
-}
-
-/// Build a Reasoning item, attaching the signed blob when the provider
-/// returned one so it can be echoed back on the next turn.
-fn make_reasoning(text: String, signature: Option<String>) -> ResponseItem {
-    match signature {
-        Some(sig) if !sig.is_empty() => ResponseItem::reasoning_signed(text, sig),
-        _ => ResponseItem::reasoning(text),
-    }
-}
-
-/// Bound the size of a tool result before it enters history/rollout. A chatty
-/// `exec` or a `cat` of a large file can otherwise inject megabytes that flow
-/// straight into the next completion request (and, under a runaway tool loop,
-/// starve the compacter). Truncates at a UTF-8 char boundary so it cannot panic
-/// on multi-byte content.
-fn truncate_for_history(mut s: String) -> String {
-    const MAX_TOOL_OUTPUT_BYTES: usize = 32_000;
-    if s.len() <= MAX_TOOL_OUTPUT_BYTES {
-        return s;
-    }
-    let mut end = MAX_TOOL_OUTPUT_BYTES;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s.truncate(end);
-    s.push_str("\n…(truncated)");
-    s
-}
-
-/// Best-effort extraction of the written file paths from a tool call, for
-/// manifest tracking.
-fn extract_paths(tool_name: &str, _args: &Value, result: &Value) -> Vec<String> {
-    match tool_name {
-        // apply_patch's result is `{"applied": [ {"add": p}, {"delete": p},
-        // {"update": p}, {"move": from, "to": to}, ... ]}` — extract every
-        // path value the hunk touched.
-        "apply_patch" => {
-            let mut out = Vec::new();
-            if let Some(applied) = result.get("applied").and_then(|v| v.as_array()) {
-                for item in applied {
-                    for key in ["add", "delete", "update", "move", "to"] {
-                        if let Some(path) = item.get(key).and_then(|v| v.as_str()) {
-                            out.push(path.to_string());
-                        }
-                    }
-                }
-            }
-            out
-        }
-        // exec reports the workspace paths it observed being written.
-        "exec" => result
-            .get("written_paths")
-            .and_then(|v| v.as_array())
-            .map(|paths| {
-                paths
-                    .iter()
-                    .filter_map(|path| path.as_str().map(ToString::to_string))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
 mod internal {
-    use crate::types::AgentStatus;
+    use autoreport_core::types::AgentStatus;
     use std::sync::{Arc, Mutex};
 
     pub struct AgentStatusLock {

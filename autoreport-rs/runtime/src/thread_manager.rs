@@ -2,19 +2,19 @@
 //! tool registry matching its write permissions. All loops are persistent for
 //! the life of the process.
 
-use crate::bus::Bus;
-use crate::config::AgentDefaults;
-use crate::prompts::PromptLoader;
-use crate::provider::LLMProvider;
-use crate::runtime::AgentLoop;
-use crate::skills::SkillLoader;
-use crate::taskboard::TaskBoard;
-use crate::tools::file_tools::FsCtx;
-use crate::tools::manifest::{ManifestStore, ManifestTool};
-use crate::tools::registry::ToolRegistry;
-use crate::tools::task_tools;
-use crate::types::{AgentType, MessageSource};
+use crate::AgentLoop;
 use anyhow::Result;
+use autoreport_core::bus::Bus;
+use autoreport_core::config::AgentDefaults;
+use autoreport_core::prompts::PromptLoader;
+use autoreport_core::provider::LLMProvider;
+use autoreport_core::skills::SkillLoader;
+use autoreport_core::taskboard::TaskBoard;
+use autoreport_core::types::{AgentType, MessageSource};
+use autoreport_tools::file_tools::FsCtx;
+use autoreport_tools::manifest::{ManifestStore, ManifestTool};
+use autoreport_tools::registry::ToolRegistry;
+use autoreport_tools::task_tools;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +27,7 @@ pub struct LoopManager {
     skills: SkillLoader,
     prompts: PromptLoader,
     defaults: AgentDefaults,
-    sandbox: crate::sandbox::SandboxSpec,
+    sandbox: autoreport_sandboxing::SandboxSpec,
     loops: HashMap<AgentType, Arc<AgentLoop>>,
     main_provider: Arc<dyn LLMProvider>,
     sub_provider: Arc<dyn LLMProvider>,
@@ -41,7 +41,7 @@ impl LoopManager {
         sub_provider: Arc<dyn LLMProvider>,
         bus: Bus,
         defaults: AgentDefaults,
-        sandbox: crate::sandbox::SandboxSpec,
+        sandbox: autoreport_sandboxing::SandboxSpec,
     ) -> Self {
         let task_board = TaskBoard::new();
         let manifest = ManifestStore::new(workspace);
@@ -157,13 +157,13 @@ impl LoopManager {
         let ctx = FsCtx::new(self.workspace.clone(), Some(self.write_dir(agent)));
 
         // codex-ported paginated directory listing (read-only, workspace-scoped).
-        registry.register(crate::tools::list_dir::ListDirTool::make(ctx.clone()));
+        registry.register(autoreport_tools::list_dir::ListDirTool::make(ctx.clone()));
 
         // codex-compatible multi-edit patch tool (same write isolation).
-        registry.register(crate::tools::apply_patch::make(ctx.clone()));
+        registry.register(autoreport_tools::apply_patch::make(ctx.clone()));
 
         // Unified shell entrypoint for reading files and running commands.
-        registry.register(crate::tools::exec_tool::make(
+        registry.register(autoreport_tools::exec_tool::make(
             ctx,
             self.defaults.exec_timeout_secs,
             self.sandbox.clone(),

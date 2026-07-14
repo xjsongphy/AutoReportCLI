@@ -1,9 +1,9 @@
 //! Manifest store: agent-local file visibility plus editable descriptions and
 //! notes. Stored as JSON under `.autoreport/manifests/`.
 
-use crate::tools::registry::{Tool, ToolOutput, arg_opt_str};
-use crate::types::AgentType;
+use crate::registry::{Tool, ToolOutput, arg_opt_str};
 use async_trait::async_trait;
+use autoreport_core::types::AgentType;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -111,7 +111,7 @@ impl ManifestStore {
     }
 
     fn normalize_rel(&self, path: &str) -> Option<String> {
-        let resolved = crate::tools::file_tools::resolve_within(path, &self.workspace).ok()?;
+        let resolved = crate::file_tools::resolve_within(path, &self.workspace).ok()?;
         let rel = resolved.strip_prefix(&self.workspace).ok()?;
         let rel = rel.to_string_lossy().replace('\\', "/");
         (!rel.is_empty()).then_some(rel)

@@ -77,7 +77,7 @@ impl CodexShell {
         timeout: Duration,
         stdin: Option<Vec<u8>>,
         env: &HashMap<String, String>,
-        sandbox: Option<&crate::sandbox::SandboxSpec>,
+        sandbox: Option<&autoreport_sandboxing::SandboxSpec>,
     ) -> Result<ShellOutput, String> {
         // Resolve the program + argv. Restrictive modes get a platform sandbox
         // launcher; if none is available they fail closed rather than running
@@ -88,9 +88,12 @@ impl CodexShell {
                     .into_iter()
                     .chain(shell_args_owned(self.shell.shell_type, command))
                     .collect::<Vec<_>>();
-                let wrapped =
-                    crate::sandbox::sandbox_command_argv(shell_invocation.clone(), cwd, spec)?
-                        .unwrap_or(shell_invocation);
+                let wrapped = autoreport_sandboxing::sandbox_command_argv(
+                    shell_invocation.clone(),
+                    cwd,
+                    spec,
+                )?
+                .unwrap_or(shell_invocation);
                 let prog = wrapped
                     .first()
                     .ok_or_else(|| "empty seatbelt command".to_string())?
@@ -134,9 +137,12 @@ impl CodexShell {
         // Bubblewrap mounts a fresh writable /tmp. Make standard temporary
         // file users target it even if the parent process exported TMPDIR.
         #[cfg(target_os = "linux")]
-        if sandbox
-            .is_some_and(|spec| !matches!(spec.mode, crate::sandbox::SandboxMode::DangerFullAccess))
-        {
+        if sandbox.is_some_and(|spec| {
+            !matches!(
+                spec.mode,
+                autoreport_sandboxing::SandboxMode::DangerFullAccess
+            )
+        }) {
             cmd.env("TMPDIR", "/tmp");
             cmd.env("TMP", "/tmp");
             cmd.env("TEMP", "/tmp");

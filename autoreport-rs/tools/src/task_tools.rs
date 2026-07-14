@@ -11,11 +11,13 @@
 //!   Main-dispatched task. This is the ONLY way to finish such a task and the
 //!   single reply channel that resolves Main's blocking wait.
 
-use crate::bus::Bus;
-use crate::taskboard::TaskBoard;
-use crate::tools::registry::{Tool, ToolOutput, arg_str};
-use crate::types::{AgentStatus, AgentType, BusMessage, MessageSource, TaskItem, TaskStatus};
+use crate::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
+use autoreport_core::bus::Bus;
+use autoreport_core::taskboard::TaskBoard;
+use autoreport_core::types::{
+    AgentStatus, AgentType, BusMessage, MessageSource, TaskItem, TaskStatus,
+};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -693,7 +695,7 @@ pub fn sub_tools(board: TaskBoard, bus: Bus, agent: AgentType) -> Vec<Arc<dyn To
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::Bus;
+    use autoreport_core::bus::Bus;
 
     #[tokio::test]
     async fn update_plan_syncs_local_steps_and_replaces_old_ones() {

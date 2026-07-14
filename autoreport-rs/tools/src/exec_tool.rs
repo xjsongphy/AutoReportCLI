@@ -5,9 +5,9 @@
 //! snapshot the workspace before and after execution to reject writes outside
 //! the agent's allowed write directory.
 
-use crate::tools::codex_shell::{CodexShell, validate_command_for_shell};
-use crate::tools::file_tools::{FsCtx, resolve_within};
-use crate::tools::registry::{Tool, ToolOutput, arg_str};
+use crate::codex_shell::{CodexShell, validate_command_for_shell};
+use crate::file_tools::{FsCtx, resolve_within};
+use crate::registry::{Tool, ToolOutput, arg_str};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -65,7 +65,7 @@ pub struct ExecTool {
     ctx: FsCtx,
     timeout: Duration,
     shell: Arc<CodexShell>,
-    sandbox: Option<crate::sandbox::SandboxSpec>,
+    sandbox: Option<autoreport_sandboxing::SandboxSpec>,
 }
 
 impl ExecTool {
@@ -79,7 +79,7 @@ impl ExecTool {
     }
 
     /// Attach an OS-level sandbox scoped to this tool's agent write directory.
-    pub fn with_sandbox(mut self, sandbox: crate::sandbox::SandboxSpec) -> Self {
+    pub fn with_sandbox(mut self, sandbox: autoreport_sandboxing::SandboxSpec) -> Self {
         self.sandbox = Some(sandbox);
         self
     }
@@ -382,7 +382,11 @@ fn walk_workspace(
 }
 
 /// Convenience constructor.
-pub fn make(ctx: FsCtx, timeout_secs: u64, sandbox: crate::sandbox::SandboxSpec) -> Arc<dyn Tool> {
+pub fn make(
+    ctx: FsCtx,
+    timeout_secs: u64,
+    sandbox: autoreport_sandboxing::SandboxSpec,
+) -> Arc<dyn Tool> {
     let sandbox = sandbox.with_writable_root(ctx.allowed_write_dir());
     Arc::new(ExecTool::new(ctx, timeout_secs).with_sandbox(sandbox))
 }

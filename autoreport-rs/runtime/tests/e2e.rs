@@ -8,20 +8,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use async_trait::async_trait;
 
-use autoreport_cli::bus::Bus;
-use autoreport_cli::config::AgentDefaults;
-use autoreport_cli::prompts::PromptLoader;
-use autoreport_cli::provider::LLMProvider;
-use autoreport_cli::provider::types::{
+use autoreport_core::bus::Bus;
+use autoreport_core::config::AgentDefaults;
+use autoreport_core::prompts::PromptLoader;
+use autoreport_core::provider::LLMProvider;
+use autoreport_core::provider::types::{
     LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage,
 };
-use autoreport_cli::runtime::AgentLoop;
-use autoreport_cli::skills::SkillLoader;
-use autoreport_cli::taskboard::TaskBoard;
-use autoreport_cli::tools::ToolRegistry;
-use autoreport_cli::tools::file_tools::FsCtx;
-use autoreport_cli::tools::manifest::ManifestStore;
-use autoreport_cli::types::{AgentStatus, AgentType, BusMessage, MessageSource};
+use autoreport_core::skills::SkillLoader;
+use autoreport_core::taskboard::TaskBoard;
+use autoreport_core::types::{AgentStatus, AgentType, BusMessage, MessageSource};
+use autoreport_runtime::AgentLoop;
+use autoreport_tools::ToolRegistry;
+use autoreport_tools::file_tools::FsCtx;
+use autoreport_tools::manifest::ManifestStore;
 
 /// Scripted provider: returns each scripted response in order.
 struct Mock {
@@ -68,7 +68,7 @@ impl LLMProvider for Mock {
 fn make_temp_workspace() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("autoreport-test-{}", uuid_stamp()));
     std::fs::create_dir_all(&dir).unwrap();
-    autoreport_cli::config::ensure_workspace(&dir).unwrap();
+    autoreport_core::config::ensure_workspace(&dir).unwrap();
     dir
 }
 
@@ -207,15 +207,13 @@ fn registry_for(workspace: &std::path::Path, agent: AgentType) -> ToolRegistry {
     };
     let ctx = FsCtx::new(workspace.to_path_buf(), Some(write_dir));
     let mut reg = ToolRegistry::new();
-    reg.register(autoreport_cli::tools::list_dir::ListDirTool::make(
-        ctx.clone(),
-    ));
-    reg.register(autoreport_cli::tools::apply_patch::make(ctx.clone()));
-    reg.register(autoreport_cli::tools::exec_tool::make(
+    reg.register(autoreport_tools::list_dir::ListDirTool::make(ctx.clone()));
+    reg.register(autoreport_tools::apply_patch::make(ctx.clone()));
+    reg.register(autoreport_tools::exec_tool::make(
         ctx,
         10,
-        autoreport_cli::sandbox::SandboxSpec::new(
-            autoreport_cli::sandbox::SandboxMode::DangerFullAccess,
+        autoreport_sandboxing::SandboxSpec::new(
+            autoreport_sandboxing::SandboxMode::DangerFullAccess,
             false,
         ),
     ));

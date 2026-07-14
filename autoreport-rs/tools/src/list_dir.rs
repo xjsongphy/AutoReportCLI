@@ -8,8 +8,8 @@
 //! depth, sorted entries, `/` `@` `?` type markers, offset/limit pagination
 //! with a "More than N entries" sentinel) is verbatim from codex.
 
-use crate::tools::file_tools::{FsCtx, resolve_within};
-use crate::tools::registry::{Tool, ToolOutput};
+use crate::file_tools::{FsCtx, resolve_within};
+use crate::registry::{Tool, ToolOutput};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::VecDeque;

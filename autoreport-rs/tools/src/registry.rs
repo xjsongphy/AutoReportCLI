@@ -1,7 +1,7 @@
 //! Tool trait and registry.
 
-use crate::provider::types::ToolDef;
 use async_trait::async_trait;
+use autoreport_core::provider::types::ToolDef;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
