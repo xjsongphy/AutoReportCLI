@@ -1,0 +1,24 @@
+[package]
+name = "autoreport-utils-path-uri"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_path_uri"
+path = "src/lib.rs"
+
+[dependencies]
+base64.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+autoreport-utils-absolute-path = { path = "../absolute-path" }
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_json.workspace = true

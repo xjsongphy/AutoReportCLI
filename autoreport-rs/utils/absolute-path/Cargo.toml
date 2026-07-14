@@ -1,0 +1,23 @@
+[package]
+name = "autoreport-utils-absolute-path"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_absolute_path"
+path = "src/lib.rs"
+
+[dependencies]
+dirs.workspace = true
+dunce.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_json.workspace = true
+tempfile = "3"
