@@ -1,0 +1,29 @@
+name: Linux sandbox
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Bubblewrap build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libcap-dev pkg-config
+      - name: Test the native helper and manager
+        run: cargo test -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
+      - name: Build native sandbox payload inputs
+        run: cargo build --release -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
+      - name: Stage Linux npm payload
+        run: |
+          mkdir -p .sandbox-payload/x86_64-unknown-linux-musl/bin
+          cp target/release/autoreport .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          cp target/release/autoreport-linux-sandbox .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          cp target/release/bwrap .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          python3 autoreport-cli/scripts/build_npm_package.py --package linux-x64 --vendor-src .sandbox-payload --force
+      - name: Verify bundled sandbox payload
+        run: |
+          test -x dist/npm/linux-x64/vendor/x86_64-unknown-linux-musl/bin/autoreport-linux-sandbox
+          test -x dist/npm/linux-x64/vendor/x86_64-unknown-linux-musl/bin/autoreport-resources/bwrap
