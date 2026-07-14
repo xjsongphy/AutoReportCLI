@@ -118,6 +118,9 @@ def stage_platform(destination: Path, item: PlatformPackage, version: str, vendo
     binary, sandbox_assets = native_binaries(item, vendor_src)
     target_dir = destination / "vendor" / item.target / "bin"
     target_dir.mkdir(parents=True)
+    # Native binaries discover the package layout from this marker. Keep it
+    # beside `bin/`, matching the Codex platform-package component layout.
+    (target_dir.parent / "autoreport-package.json").write_text("{}\n")
     output = target_dir / binary.name
     shutil.copy2(binary, output)
     output.chmod(output.stat().st_mode | 0o111)

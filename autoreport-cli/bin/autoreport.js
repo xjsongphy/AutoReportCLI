@@ -42,7 +42,25 @@ if (!existsSync(executable)) {
   throw new Error(`Missing optional dependency ${platformPackage.packageName}. Reinstall with: ${manager} @autoreport/cli@latest`);
 }
 
+function packageManager() {
+  const userAgent = process.env.npm_config_user_agent ?? "";
+  if (/\bbun\//.test(userAgent) || process.env.npm_execpath?.includes("bun")) return "bun";
+  if (/\bpnpm\//.test(userAgent)) return "pnpm";
+  return "npm";
+}
+
 const env = { ...process.env, AUTOREPORT_MANAGED_PACKAGE_ROOT: packageRoot };
+delete env.AUTOREPORT_MANAGED_BY_NPM;
+delete env.AUTOREPORT_MANAGED_BY_PNPM;
+delete env.AUTOREPORT_MANAGED_BY_BUN;
+const managedBy = packageManager();
+env[
+  managedBy === "bun"
+    ? "AUTOREPORT_MANAGED_BY_BUN"
+    : managedBy === "pnpm"
+      ? "AUTOREPORT_MANAGED_BY_PNPM"
+      : "AUTOREPORT_MANAGED_BY_NPM"
+] = "1";
 const child = spawn(executable, process.argv.slice(2), { stdio: "inherit", env });
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => child.kill(signal));
