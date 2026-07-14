@@ -111,20 +111,26 @@ pub fn build_filesystem_policy(
             }
             // Commands commonly need temporary files; these are outside the
             // workspace and are discarded by the Linux backend's tmpfs mount.
-            entries.extend([
-                FileSystemSandboxEntry {
-                    path: FileSystemPath::Special {
-                        value: FileSystemSpecialPath::SlashTmp,
+            // A workspace placed under /tmp or TMPDIR is different: granting
+            // its parent temporary root would silently make sibling projects
+            // writable, so the workspace write root is the only temp write
+            // authority in that case.
+            if !workspace_is_inside_temporary_root(workspace_root) {
+                entries.extend([
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Special {
+                            value: FileSystemSpecialPath::SlashTmp,
+                        },
+                        access: FileSystemAccessMode::Write,
                     },
-                    access: FileSystemAccessMode::Write,
-                },
-                FileSystemSandboxEntry {
-                    path: FileSystemPath::Special {
-                        value: FileSystemSpecialPath::Tmpdir,
+                    FileSystemSandboxEntry {
+                        path: FileSystemPath::Special {
+                            value: FileSystemSpecialPath::Tmpdir,
+                        },
+                        access: FileSystemAccessMode::Write,
                     },
-                    access: FileSystemAccessMode::Write,
-                },
-            ]);
+                ]);
+            }
             FileSystemSandboxPolicy::restricted(entries)
         }
         SandboxMode::DangerFullAccess => {
@@ -132,6 +138,19 @@ pub fn build_filesystem_policy(
             FileSystemSandboxPolicy::unrestricted()
         }
     }
+}
+
+fn workspace_is_inside_temporary_root(workspace_root: &Path) -> bool {
+    let workspace_root =
+        dunce::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    [
+        PathBuf::from("/tmp"),
+        PathBuf::from("/private/tmp"),
+        std::env::temp_dir(),
+    ]
+    .into_iter()
+    .map(|root| dunce::canonicalize(&root).unwrap_or(root))
+    .any(|root| workspace_root.starts_with(root))
 }
 
 /// Build the network policy for a preset.
@@ -323,6 +342,22 @@ mod tests {
                 &workspace.path().join("unrestricted.txt"),
                 workspace.path()
             )
+        );
+    }
+
+    #[test]
+    fn temporary_workspaces_do_not_gain_writes_to_their_temp_parent() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let agent_root = workspace.path().join("agent");
+        std::fs::create_dir_all(&agent_root).expect("agent root");
+        let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
+            .with_writable_root(Some(&agent_root));
+        let policy = build_filesystem_policy(&spec, workspace.path());
+
+        assert!(policy.can_write_path_with_cwd(&agent_root.join("report.md"), workspace.path()));
+        assert!(
+            !policy.can_write_path_with_cwd(&workspace.path().join("sibling.md"), workspace.path()),
+            "a workspace under the system temporary directory must not inherit write access to its temp parent"
         );
     }
 

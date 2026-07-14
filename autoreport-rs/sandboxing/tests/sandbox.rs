@@ -6,6 +6,7 @@
 #![cfg(target_os = "macos")]
 
 use std::path::Path;
+use std::process::Command;
 
 use autoreport_protocol::FileSystemAccessMode;
 use autoreport_protocol::FileSystemSandboxPolicy;
@@ -86,6 +87,45 @@ fn workspace_write_protected_metadata_is_read_only() {
     assert!(!policy.can_write_path_with_cwd(&cwd.join("Theory/report.md"), &cwd));
     assert!(!policy.can_write_path_with_cwd(&cwd.join(".git/config"), &cwd));
     assert!(!policy.can_write_path_with_cwd(&cwd.join(".autoreport/sessions/x.jsonl"), &cwd));
+}
+
+#[test]
+fn workspace_write_executes_with_agent_only_write_access() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let agent_root = workspace.path().join("Outline");
+    std::fs::create_dir_all(&agent_root).expect("agent root");
+    let spec =
+        SandboxSpec::new(SandboxMode::WorkspaceWrite, false).with_writable_root(Some(&agent_root));
+    let argv = seatbelt_command_argv(
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf allowed > Outline/allowed.txt; printf denied > blocked.txt".to_string(),
+        ],
+        workspace.path(),
+        &spec,
+    )
+    .expect("seatbelt argv");
+    let (program, args) = argv.split_first().expect("seatbelt launcher");
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(workspace.path())
+        .output()
+        .expect("sandbox-exec should run");
+
+    assert!(
+        !output.status.success(),
+        "the write outside the agent root must fail; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        std::fs::read_to_string(agent_root.join("allowed.txt")).expect("allowed output"),
+        "allowed"
+    );
+    assert!(
+        !workspace.path().join("blocked.txt").exists(),
+        "seatbelt must prevent writes outside the agent root"
+    );
 }
 
 #[test]
