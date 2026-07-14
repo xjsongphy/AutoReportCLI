@@ -23,13 +23,13 @@ pub struct Settings {
     /// Context window of the active model, in tokens.
     #[serde(default = "default_context_window")]
     pub context_window: usize,
-    /// OS-level sandbox applied to `exec` tool commands. Defaults to codex's
+    /// OS-level sandbox applied to `exec` tool commands. Defaults to AutoReport's
     /// `workspace-write` (read all, write the workspace root + tmp, protect
-    /// `.git`/`.agents`/`.codex`). See [`crate::sandbox`] for the backends.
+    /// `.git`/`.agents`/`.autoreport`). See [`crate::sandbox`] for the backends.
     #[serde(default)]
     pub sandbox_mode: SandboxMode,
     /// Whether to allow outbound network access for sandboxed `exec` commands.
-    /// Defaults to `false` (network denied), matching codex's default profile.
+    /// Defaults to `false` (network denied), matching AutoReport's default profile.
     #[serde(default)]
     pub sandbox_network: bool,
 }
@@ -145,7 +145,7 @@ pub struct AgentDefaults {
     pub exec_timeout_secs: u64,
     /// When the agent must consult the user before running a command. Only
     /// [`AskForApproval::Never`] is wired up today (least-intervention mode);
-    /// the loader clamps other variants to `Never` with a warning. Codex's
+    /// the loader clamps other variants to `Never` with a warning. AutoReport's
     /// enum default is `OnRequest`, so the config default is pinned via a
     /// serde default fn rather than the enum's `Default`.
     #[serde(default = "default_approval_policy")]
@@ -162,7 +162,7 @@ fn default_exec_timeout_secs() -> u64 {
     120
 }
 /// Product default: least human intervention. (Kept as a fn rather than
-/// relying on `AskForApproval::default()`, which codex pins to `OnRequest`.)
+/// relying on `AskForApproval::default()`, which AutoReport pins to `OnRequest`.)
 fn default_approval_policy() -> AskForApproval {
     AskForApproval::Never
 }
