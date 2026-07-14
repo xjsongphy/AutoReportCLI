@@ -42,10 +42,36 @@ if (!existsSync(executable)) {
   throw new Error(`Missing optional dependency ${platformPackage.packageName}. Reinstall with: ${manager} @autoreport/cli@latest`);
 }
 
+function isPnpmOwnedAutoReportInstall(nodeModulesDir) {
+  if (!existsSync(path.join(nodeModulesDir, ".modules.yaml"))) return false;
+  try {
+    return realpathSync(path.join(nodeModulesDir, "@autoreport", "cli")) === packageRoot;
+  } catch {
+    return false;
+  }
+}
+
 function packageManager() {
+  const entrypointDir = path.dirname(path.resolve(process.argv[1]));
+  for (const startDir of new Set([packageRoot, entrypointDir])) {
+    const filesystemRoot = path.parse(startDir).root;
+    for (
+      let currentDir = startDir;
+      currentDir !== filesystemRoot;
+      currentDir = path.dirname(currentDir)
+    ) {
+      if (isPnpmOwnedAutoReportInstall(path.join(currentDir, "node_modules"))) return "pnpm";
+    }
+    if (isPnpmOwnedAutoReportInstall(path.join(filesystemRoot, "node_modules"))) return "pnpm";
+  }
+
   const userAgent = process.env.npm_config_user_agent ?? "";
-  if (/\bbun\//.test(userAgent) || process.env.npm_execpath?.includes("bun")) return "bun";
-  if (/\bpnpm\//.test(userAgent)) return "pnpm";
+  if (/\bbun\//.test(userAgent)) return "bun";
+  if (process.env.npm_execpath?.includes("bun")) return "bun";
+  if (
+    packageRoot.includes(".bun/install/global") ||
+    packageRoot.includes(".bun\\install\\global")
+  ) return "bun";
   return "npm";
 }
 
