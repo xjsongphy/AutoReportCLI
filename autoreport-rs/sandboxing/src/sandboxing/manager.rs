@@ -532,6 +532,17 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         autoreport_windows_sandbox::resolve_exe_for_launch(source.as_path(), autoreport_home);
     *program = helper.to_string_lossy().into_owned();
 
+    // The sandbox argument is handled by AutoReport's CLI entrypoint, not by
+    // arbitrary tool programs such as cmd.exe or PowerShell. Keep the tool
+    // executable as the inner command, but route the outer invocation through
+    // the current AutoReport executable so `dispatch_windows_sandbox_wrapper`
+    // can enter the native backend. If current_exe cannot be resolved, retain
+    // the source-program fallback used by the vendored implementation.
+    let wrapper = autoreport_windows_sandbox::resolve_current_exe_for_launch(
+        autoreport_home,
+        source.to_string_lossy().as_ref(),
+    );
+
     let inner_command = std::mem::take(&mut request.command);
     let proxy_enforced = request.network.is_some();
     let use_elevated =
@@ -588,7 +599,7 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         );
 
     request.command = Vec::with_capacity(1 + wrapper_args.len());
-    request.command.push(source.to_string_lossy().into_owned());
+    request.command.push(wrapper.to_string_lossy().into_owned());
     request.command.append(&mut wrapper_args);
     request.sandbox = SandboxType::None;
     request.arg0 = None;

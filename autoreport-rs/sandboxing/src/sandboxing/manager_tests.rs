@@ -463,7 +463,7 @@ fn transform_for_direct_spawn_windows_preserves_only_wrapper_setup_identity() {
 
 #[cfg(target_os = "windows")]
 #[test]
-fn transform_for_direct_spawn_windows_materializes_inner_helper() {
+fn transform_for_direct_spawn_windows_routes_wrapper_through_current_executable() {
     let codex_home = tempfile::TempDir::new().expect("codex home");
     let helper_dir = tempfile::TempDir::new().expect("helper dir");
     let configured_helper = helper_dir.path().join("configured-codex-helper.exe");
@@ -538,11 +538,21 @@ fn transform_for_direct_spawn_windows_materializes_inner_helper() {
         .position(|arg| arg == "--")
         .expect("wrapper argv separator");
     let materialized_helper = std::path::PathBuf::from(&exec_request.command[separator_index + 1]);
-    assert_eq!(exec_request.sandbox, SandboxType::None);
-    assert_eq!(
-        exec_request.command.first(),
-        Some(&configured_helper.display().to_string())
+    let wrapper_exe = std::path::PathBuf::from(
+        exec_request
+            .command
+            .first()
+            .expect("windows sandbox wrapper executable"),
     );
+    let current_exe = std::env::current_exe().expect("current executable");
+    assert_eq!(exec_request.sandbox, SandboxType::None);
+    assert_ne!(wrapper_exe, configured_helper);
+    assert_eq!(wrapper_exe.file_name(), current_exe.file_name());
+    assert_eq!(
+        wrapper_exe.parent().and_then(std::path::Path::file_name),
+        Some(std::ffi::OsStr::new(".sandbox-bin"))
+    );
+    assert!(wrapper_exe.exists());
     assert!(
         exec_request
             .command
