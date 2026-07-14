@@ -8,19 +8,10 @@ use serde_json::json;
 use std::path::PathBuf;
 
 fn workspace() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("autoreport-iso-{}", stamp()));
+    let d = std::env::temp_dir().join(format!("autoreport-iso-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&d).unwrap();
     autoreport_core::config::ensure_workspace(&d).unwrap();
     d
-}
-
-fn stamp() -> String {
-    use std::time::SystemTime;
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
 }
 
 #[tokio::test]
@@ -85,6 +76,46 @@ async fn exec_respects_write_dir() {
     assert!(
         blocked.error.is_some(),
         "exec write outside write_dir must be rejected"
+    );
+
+    std::fs::remove_dir_all(&ws).ok();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn exec_uses_seatbelt_to_block_undeclared_writes() {
+    let ws = workspace();
+    let agent_root = ws.join("Data").join("Processed");
+    let ctx = FsCtx::new(ws.clone(), Some(agent_root.clone()));
+    let exec = ExecTool::new(ctx, 10).with_sandbox(
+        autoreport_sandboxing::SandboxSpec::new(
+            autoreport_sandboxing::SandboxMode::WorkspaceWrite,
+            false,
+        )
+        .with_writable_root(Some(&agent_root)),
+    );
+
+    let output = exec
+        .call(&json!({
+            "command": "python3 -c \"from pathlib import Path; Path('Data/Processed/sandboxed.txt').touch(); Path('Theory/seatbelt-blocked.txt').touch()\""
+        }))
+        .await;
+
+    assert!(
+        output.error.is_none(),
+        "exec should launch: {:?}",
+        output.error
+    );
+    assert_eq!(
+        output.result["returncode"].as_i64(),
+        Some(1),
+        "the second touch must be denied by Seatbelt: {}",
+        output.result
+    );
+    assert!(agent_root.join("sandboxed.txt").is_file());
+    assert!(
+        !ws.join("Theory").join("seatbelt-blocked.txt").exists(),
+        "the OS sandbox must prevent the undeclared write"
     );
 
     std::fs::remove_dir_all(&ws).ok();
