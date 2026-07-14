@@ -74,7 +74,7 @@ def prepare(path: Path, force: bool) -> None:
 def native_binaries(item: PlatformPackage, vendor_src: Path | None) -> tuple[Path, list[tuple[Path, Path]]]:
     name = "autoreport.exe" if item.os == "win32" else "autoreport"
     resources = {
-        "linux": (("autoreport-linux-sandbox", Path("autoreport-linux-sandbox")), ("bwrap", Path("autoreport-resources") / "bwrap")),
+        "linux": (("autoreport-linux-sandbox", Path("bin") / "autoreport-linux-sandbox"), ("bwrap", Path("autoreport-resources") / "bwrap")),
         "win32": (("autoreport-windows-sandbox-setup.exe", Path("autoreport-resources") / "autoreport-windows-sandbox-setup.exe"), ("autoreport-command-runner.exe", Path("autoreport-resources") / "autoreport-command-runner.exe")),
     }.get(item.os, ())
     if vendor_src:
@@ -122,7 +122,7 @@ def stage_platform(destination: Path, item: PlatformPackage, version: str, vendo
     shutil.copy2(binary, output)
     output.chmod(output.stat().st_mode | 0o111)
     for source, relative_destination in sandbox_assets:
-        resource_output = target_dir / relative_destination
+        resource_output = target_dir.parent / relative_destination
         resource_output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, resource_output)
         resource_output.chmod(resource_output.stat().st_mode | 0o111)

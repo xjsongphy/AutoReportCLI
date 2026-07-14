@@ -32,5 +32,5 @@ jobs:
       - name: Verify bundled sandbox payload
         shell: bash
         run: |
-          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/bin/autoreport-resources/autoreport-windows-sandbox-setup.exe
-          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/bin/autoreport-resources/autoreport-command-runner.exe
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/autoreport-resources/autoreport-windows-sandbox-setup.exe
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/autoreport-resources/autoreport-command-runner.exe
