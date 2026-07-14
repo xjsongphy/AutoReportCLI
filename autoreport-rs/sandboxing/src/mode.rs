@@ -189,11 +189,12 @@ pub fn sandbox_command_argv(
         .split_first()
         .ok_or_else(|| "cannot sandbox an empty command".to_string())?;
     let manager = SandboxManager::new();
+    let windows_sandbox_level = default_windows_sandbox_level();
     let sandbox = manager.select_initial(
         &file_system_sandbox_policy,
         network_sandbox_policy,
         SandboxablePreference::Require,
-        WindowsSandboxLevel::Disabled,
+        windows_sandbox_level,
         false,
     );
     let linux_helper = resolve_linux_sandbox_executable()?;
@@ -216,7 +217,7 @@ pub fn sandbox_command_argv(
                 sandbox_policy_cwd: &cwd_uri,
                 autoreport_linux_sandbox_exe: linux_helper.as_deref(),
                 use_legacy_landlock: false,
-                windows_sandbox_level: WindowsSandboxLevel::Disabled,
+                windows_sandbox_level,
                 windows_sandbox_private_desktop: false,
             },
             workspace_roots: std::slice::from_ref(&workspace_root),
@@ -224,6 +225,20 @@ pub fn sandbox_command_argv(
         })
         .map_err(|err| format!("failed to prepare sandbox: {err}"))?;
     Ok(Some(transformed.command))
+}
+
+/// Restrictive AutoReport modes use the same unelevated Windows backend that
+/// AutoReport selects when Windows sandboxing is enabled. The backend refuses a
+/// policy it cannot enforce, so this cannot silently downgrade a restrictive
+/// command to direct execution. Elevated setup remains an explicit opt-in.
+#[cfg(target_os = "windows")]
+const fn default_windows_sandbox_level() -> WindowsSandboxLevel {
+    WindowsSandboxLevel::RestrictedToken
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn default_windows_sandbox_level() -> WindowsSandboxLevel {
+    WindowsSandboxLevel::Disabled
 }
 
 #[cfg(target_os = "linux")]
@@ -249,4 +264,28 @@ fn resolve_linux_sandbox_executable() -> Result<Option<PathBuf>, String> {
 #[cfg(not(target_os = "linux"))]
 fn resolve_linux_sandbox_executable() -> Result<Option<PathBuf>, String> {
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowsSandboxLevel;
+    use super::default_windows_sandbox_level;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn restrictive_modes_enable_the_windows_backend() {
+        assert_eq!(
+            default_windows_sandbox_level(),
+            WindowsSandboxLevel::RestrictedToken
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn non_windows_hosts_do_not_select_a_windows_backend() {
+        assert_eq!(
+            default_windows_sandbox_level(),
+            WindowsSandboxLevel::Disabled
+        );
+    }
 }
