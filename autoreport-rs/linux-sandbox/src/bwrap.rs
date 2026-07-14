@@ -3,7 +3,7 @@
 //! This module mirrors the semantics used by the macOS Seatbelt sandbox:
 //! - the filesystem is read-only by default,
 //! - explicit writable roots are layered on top, and
-//! - sensitive subpaths such as `.git`, `.agents`, and `.codex` remain
+//! - sensitive subpaths such as `.git`, `.agents`, and `.autoreport` remain
 //!   read-only even when their parent root is writable.
 //!
 //! The overall Linux sandbox is composed of:
@@ -405,7 +405,7 @@ fn create_filesystem_args(
                 };
                 // Automatic repo-metadata read masks are skipped here so the
                 // metadata handling below can apply the root-scoped
-                // protection consistently for `.git`, `.agents`, and `.codex`.
+                // protection consistently for `.git`, `.agents`, and `.autoreport`.
                 // User-authored `read` rules for other subpaths and `none`
                 // rules should keep their normal bwrap behavior, which can mask
                 // the first missing component to prevent creation under writable
@@ -413,7 +413,7 @@ fn create_filesystem_args(
                 let project_subpath = subpath.as_path();
                 if project_subpath != Path::new(".git")
                     && project_subpath != Path::new(".agents")
-                    && project_subpath != Path::new(".codex")
+                    && project_subpath != Path::new(".autoreport")
                 {
                     return None;
                 }
@@ -1576,14 +1576,14 @@ mod tests {
     fn writable_roots_under_symlinked_ancestors_bind_real_target() {
         let temp_dir = TempDir::new().expect("temp dir");
         let logical_home = temp_dir.path().join("home");
-        let real_codex = temp_dir.path().join("real-codex");
-        let logical_codex = logical_home.join(".codex");
-        let real_memories = real_codex.join("memories");
-        let logical_memories = logical_codex.join("memories");
+        let real_autoreport = temp_dir.path().join("real-autoreport");
+        let logical_autoreport = logical_home.join(".autoreport");
+        let real_memories = real_autoreport.join("memories");
+        let logical_memories = logical_autoreport.join("memories");
         std::fs::create_dir_all(&logical_home).expect("create logical home");
         std::fs::create_dir_all(&real_memories).expect("create memories dir");
-        std::os::unix::fs::symlink(&real_codex, &logical_codex)
-            .expect("create symlinked codex home");
+        std::os::unix::fs::symlink(&real_autoreport, &logical_autoreport)
+            .expect("create symlinked autoreport home");
 
         let logical_memories_root =
             AbsolutePathBuf::from_absolute_path(&logical_memories).expect("absolute memories");
@@ -1718,7 +1718,7 @@ mod tests {
         assert_empty_file_bound_without_perms(&args.args, &blocked);
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".git"));
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
-        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".autoreport"));
         assert_eq!(args.preserved_files.len(), 1);
         assert_eq!(
             synthetic_mount_target_paths(&args),
@@ -1726,7 +1726,7 @@ mod tests {
                 blocked.clone(),
                 workspace.join(".git"),
                 workspace.join(".agents"),
-                workspace.join(".codex"),
+                workspace.join(".autoreport"),
             ]
         );
         assert!(
@@ -1759,13 +1759,13 @@ mod tests {
 
         assert_empty_file_bound_without_perms(&args.args, &dot_git);
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
-        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".autoreport"));
         assert_eq!(
             synthetic_mount_target_paths(&args),
             vec![
                 dot_git.clone(),
                 workspace.join(".agents"),
-                workspace.join(".codex"),
+                workspace.join(".autoreport"),
             ]
         );
         assert!(
@@ -1804,7 +1804,7 @@ mod tests {
         let args = create_filesystem_args(&policy, &workspace, NO_UNREADABLE_GLOB_SCAN_MAX_DEPTH)
             .expect("filesystem args");
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
-        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".autoreport"));
         let dot_git_str = path_to_string(&dot_git);
         assert!(
             !args
@@ -1851,7 +1851,7 @@ mod tests {
             create_filesystem_args(&policy, &link_workspace, NO_UNREADABLE_GLOB_SCAN_MAX_DEPTH)
                 .expect("filesystem args");
         assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".agents"));
-        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".codex"));
+        assert_empty_directory_mounted_read_only(&args.args, &workspace.join(".autoreport"));
         let dot_git_str = path_to_string(&dot_git);
         assert!(
             !args
@@ -1935,7 +1935,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
-                    value: FileSystemSpecialPath::project_roots(Some(".codex".into())),
+                    value: FileSystemSpecialPath::project_roots(Some(".autoreport".into())),
                 },
                 access: FileSystemAccessMode::Read,
             },
@@ -1946,16 +1946,16 @@ mod tests {
                 .expect("filesystem args");
         let dot_git = path_to_string(&temp_dir.path().join(".git"));
         let dot_agents = path_to_string(&temp_dir.path().join(".agents"));
-        let dot_codex = path_to_string(&temp_dir.path().join(".codex"));
+        let dot_autoreport = path_to_string(&temp_dir.path().join(".autoreport"));
 
         assert_empty_directory_mounted_read_only(&args.args, Path::new(&dot_git));
         assert_empty_directory_mounted_read_only(&args.args, Path::new(&dot_agents));
-        assert_empty_directory_mounted_read_only(&args.args, Path::new(&dot_codex));
+        assert_empty_directory_mounted_read_only(&args.args, Path::new(&dot_autoreport));
         assert!(args.preserved_files.is_empty());
         let synthetic_targets = synthetic_mount_target_paths(&args);
         assert!(synthetic_targets.contains(&PathBuf::from(&dot_git)));
         assert!(synthetic_targets.contains(&PathBuf::from(&dot_agents)));
-        assert!(synthetic_targets.contains(&PathBuf::from(&dot_codex)));
+        assert!(synthetic_targets.contains(&PathBuf::from(&dot_autoreport)));
         assert_eq!(
             protected_create_target_paths(&args),
             Vec::<PathBuf>::new(),
@@ -2023,10 +2023,10 @@ mod tests {
             vec![
                 PathBuf::from("/.git"),
                 PathBuf::from("/.agents"),
-                PathBuf::from("/.codex"),
+                PathBuf::from("/.autoreport"),
                 PathBuf::from("/dev/.git"),
                 PathBuf::from("/dev/.agents"),
-                PathBuf::from("/dev/.codex"),
+                PathBuf::from("/dev/.autoreport"),
             ]
         );
         assert_eq!(
@@ -2061,9 +2061,9 @@ mod tests {
                 "--perms".to_string(),
                 "555".to_string(),
                 "--tmpfs".to_string(),
-                "/.codex".to_string(),
+                "/.autoreport".to_string(),
                 "--remount-ro".to_string(),
-                "/.codex".to_string(),
+                "/.autoreport".to_string(),
                 // Rebind /dev after the root bind so device nodes remain
                 // writable/usable inside the writable root.
                 "--bind".to_string(),
@@ -2086,9 +2086,9 @@ mod tests {
                 "--perms".to_string(),
                 "555".to_string(),
                 "--tmpfs".to_string(),
-                "/dev/.codex".to_string(),
+                "/dev/.autoreport".to_string(),
                 "--remount-ro".to_string(),
-                "/dev/.codex".to_string(),
+                "/dev/.autoreport".to_string(),
             ]
         );
     }

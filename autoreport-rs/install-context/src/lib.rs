@@ -6,10 +6,10 @@ use std::sync::OnceLock;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 
 const BIN_DIRNAME: &str = "bin";
-const PACKAGE_METADATA_FILENAME: &str = "codex-package.json";
-const PATH_DIRNAME: &str = "codex-path";
+const PACKAGE_METADATA_FILENAME: &str = "autoreport-package.json";
+const PATH_DIRNAME: &str = "autoreport-path";
 const RELEASES_DIRNAME: &str = "releases";
-const RESOURCES_DIRNAME: &str = "codex-resources";
+const RESOURCES_DIRNAME: &str = "autoreport-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
 const ZSH_DIRNAME: &str = "zsh";
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
@@ -21,10 +21,10 @@ pub enum StandalonePlatform {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodexPackageLayout {
+pub struct AutoreportPackageLayout {
     /// The package root that contains the metadata file and layout directories.
     pub package_dir: AbsolutePathBuf,
-    /// Directory containing the Codex entrypoint executable.
+    /// Directory containing the AutoReport entrypoint executable.
     pub bin_dir: AbsolutePathBuf,
     /// Directory containing managed helper binaries and data files, when present.
     pub resources_dir: Option<AbsolutePathBuf>,
@@ -35,7 +35,7 @@ pub struct CodexPackageLayout {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallContext {
     pub method: InstallMethod,
-    pub package_layout: Option<CodexPackageLayout>,
+    pub package_layout: Option<AutoreportPackageLayout>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,27 +43,27 @@ pub enum InstallMethod {
     Standalone {
         /// The managed standalone release directory. Legacy installs use paths
         /// such as
-        /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
+        /// `~/.autoreport/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
         /// Package-layout installs use the package root that contains `bin/`,
-        /// `codex-resources/`, and `codex-path/`.
+        /// `autoreport-resources/`, and `autoreport-path/`.
         release_dir: AbsolutePathBuf,
         /// The bundled resource directory for managed dependencies.
         resources_dir: Option<AbsolutePathBuf>,
         /// The platform of the standalone release, either `Unix` or `Windows`.
         platform: StandalonePlatform,
     },
-    /// A Codex binary launched through the npm-managed `codex.js` shim.
+    /// A AutoReport binary launched through the npm-managed `autoreport.js` shim.
     Npm,
-    /// A Codex binary launched through the bun-managed `codex.js` shim.
+    /// A AutoReport binary launched through the bun-managed `autoreport.js` shim.
     Bun,
-    /// A Codex binary launched through the pnpm-managed `codex.js` shim.
+    /// A AutoReport binary launched through the pnpm-managed `autoreport.js` shim.
     Pnpm,
-    /// A Codex binary that appears to come from a Homebrew install prefix.
+    /// A AutoReport binary that appears to come from a Homebrew install prefix.
     Brew,
     /// Any other execution environment.
     ///
-    /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
-    /// internal launchers, and tests that execute Codex from an arbitrary path.
+    /// This commonly covers `cargo run`, app-bundled AutoReport binaries, custom
+    /// internal launchers, and tests that execute AutoReport from an arbitrary path.
     Other,
 }
 
@@ -73,26 +73,26 @@ impl InstallContext {
         current_exe: Option<&Path>,
         method_override: Option<InstallMethod>,
     ) -> Self {
-        let codex_home = autoreport_utils_home_dir::find_codex_home().ok();
-        Self::from_exe_with_codex_home(
+        let autoreport_home = autoreport_utils_home_dir::find_autoreport_home().ok();
+        Self::from_exe_with_autoreport_home(
             is_macos,
             current_exe,
             method_override,
-            codex_home.as_deref(),
+            autoreport_home.as_deref(),
         )
     }
 
-    fn from_exe_with_codex_home(
+    fn from_exe_with_autoreport_home(
         is_macos: bool,
         current_exe: Option<&Path>,
         method_override: Option<InstallMethod>,
-        codex_home: Option<&Path>,
+        autoreport_home: Option<&Path>,
     ) -> Self {
-        let package_layout = current_exe.and_then(CodexPackageLayout::from_exe);
+        let package_layout = current_exe.and_then(AutoreportPackageLayout::from_exe);
         let method = if let Some(method) = method_override {
             method
         } else if let Some(exe_path) = current_exe {
-            install_method_from_exe(exe_path, codex_home, package_layout.as_ref(), is_macos)
+            install_method_from_exe(exe_path, autoreport_home, package_layout.as_ref(), is_macos)
         } else {
             InstallMethod::Other
         };
@@ -106,11 +106,11 @@ impl InstallContext {
     pub fn current() -> &'static Self {
         INSTALL_CONTEXT.get_or_init(|| {
             let current_exe = std::env::current_exe().ok();
-            let method_override = if std::env::var_os("CODEX_MANAGED_BY_PNPM").is_some() {
+            let method_override = if std::env::var_os("AUTOREPORT_MANAGED_BY_PNPM").is_some() {
                 Some(InstallMethod::Pnpm)
-            } else if std::env::var_os("CODEX_MANAGED_BY_NPM").is_some() {
+            } else if std::env::var_os("AUTOREPORT_MANAGED_BY_NPM").is_some() {
                 Some(InstallMethod::Npm)
-            } else if std::env::var_os("CODEX_MANAGED_BY_BUN").is_some() {
+            } else if std::env::var_os("AUTOREPORT_MANAGED_BY_BUN").is_some() {
                 Some(InstallMethod::Bun)
             } else {
                 None
@@ -184,7 +184,7 @@ impl InstallContext {
     }
 }
 
-impl CodexPackageLayout {
+impl AutoreportPackageLayout {
     fn from_exe(exe_path: &Path) -> Option<Self> {
         let canonical_exe = canonical_absolute_path(exe_path)?;
         let exe_dir = canonical_exe.parent()?;
@@ -211,11 +211,11 @@ impl CodexPackageLayout {
 
 fn install_method_from_exe(
     exe_path: &Path,
-    codex_home: Option<&Path>,
-    package_layout: Option<&CodexPackageLayout>,
+    autoreport_home: Option<&Path>,
+    package_layout: Option<&AutoreportPackageLayout>,
     is_macos: bool,
 ) -> InstallMethod {
-    if let Some(standalone_method) = standalone_install_method(exe_path, codex_home, package_layout)
+    if let Some(standalone_method) = standalone_install_method(exe_path, autoreport_home, package_layout)
     {
         return standalone_method;
     }
@@ -229,16 +229,16 @@ fn install_method_from_exe(
 
 fn standalone_install_method(
     exe_path: &Path,
-    codex_home: Option<&Path>,
-    package_layout: Option<&CodexPackageLayout>,
+    autoreport_home: Option<&Path>,
+    package_layout: Option<&AutoreportPackageLayout>,
 ) -> Option<InstallMethod> {
-    let canonical_codex_home = canonical_absolute_path(codex_home?)?;
+    let canonical_autoreport_home = canonical_absolute_path(autoreport_home?)?;
     let release_dir = if let Some(package_layout) = package_layout {
         package_layout.package_dir.clone()
     } else {
         canonical_absolute_path(exe_path)?.parent()?
     };
-    let releases_root = canonical_codex_home
+    let releases_root = canonical_autoreport_home
         .join("packages")
         .join(STANDALONE_PACKAGES_DIRNAME)
         .join(RELEASES_DIRNAME);
@@ -293,13 +293,13 @@ mod tests {
 
     #[test]
     fn detects_standalone_install_from_release_layout() -> std::io::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let release_dir = codex_home
+        let autoreport_home = tempfile::tempdir()?;
+        let release_dir = autoreport_home
             .path()
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(default_rg_command()), "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
@@ -308,11 +308,11 @@ mod tests {
         let canonical_resources_dir =
             AbsolutePathBuf::from_absolute_path(resources_dir.canonicalize()?)?;
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ Some(codex_home.path()),
+            /*autoreport_home*/ Some(autoreport_home.path()),
         );
         assert_eq!(
             context,
@@ -334,19 +334,19 @@ mod tests {
 
     #[test]
     fn standalone_rg_falls_back_when_resources_are_missing() -> std::io::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let release_dir = codex_home
+        let autoreport_home = tempfile::tempdir()?;
+        let release_dir = autoreport_home
             .path()
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         fs::create_dir_all(&release_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ Some(codex_home.path()),
+            /*autoreport_home*/ Some(autoreport_home.path()),
         );
         assert_eq!(context.rg_command(), default_rg_command());
         Ok(())
@@ -362,7 +362,7 @@ mod tests {
         fs::create_dir_all(&resources_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
@@ -377,18 +377,18 @@ mod tests {
         let canonical_resources_dir =
             AbsolutePathBuf::from_absolute_path(resources_dir.canonicalize()?)?;
         let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
-        let package_layout = CodexPackageLayout {
+        let package_layout = AutoreportPackageLayout {
             package_dir: canonical_package_dir,
             bin_dir: canonical_bin_dir,
             resources_dir: Some(canonical_resources_dir.clone()),
             path_dir: Some(canonical_path_dir.clone()),
         };
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ None,
+            /*autoreport_home*/ None,
         );
         assert_eq!(
             context,
@@ -425,8 +425,8 @@ mod tests {
 
     #[test]
     fn standalone_package_layout_keeps_standalone_install_method() -> std::io::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let package_dir = codex_home
+        let autoreport_home = tempfile::tempdir()?;
+        let package_dir = autoreport_home
             .path()
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         let bin_dir = package_dir.join(BIN_DIRNAME);
@@ -436,7 +436,7 @@ mod tests {
         fs::create_dir_all(&resources_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
@@ -447,11 +447,11 @@ mod tests {
             AbsolutePathBuf::from_absolute_path(resources_dir.canonicalize()?)?;
         let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ Some(codex_home.path()),
+            /*autoreport_home*/ Some(autoreport_home.path()),
         );
         assert_eq!(
             context,
@@ -461,7 +461,7 @@ mod tests {
                     resources_dir: Some(canonical_resources_dir.clone()),
                     platform: standalone_platform(),
                 },
-                package_layout: Some(CodexPackageLayout {
+                package_layout: Some(AutoreportPackageLayout {
                     package_dir: canonical_package_dir,
                     bin_dir: canonical_bin_dir,
                     resources_dir: Some(canonical_resources_dir.clone()),
@@ -490,7 +490,7 @@ mod tests {
         fs::create_dir_all(&bin_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
         let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
@@ -517,14 +517,14 @@ mod tests {
         let bin_dir = package_dir.path().join(BIN_DIRNAME);
         fs::create_dir_all(&bin_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ None,
+            /*autoreport_home*/ None,
         );
         assert_eq!(context.rg_command(), default_rg_command());
         Ok(())
@@ -540,14 +540,14 @@ mod tests {
         fs::create_dir_all(resources_dir.join(TEST_RESOURCE_NAME))?;
         fs::create_dir_all(path_dir.join(default_rg_command()))?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
         fs::write(&exe_path, "")?;
 
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ false,
             /*current_exe*/ Some(&exe_path),
             /*method_override*/ None,
-            /*codex_home*/ None,
+            /*autoreport_home*/ None,
         );
         assert_eq!(context.rg_command(), default_rg_command());
         assert_eq!(context.bundled_resource(TEST_RESOURCE_NAME), None);
@@ -558,7 +558,7 @@ mod tests {
     fn package_manager_method_overrides_take_precedence() {
         let pnpm_context = InstallContext::from_exe(
             /*is_macos*/ false,
-            /*current_exe*/ Some(Path::new("/tmp/codex")),
+            /*current_exe*/ Some(Path::new("/tmp/autoreport")),
             /*method_override*/ Some(InstallMethod::Pnpm),
         );
         assert_eq!(
@@ -571,7 +571,7 @@ mod tests {
 
         let npm_context = InstallContext::from_exe(
             /*is_macos*/ false,
-            /*current_exe*/ Some(Path::new("/tmp/codex")),
+            /*current_exe*/ Some(Path::new("/tmp/autoreport")),
             /*method_override*/ Some(InstallMethod::Npm),
         );
         assert_eq!(
@@ -584,7 +584,7 @@ mod tests {
 
         let bun_context = InstallContext::from_exe(
             /*is_macos*/ false,
-            /*current_exe*/ Some(Path::new("/tmp/codex")),
+            /*current_exe*/ Some(Path::new("/tmp/autoreport")),
             /*method_override*/ Some(InstallMethod::Bun),
         );
         assert_eq!(
@@ -598,11 +598,11 @@ mod tests {
 
     #[test]
     fn brew_is_detected_on_macos_prefixes() {
-        let context = InstallContext::from_exe_with_codex_home(
+        let context = InstallContext::from_exe_with_autoreport_home(
             /*is_macos*/ true,
-            /*current_exe*/ Some(Path::new("/opt/homebrew/bin/codex")),
+            /*current_exe*/ Some(Path::new("/opt/homebrew/bin/autoreport")),
             /*method_override*/ None,
-            /*codex_home*/ None,
+            /*autoreport_home*/ None,
         );
         assert_eq!(
             context,

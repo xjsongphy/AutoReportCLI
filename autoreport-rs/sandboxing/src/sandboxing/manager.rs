@@ -468,9 +468,9 @@ impl SandboxManager {
     ) -> Result<SandboxExecRequest, SandboxTransformError> {
         #[cfg(target_os = "windows")]
         {
-            let codex_home = crate::home_dir::find_codex_home()
+            let autoreport_home = crate::home_dir::find_autoreport_home()
                 .map_err(|err| SandboxTransformError::WindowsSandboxPreparation(err.to_string()))?;
-            self.transform_for_direct_spawn_with_codex_home(request, codex_home.as_path())
+            self.transform_for_direct_spawn_with_autoreport_home(request, autoreport_home.as_path())
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -480,10 +480,10 @@ impl SandboxManager {
     }
 
     #[cfg(target_os = "windows")]
-    fn transform_for_direct_spawn_with_codex_home(
+    fn transform_for_direct_spawn_with_autoreport_home(
         &self,
         request: SandboxDirectSpawnTransformRequest<'_>,
-        codex_home: &Path,
+        autoreport_home: &Path,
     ) -> Result<SandboxExecRequest, SandboxTransformError> {
         let workspace_roots = request.workspace_roots;
         let proxy_settings_mode = request.windows_sandbox_proxy_settings_mode;
@@ -492,7 +492,7 @@ impl SandboxManager {
             wrap_windows_sandbox_exec_request_for_direct_spawn(
                 &mut request,
                 workspace_roots,
-                codex_home,
+                autoreport_home,
                 proxy_settings_mode,
             )?;
         }
@@ -504,7 +504,7 @@ impl SandboxManager {
 fn wrap_windows_sandbox_exec_request_for_direct_spawn(
     request: &mut SandboxExecRequest,
     workspace_roots: &[AbsolutePathBuf],
-    codex_home: &Path,
+    autoreport_home: &Path,
     proxy_settings_mode: crate::windows_sandbox::WindowsSandboxProxySettingsMode,
 ) -> Result<(), SandboxTransformError> {
     // TODO(anp): Keep PathUri through the Windows sandbox wrapper boundary.
@@ -528,7 +528,7 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
         ));
     };
     let source = std::path::PathBuf::from(&program);
-    let helper = crate::windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home);
+    let helper = crate::windows_sandbox::resolve_exe_for_launch(source.as_path(), autoreport_home);
     *program = helper.to_string_lossy().into_owned();
 
     let inner_command = std::mem::take(&mut request.command);
@@ -583,7 +583,7 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
             write_roots_override,
             deny_read_paths_override,
             deny_write_paths_override,
-            codex_home,
+            autoreport_home,
         );
 
     request.command = Vec::with_capacity(1 + wrapper_args.len());
