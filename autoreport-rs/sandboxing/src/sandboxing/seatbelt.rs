@@ -769,3 +769,7 @@ pub fn create_seatbelt_command_args(
     seatbelt_args.extend(command);
     Ok(seatbelt_args)
 }
+
+#[cfg(test)]
+#[path = "seatbelt_tests.rs"]
+mod tests;
