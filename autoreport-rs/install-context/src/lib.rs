@@ -215,7 +215,8 @@ fn install_method_from_exe(
     package_layout: Option<&AutoreportPackageLayout>,
     is_macos: bool,
 ) -> InstallMethod {
-    if let Some(standalone_method) = standalone_install_method(exe_path, autoreport_home, package_layout)
+    if let Some(standalone_method) =
+        standalone_install_method(exe_path, autoreport_home, package_layout)
     {
         return standalone_method;
     }
@@ -299,7 +300,11 @@ mod tests {
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(default_rg_command()), "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
@@ -339,7 +344,11 @@ mod tests {
             .path()
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         fs::create_dir_all(&release_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
 
         let context = InstallContext::from_exe_with_autoreport_home(
@@ -362,7 +371,11 @@ mod tests {
         fs::create_dir_all(&resources_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
@@ -436,7 +449,11 @@ mod tests {
         fs::create_dir_all(&resources_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(TEST_RESOURCE_NAME), "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
@@ -490,7 +507,11 @@ mod tests {
         fs::create_dir_all(&bin_dir)?;
         fs::create_dir_all(&path_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
         fs::write(path_dir.join(default_rg_command()), "")?;
         let canonical_path_dir = AbsolutePathBuf::from_absolute_path(path_dir.canonicalize()?)?;
@@ -517,7 +538,11 @@ mod tests {
         let bin_dir = package_dir.path().join(BIN_DIRNAME);
         fs::create_dir_all(&bin_dir)?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
 
         let context = InstallContext::from_exe_with_autoreport_home(
@@ -540,7 +565,11 @@ mod tests {
         fs::create_dir_all(resources_dir.join(TEST_RESOURCE_NAME))?;
         fs::create_dir_all(path_dir.join(default_rg_command()))?;
         fs::write(package_dir.path().join(PACKAGE_METADATA_FILENAME), "{}")?;
-        let exe_path = bin_dir.join(if cfg!(windows) { "autoreport.exe" } else { "codex" });
+        let exe_path = bin_dir.join(if cfg!(windows) {
+            "autoreport.exe"
+        } else {
+            "codex"
+        });
         fs::write(&exe_path, "")?;
 
         let context = InstallContext::from_exe_with_autoreport_home(

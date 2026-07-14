@@ -17,7 +17,9 @@ pub fn find_autoreport_home() -> std::io::Result<AbsolutePathBuf> {
     find_autoreport_home_from_env(autoreport_home_env.as_deref())
 }
 
-fn find_autoreport_home_from_env(autoreport_home_env: Option<&str>) -> std::io::Result<AbsolutePathBuf> {
+fn find_autoreport_home_from_env(
+    autoreport_home_env: Option<&str>,
+) -> std::io::Result<AbsolutePathBuf> {
     // Honor the `AUTOREPORT_HOME` environment variable when it is set to allow users
     // (and tests) to override the default location.
     match autoreport_home_env {
@@ -80,7 +82,8 @@ mod tests {
             .to_str()
             .expect("missing autoreport home path should be valid utf-8");
 
-        let err = find_autoreport_home_from_env(Some(missing_str)).expect_err("missing AUTOREPORT_HOME");
+        let err =
+            find_autoreport_home_from_env(Some(missing_str)).expect_err("missing AUTOREPORT_HOME");
         assert_eq!(err.kind(), ErrorKind::NotFound);
         assert!(
             err.to_string().contains("AUTOREPORT_HOME"),
@@ -113,7 +116,8 @@ mod tests {
             .to_str()
             .expect("temp autoreport home path should be valid utf-8");
 
-        let resolved = find_autoreport_home_from_env(Some(temp_str)).expect("valid AUTOREPORT_HOME");
+        let resolved =
+            find_autoreport_home_from_env(Some(temp_str)).expect("valid AUTOREPORT_HOME");
         let expected = temp_home
             .path()
             .canonicalize()
@@ -124,8 +128,8 @@ mod tests {
 
     #[test]
     fn find_autoreport_home_without_env_uses_default_home_dir() {
-        let resolved =
-            find_autoreport_home_from_env(/*autoreport_home_env*/ None).expect("default AUTOREPORT_HOME");
+        let resolved = find_autoreport_home_from_env(/*autoreport_home_env*/ None)
+            .expect("default AUTOREPORT_HOME");
         let mut expected = home_dir().expect("home dir");
         expected.push(".autoreport");
         let expected = AbsolutePathBuf::from_absolute_path(expected).expect("absolute home");

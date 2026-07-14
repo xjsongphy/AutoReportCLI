@@ -613,7 +613,10 @@ impl FileSystemSandboxPolicy {
 
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".git");
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".agents");
-        append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".autoreport");
+        append_default_read_only_project_root_subpath_if_no_explicit_rule(
+            &mut entries,
+            ".autoreport",
+        );
         for writable_root in writable_roots {
             for protected_path in default_read_only_subpaths_for_writable_root(
                 writable_root,
@@ -2100,12 +2103,10 @@ mod tests {
                 .contains(&explicit_dot_autoreport),
             "explicit .autoreport rule should win over the default protected carveout"
         );
-        assert!(
-            policy.can_write_path_with_cwd(
-                explicit_dot_autoreport.join("config.toml").as_path(),
-                cwd.path()
-            )
-        );
+        assert!(policy.can_write_path_with_cwd(
+            explicit_dot_autoreport.join("config.toml").as_path(),
+            cwd.path()
+        ));
     }
 
     #[test]

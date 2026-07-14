@@ -17,7 +17,9 @@ pub fn find_autoreport_home() -> std::io::Result<AbsolutePathBuf> {
     find_autoreport_home_from_env(autoreport_home_env.as_deref())
 }
 
-fn find_autoreport_home_from_env(autoreport_home_env: Option<&str>) -> std::io::Result<AbsolutePathBuf> {
+fn find_autoreport_home_from_env(
+    autoreport_home_env: Option<&str>,
+) -> std::io::Result<AbsolutePathBuf> {
     // Honor the `AUTOREPORT_HOME` environment variable when it is set to allow users
     // (and tests) to override the default location.
     match autoreport_home_env {

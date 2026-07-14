@@ -97,7 +97,11 @@ fn legacy_candidates_for_exe(exe: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     candidates.push(exe_dir.join("autoreport-resources").join("bwrap"));
     if let Some(package_target_dir) = exe_dir.parent() {
-        candidates.push(package_target_dir.join("autoreport-resources").join("bwrap"));
+        candidates.push(
+            package_target_dir
+                .join("autoreport-resources")
+                .join("bwrap"),
+        );
     }
     candidates.push(exe_dir.join("bwrap"));
     if let Some(path) = bazel_bwrap::candidate() {
