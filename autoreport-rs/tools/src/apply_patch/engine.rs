@@ -626,14 +626,11 @@ mod tests {
         FsCtx::new(ws.to_path_buf(), Some(ws.to_path_buf()))
     }
 
-    fn stamp() -> String {
-        use std::time::SystemTime;
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_string()
-    }
+        fn stamp() -> String {
+            // Unit tests run in parallel; timestamp resolution is not enough
+            // to keep their temporary workspaces distinct on every platform.
+            uuid::Uuid::new_v4().to_string()
+        }
 
     #[test]
     fn update_replace_and_add_and_delete() {
