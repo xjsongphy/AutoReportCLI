@@ -1,0 +1,19 @@
+[package]
+name = "autoreport-utils-string"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_string"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+regex-lite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"

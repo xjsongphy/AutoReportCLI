@@ -17,6 +17,8 @@ members = [
     "autoreport-rs/network-proxy",
     "autoreport-rs/linux-sandbox",
     "autoreport-rs/bwrap",
+    "autoreport-rs/utils/pty",
+    "autoreport-rs/utils/string",
 ]
 resolver = "2"
 
