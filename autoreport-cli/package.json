@@ -11,9 +11,16 @@
     "node": ">=18"
   },
   "files": [
-    "bin/autoreport.js",
-    "vendor"
+    "bin/autoreport.js"
   ],
+  "optionalDependencies": {
+    "@autoreport/cli-darwin-arm64": "0.1.1",
+    "@autoreport/cli-darwin-x64": "0.1.1",
+    "@autoreport/cli-linux-arm64": "0.1.1",
+    "@autoreport/cli-linux-x64": "0.1.1",
+    "@autoreport/cli-win32-arm64": "0.1.1",
+    "@autoreport/cli-win32-x64": "0.1.1"
+  },
   "scripts": {
     "build": "python3 scripts/build_npm_package.py",
     "pack:dry-run": "npm pack --dry-run"

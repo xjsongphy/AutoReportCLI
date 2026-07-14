@@ -1,55 +1,138 @@
 #!/usr/bin/env python3
-"""Build and stage the native CLI exactly where the npm launcher expects it.
+"""Stage AutoReport's npm meta package and Codex-style platform packages.
 
-Usage: python3 autoreport-cli/scripts/build_npm_package.py [--target <rust-target>]
+The meta package contains only the Node launcher. Each native binary is
+published independently as an optional dependency, so npm installs only the
+matching target package. This is adapted from Codex's npm staging workflow;
+AutoReport has no SDK, responses-proxy, V8, or auxiliary native resources.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import shutil
 import subprocess
-import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGE = ROOT / "autoreport-cli"
-TARGETS = {
-    ("Darwin", "arm64"): "aarch64-apple-darwin",
-    ("Darwin", "x86_64"): "x86_64-apple-darwin",
-    ("Linux", "aarch64"): "aarch64-unknown-linux-musl",
-    ("Linux", "x86_64"): "x86_64-unknown-linux-musl",
-    ("Windows", "ARM64"): "aarch64-pc-windows-msvc",
-    ("Windows", "AMD64"): "x86_64-pc-windows-msvc",
+SOURCE_PACKAGE = ROOT / "autoreport-cli"
+DIST = ROOT / "dist" / "npm"
+
+
+@dataclass(frozen=True)
+class PlatformPackage:
+    slug: str
+    npm_name: str
+    target: str
+    os: str
+    cpu: str
+
+
+PLATFORMS = (
+    PlatformPackage("darwin-arm64", "@autoreport/cli-darwin-arm64", "aarch64-apple-darwin", "darwin", "arm64"),
+    PlatformPackage("darwin-x64", "@autoreport/cli-darwin-x64", "x86_64-apple-darwin", "darwin", "x64"),
+    PlatformPackage("linux-arm64", "@autoreport/cli-linux-arm64", "aarch64-unknown-linux-musl", "linux", "arm64"),
+    PlatformPackage("linux-x64", "@autoreport/cli-linux-x64", "x86_64-unknown-linux-musl", "linux", "x64"),
+    PlatformPackage("win32-arm64", "@autoreport/cli-win32-arm64", "aarch64-pc-windows-msvc", "win32", "arm64"),
+    PlatformPackage("win32-x64", "@autoreport/cli-win32-x64", "x86_64-pc-windows-msvc", "win32", "x64"),
+)
+BY_SLUG = {item.slug: item for item in PLATFORMS}
+HOST_TARGETS = {
+    ("darwin", "arm64"): "darwin-arm64", ("darwin", "x86_64"): "darwin-x64",
+    ("linux", "aarch64"): "linux-arm64", ("linux", "x86_64"): "linux-x64",
+    ("win32", "arm64"): "win32-arm64", ("win32", "amd64"): "win32-x64",
 }
 
 
-def host_target() -> str:
-    target = TARGETS.get((platform.system(), platform.machine()))
-    if target is None:
+def package_version() -> str:
+    manifest = json.loads((SOURCE_PACKAGE / "package.json").read_text())
+    return manifest["version"]
+
+
+def host_platform() -> PlatformPackage:
+    key = (platform.system().lower(), platform.machine().lower())
+    slug = HOST_TARGETS.get(key)
+    if slug is None:
         raise SystemExit(f"unsupported host: {platform.system()} {platform.machine()}")
-    return target
+    return BY_SLUG[slug]
+
+
+def prepare(path: Path, force: bool) -> None:
+    if path.exists():
+        if not force and any(path.iterdir()):
+            raise SystemExit(f"staging directory is not empty: {path} (pass --force to replace it)")
+        if force:
+            shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def native_binary(item: PlatformPackage, vendor_src: Path | None) -> Path:
+    name = "autoreport.exe" if item.os == "win32" else "autoreport"
+    if vendor_src:
+        candidate = vendor_src / item.target / "bin" / name
+        if candidate.is_file():
+            return candidate
+        raise SystemExit(f"prebuilt binary not found: {candidate}")
+    subprocess.run(["cargo", "build", "--release", "-p", "autoreport-cli", "--target", item.target], cwd=ROOT, check=True)
+    candidate = ROOT / "target" / item.target / "release" / name
+    if not candidate.is_file():
+        raise SystemExit(f"cargo did not produce {candidate}")
+    return candidate
+
+
+def stage_main(destination: Path, version: str) -> None:
+    shutil.copytree(SOURCE_PACKAGE / "bin", destination / "bin")
+    manifest = json.loads((SOURCE_PACKAGE / "package.json").read_text())
+    manifest["version"] = version
+    manifest["optionalDependencies"] = {item.npm_name: version for item in PLATFORMS}
+    (destination / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def stage_platform(destination: Path, item: PlatformPackage, version: str, vendor_src: Path | None) -> None:
+    binary = native_binary(item, vendor_src)
+    target_dir = destination / "vendor" / item.target / "bin"
+    target_dir.mkdir(parents=True)
+    output = target_dir / binary.name
+    shutil.copy2(binary, output)
+    output.chmod(output.stat().st_mode | 0o111)
+    manifest = {"name": item.npm_name, "version": version, "license": "MIT", "os": [item.os], "cpu": [item.cpu], "files": ["vendor"]}
+    (destination / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def npm_pack(directory: Path, output: Path) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["npm", "pack", "--pack-destination", str(output.parent)], cwd=directory, check=True)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", default=host_target())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package", choices=("autoreport", "host", "all", *BY_SLUG), default="host")
+    parser.add_argument("--version", default=package_version())
+    parser.add_argument("--staging-dir", type=Path)
+    parser.add_argument("--vendor-src", type=Path, help="prebuilt vendor root (<target>/bin/autoreport)")
+    parser.add_argument("--pack-output", type=Path, help="directory for npm tarballs")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    subprocess.run(
-        ["cargo", "build", "--release", "-p", "autoreport-cli", "--target", args.target],
-        cwd=ROOT,
-        check=True,
-    )
-    binary = ROOT / "target" / args.target / "release" / ("autoreport.exe" if args.target.endswith("windows-msvc") else "autoreport")
-    if not binary.is_file():
-        raise SystemExit(f"cargo did not produce {binary}")
-    destination = PACKAGE / "vendor" / args.target / "bin" / binary.name
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary, destination)
-    destination.chmod(destination.stat().st_mode | 0o111)
-    print(f"staged {destination.relative_to(ROOT)}")
+    selected = PLATFORMS if args.package == "all" else (() if args.package == "autoreport" else (host_platform() if args.package == "host" else BY_SLUG[args.package],))
+    root = args.staging_dir.resolve() if args.staging_dir else DIST
+    prepare(root, args.force)
+    if args.package in ("autoreport", "all"):
+        destination = root / "autoreport"
+        prepare(destination, True)
+        stage_main(destination, args.version)
+        if args.pack_output: npm_pack(destination, args.pack_output)
+        print(f"staged {destination}")
+    for item in selected:
+        destination = root / item.slug
+        prepare(destination, True)
+        stage_platform(destination, item, args.version, args.vendor_src.resolve() if args.vendor_src else None)
+        if args.pack_output: npm_pack(destination, args.pack_output)
+        print(f"staged {destination}")
 
 
 if __name__ == "__main__":
