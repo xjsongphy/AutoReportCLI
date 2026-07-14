@@ -16,6 +16,7 @@ members = [
     "autoreport-rs/utils/rustls-provider",
     "autoreport-rs/network-proxy",
     "autoreport-rs/linux-sandbox",
+    "autoreport-rs/bwrap",
 ]
 resolver = "2"
 
