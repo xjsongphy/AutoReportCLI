@@ -114,6 +114,7 @@ pub mod engine {
 
     const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
     const END_PATCH_MARKER: &str = "*** End Patch";
+    const ENVIRONMENT_ID_MARKER: &str = "*** Environment ID:";
     const ADD_FILE_MARKER: &str = "*** Add File: ";
     const DELETE_FILE_MARKER: &str = "*** Delete File: ";
     const UPDATE_FILE_MARKER: &str = "*** Update File: ";
@@ -125,27 +126,45 @@ pub mod engine {
     // ---- parser ----
 
     pub fn parse(patch: &str) -> Result<Vec<Hunk>, String> {
-        let mut lines: Vec<&str> = patch.lines().collect();
-        // Trim leading heredoc/invocation noise until Begin Patch.
-        while let Some(first) = lines.first() {
-            if first.trim_start() == BEGIN_PATCH_MARKER
-                || first.trim_start().starts_with(BEGIN_PATCH_MARKER)
-            {
-                break;
+        let lines: Vec<&str> = patch.lines().collect();
+        // Verify patch boundaries (codex `check_patch_boundaries`,
+        // apply-patch/src/parser.rs). Two modes:
+        //   - strict:  first trimmed line == `*** Begin Patch`,
+        //              last trimmed line == `*** End Patch`
+        //   - lenient: tolerates a heredoc wrapper (`<<EOF` / `<<'EOF'` /
+        //              `<<"EOF"` … trailing `EOF`, >=4 lines) by stripping the
+        //              two marker lines and re-applying the strict check on the
+        //              inner text.
+        // We deliberately do NOT silently skip arbitrary leading lines (the old
+        // ad-hoc behaviour): codex-trained models emit either the bare patch or
+        // one of the heredoc forms, and silent skipping can mask real errors.
+        let inner = check_patch_boundaries(&lines)?;
+        // `inner` still includes the Begin/End markers. Drop the first
+        // (`*** Begin Patch`); the terminating `*** End Patch` is consumed by
+        // the main loop below.
+        let body = &inner[1..];
+
+        // Optional `*** Environment ID: <id>` preamble (codex
+        // `streaming_parser::handle_hunk_headers_and_end_patch`). We don't use
+        // the id locally but must accept and validate it so patches produced by
+        // codex-trained models aren't rejected.
+        let mut start = 0;
+        if let Some(first) = body.first() {
+            if let Some(rest) = first.trim().strip_prefix(ENVIRONMENT_ID_MARKER) {
+                let id = rest.trim();
+                if id.is_empty() {
+                    return Err("apply_patch environment_id cannot be empty".into());
+                }
+                start = 1;
             }
-            // allow leading `apply_patch <<'EOF'` lines
-            if lines.len() <= 1 {
-                return Err("The first line of the patch must be '*** Begin Patch'".into());
+            if let Some(second) = body.get(1) {
+                if second.trim().starts_with(ENVIRONMENT_ID_MARKER) {
+                    return Err(
+                        "apply_patch environment_id cannot be specified more than once".into(),
+                    );
+                }
             }
-            lines.remove(0);
         }
-        let Some(first) = lines.first() else {
-            return Err("The first line of the patch must be '*** Begin Patch'".into());
-        };
-        if first.trim_start() != BEGIN_PATCH_MARKER {
-            return Err("The first line of the patch must be '*** Begin Patch'".into());
-        }
-        lines.remove(0);
 
         let invalid_header = |trimmed: &str| {
             format!(
@@ -155,17 +174,17 @@ pub mod engine {
         };
 
         let mut hunks = Vec::new();
-        let mut i = 0;
+        let mut i = start;
         let mut saw_end = false;
-        while i < lines.len() {
-            let line = lines[i];
-            if line == END_PATCH_MARKER {
+        while i < body.len() {
+            let line = body[i];
+            if line.trim() == END_PATCH_MARKER {
                 saw_end = true;
                 break;
             }
             if let Some(path) = line.strip_prefix(ADD_FILE_MARKER) {
                 i += 1;
-                let (contents, consumed) = parse_add_body(&lines[i..])?;
+                let (contents, consumed) = parse_add_body(&body[i..])?;
                 i += consumed;
                 hunks.push(Hunk::AddFile {
                     path: PathBuf::from(path.trim()),
@@ -179,13 +198,13 @@ pub mod engine {
             } else if let Some(path) = line.strip_prefix(UPDATE_FILE_MARKER) {
                 i += 1;
                 let mut move_path = None;
-                if i < lines.len() {
-                    if let Some(dest) = lines[i].strip_prefix(MOVE_TO_MARKER) {
+                if i < body.len() {
+                    if let Some(dest) = body[i].strip_prefix(MOVE_TO_MARKER) {
                         move_path = Some(PathBuf::from(dest.trim()));
                         i += 1;
                     }
                 }
-                let (chunks, consumed) = parse_update_chunks(&lines[i..])?;
+                let (chunks, consumed) = parse_update_chunks(&body[i..])?;
                 i += consumed;
                 if chunks.is_empty() {
                     return Err(format!(
@@ -209,6 +228,47 @@ pub mod engine {
             return Err("The last line of the patch must be '*** End Patch'".into());
         }
         Ok(hunks)
+    }
+
+    /// Verify the patch's first/last lines, accepting either the bare form
+    /// (`*** Begin Patch` … `*** End Patch`) or a heredoc wrapper. Returns the
+    /// slice of patch lines that includes the Begin/End markers (caller drops
+    /// Begin before walking hunks). Ported from codex `check_patch_boundaries`
+    /// (`apply-patch/src/parser.rs`).
+    fn check_patch_boundaries<'a>(lines: &'a [&'a str]) -> Result<&'a [&'a str], String> {
+        match check_start_and_end(lines) {
+            Ok(()) => Ok(lines),
+            Err(strict_err) => {
+                // Lenient: a `<<EOF` / `<<'EOF'` / `<<"EOF"` … `EOF` heredoc
+                // wrapper (>=4 lines: 2 markers + >=2 patch lines).
+                match lines {
+                    [first, .., last] => {
+                        let is_heredoc_start =
+                            *first == "<<EOF" || *first == "<<'EOF'" || *first == "<<\"EOF\"";
+                        if is_heredoc_start && last.ends_with("EOF") && lines.len() >= 4 {
+                            let inner = &lines[1..lines.len() - 1];
+                            check_start_and_end(inner).map_err(|_| strict_err)?;
+                            Ok(inner)
+                        } else {
+                            Err(strict_err)
+                        }
+                    }
+                    _ => Err(strict_err),
+                }
+            }
+        }
+    }
+
+    fn check_start_and_end(lines: &[&str]) -> Result<(), String> {
+        let first = lines.first().map(|l| l.trim());
+        let last = lines.last().map(|l| l.trim());
+        match (first, last) {
+            (Some(f), Some(l)) if f == BEGIN_PATCH_MARKER && l == END_PATCH_MARKER => Ok(()),
+            (Some(f), _) if f != BEGIN_PATCH_MARKER => {
+                Err("The first line of the patch must be '*** Begin Patch'".into())
+            }
+            _ => Err("The last line of the patch must be '*** End Patch'".into()),
+        }
     }
 
     /// Collect `+`-prefixed add lines (codex: each line's first `+` stripped,
@@ -737,7 +797,10 @@ pub mod engine {
             std::fs::create_dir_all(&dir).unwrap();
             let patch = "*** Begin Patch\n*** Delete File: nope.txt\n*** End Patch";
             let err = apply(patch, &ctx(&dir)).unwrap_err();
-            assert!(err.contains("not found"), "expected not-found error, got: {err}");
+            assert!(
+                err.contains("not found"),
+                "expected not-found error, got: {err}"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -787,5 +850,12 @@ pub mod engine {
 
         #[allow(dead_code)]
         fn _pb(_: PathBuf) {}
+    }
+
+    #[test]
+    fn trailing_whitespace_on_end_marker_is_accepted() {
+        let patch = "*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch   ";
+        let hunks = parse(patch).unwrap();
+        assert_eq!(hunks.len(), 1);
     }
 }
