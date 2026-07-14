@@ -1,6 +1,6 @@
 //! High-level sandbox integration for the `exec` tool.
 //!
-//! Maps a coarse [`SandboxMode`] preset to the native Codex-derived
+//! Maps a coarse [`SandboxMode`] preset to the native AutoReport-derived
 //! [`crate::sandboxing::SandboxManager`] request model. Restrictive modes fail
 //! closed on platforms without a backend instead of silently running an
 //! unrestricted command.
