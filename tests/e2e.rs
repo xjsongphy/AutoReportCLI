@@ -211,7 +211,14 @@ fn registry_for(workspace: &std::path::Path, agent: AgentType) -> ToolRegistry {
         ctx.clone(),
     ));
     reg.register(autoreport_cli::tools::apply_patch::make(ctx.clone()));
-    reg.register(autoreport_cli::tools::exec_tool::make(ctx, 10));
+    reg.register(autoreport_cli::tools::exec_tool::make(
+        ctx,
+        10,
+        autoreport_cli::sandbox::SandboxSpec::new(
+            autoreport_cli::sandbox::SandboxMode::DangerFullAccess,
+            false,
+        ),
+    ));
     reg
 }
 

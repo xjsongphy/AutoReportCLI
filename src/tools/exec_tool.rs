@@ -65,6 +65,7 @@ pub struct ExecTool {
     ctx: FsCtx,
     timeout: Duration,
     shell: Arc<CodexShell>,
+    sandbox: Option<crate::sandbox::SandboxSpec>,
 }
 
 impl ExecTool {
@@ -73,7 +74,14 @@ impl ExecTool {
             ctx,
             timeout: Duration::from_secs(timeout_secs),
             shell: Arc::new(CodexShell::new()),
+            sandbox: None,
         }
+    }
+
+    /// Attach an OS-level sandbox scoped to this tool's agent write directory.
+    pub fn with_sandbox(mut self, sandbox: crate::sandbox::SandboxSpec) -> Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 }
 
@@ -103,7 +111,11 @@ impl Tool for ExecTool {
         if let Err(e) = block_internal_paths(&command) {
             return ToolOutput::err(e);
         }
-        let parsed = match validate_command_for_shell(&command, &allowlist(), self.shell.detected_shell().shell_type) {
+        let parsed = match validate_command_for_shell(
+            &command,
+            &allowlist(),
+            self.shell.detected_shell().shell_type,
+        ) {
             Ok(commands) => commands,
             Err(e) => return ToolOutput::err(e),
         };
@@ -126,6 +138,7 @@ impl Tool for ExecTool {
                 self.timeout,
                 None,
                 &HashMap::new(),
+                self.sandbox.as_ref(),
             )
             .await
         {
@@ -168,7 +181,10 @@ fn block_internal_paths(command: &str) -> Result<(), String> {
         if let Some(rest) = probe.strip_prefix("./") {
             probe = rest;
         }
-        if probe == ".autoreport" || probe.starts_with(".autoreport/") || probe.starts_with(".autoreport\\") {
+        if probe == ".autoreport"
+            || probe.starts_with(".autoreport/")
+            || probe.starts_with(".autoreport\\")
+        {
             return Err("accessing .autoreport metadata via exec is not permitted".to_string());
         }
     }
@@ -366,6 +382,7 @@ fn walk_workspace(
 }
 
 /// Convenience constructor.
-pub fn make(ctx: FsCtx, timeout_secs: u64) -> Arc<dyn Tool> {
-    Arc::new(ExecTool::new(ctx, timeout_secs))
+pub fn make(ctx: FsCtx, timeout_secs: u64, sandbox: crate::sandbox::SandboxSpec) -> Arc<dyn Tool> {
+    let sandbox = sandbox.with_writable_root(ctx.allowed_write_dir());
+    Arc::new(ExecTool::new(ctx, timeout_secs).with_sandbox(sandbox))
 }

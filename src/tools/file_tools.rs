@@ -79,11 +79,16 @@ fn normalize(path: &Path) -> PathBuf {
 /// reject an agent that writes `Data/Processed/x.csv` against a canonical
 /// `Data/Processed` write dir on Windows.
 fn component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
-    #[cfg(windows)]
+    // Case-insensitive on filesystems whose default comparison is
+    // case-insensitive: Windows (NTFS) and macOS (APFS default). Linux stays
+    // case-sensitive. Without this, a write to `Data/Processed/...` is
+    // rejected as outside a `data/processed` write-dir on macOS even though
+    // they are the same path on disk.
+    #[cfg(any(windows, target_os = "macos"))]
     {
         a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         a == b
     }

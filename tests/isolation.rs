@@ -26,11 +26,11 @@ fn stamp() -> String {
 #[tokio::test]
 async fn data_agent_cannot_write_theory_dir() {
     let ws = workspace();
-    let ctx = FsCtx::new(ws.clone(), Some(ws.join("data").join("processed")));
+    let ctx = FsCtx::new(ws.clone(), Some(ws.join("Data").join("Processed")));
     let patch = ApplyPatchTool::new(ctx);
 
     let ok = patch
-        .call(&json!({"patch": "*** Begin Patch\n*** Add File: data/processed/a.csv\n+x\n*** End Patch\n"}))
+        .call(&json!({"patch": "*** Begin Patch\n*** Add File: Data/Processed/a.csv\n+x\n*** End Patch\n"}))
         .await;
     assert!(
         ok.error.is_none(),
@@ -40,7 +40,7 @@ async fn data_agent_cannot_write_theory_dir() {
 
     let blocked = patch
         .call(
-            &json!({"patch": "*** Begin Patch\n*** Add File: theory/x.md\n+nope\n*** End Patch\n"}),
+            &json!({"patch": "*** Begin Patch\n*** Add File: Theory/x.md\n+nope\n*** End Patch\n"}),
         )
         .await;
     assert!(
@@ -67,11 +67,11 @@ async fn path_escape_is_blocked() {
 #[tokio::test]
 async fn exec_respects_write_dir() {
     let ws = workspace();
-    let ctx = FsCtx::new(ws.clone(), Some(ws.join("data").join("processed")));
+    let ctx = FsCtx::new(ws.clone(), Some(ws.join("Data").join("Processed")));
     let exec = ExecTool::new(ctx, 10);
 
     let ok = exec
-        .call(&json!({"command": "touch data/processed/ok.txt"}))
+        .call(&json!({"command": "touch Data/Processed/ok.txt"}))
         .await;
     assert!(
         ok.error.is_none(),
@@ -80,7 +80,7 @@ async fn exec_respects_write_dir() {
     );
 
     let blocked = exec
-        .call(&json!({"command": "touch theory/nope.txt"}))
+        .call(&json!({"command": "touch Theory/nope.txt"}))
         .await;
     assert!(
         blocked.error.is_some(),

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_bash::LANGUAGE as BASH;
@@ -77,9 +77,34 @@ impl CodexShell {
         timeout: Duration,
         stdin: Option<Vec<u8>>,
         env: &HashMap<String, String>,
+        sandbox: Option<&crate::sandbox::SandboxSpec>,
     ) -> Result<ShellOutput, String> {
-        let mut cmd = Command::new(&self.shell.shell_path);
-        for arg in shell_args(self.shell.shell_type, command) {
+        // Resolve the program + argv. Restrictive modes get a platform sandbox
+        // launcher; if none is available they fail closed rather than running
+        // the detected login shell unrestricted.
+        let (program, args): (std::path::PathBuf, Vec<String>) = match sandbox {
+            Some(spec) => {
+                let shell_invocation = [self.shell.shell_path.to_string_lossy().into_owned()]
+                    .into_iter()
+                    .chain(shell_args_owned(self.shell.shell_type, command))
+                    .collect::<Vec<_>>();
+                let wrapped =
+                    crate::sandbox::sandbox_command_argv(shell_invocation.clone(), cwd, spec)?
+                        .unwrap_or(shell_invocation);
+                let prog = wrapped
+                    .first()
+                    .ok_or_else(|| "empty seatbelt command".to_string())?
+                    .clone();
+                (std::path::PathBuf::from(prog), wrapped[1..].to_vec())
+            }
+            None => (
+                self.shell.shell_path.clone(),
+                shell_args_owned(self.shell.shell_type, command),
+            ),
+        };
+
+        let mut cmd = Command::new(program);
+        for arg in args {
             cmd.arg(arg);
         }
         cmd.current_dir(cwd);
@@ -90,8 +115,31 @@ impl CodexShell {
         });
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Kill the child if the handle is dropped (e.g. the timeout future is
+        // dropped mid-wait). Without this a timed-out command keeps running
+        // detached — a leaked process that outlives the agent turn.
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         for (key, value) in env {
             cmd.env(key, value);
+        }
+        // Bubblewrap mounts a fresh writable /tmp. Make standard temporary
+        // file users target it even if the parent process exported TMPDIR.
+        #[cfg(target_os = "linux")]
+        if sandbox
+            .is_some_and(|spec| !matches!(spec.mode, crate::sandbox::SandboxMode::DangerFullAccess))
+        {
+            cmd.env("TMPDIR", "/tmp");
+            cmd.env("TMP", "/tmp");
+            cmd.env("TEMP", "/tmp");
         }
 
         let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
@@ -103,15 +151,67 @@ impl CodexShell {
                 .map_err(|e| format!("stdin write failed: {e}"))?;
         }
 
-        match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(Ok(out)) => Ok(ShellOutput {
-                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-                returncode: out.status.code().unwrap_or(-1),
+        // Read stdout/stderr ourselves rather than via `wait_with_output` (which
+        // owns the pipe handles) so that on timeout we can kill the child and
+        // still drain whatever it already wrote. Buffers live in the outer
+        // scope so partial reads survive a dropped timeout future.
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+        let mut stdout_buf = Vec::new();
+        let mut stderr_buf = Vec::new();
+
+        match tokio::time::timeout(timeout, async {
+            let (a, b) = tokio::join!(
+                async {
+                    match stdout_pipe.as_mut() {
+                        Some(p) => p.read_to_end(&mut stdout_buf).await,
+                        None => Ok(0),
+                    }
+                },
+                async {
+                    match stderr_pipe.as_mut() {
+                        Some(p) => p.read_to_end(&mut stderr_buf).await,
+                        None => Ok(0),
+                    }
+                },
+            );
+            a.and(b).map_err(|e| format!("pipe read failed: {e}"))?;
+            child.wait().await.map_err(|e| format!("exec failed: {e}"))
+        })
+        .await
+        {
+            Ok(Ok(status)) => Ok(ShellOutput {
+                stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+                returncode: status.code().unwrap_or(-1),
                 timed_out: false,
             }),
-            Ok(Err(e)) => Err(format!("exec failed: {e}")),
-            Err(_) => Err(format!("command timed out after {}s", timeout.as_secs())),
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                // Timed out: kill the whole process group so descendants that
+                // inherited stdout/stderr cannot keep pipe draining alive.
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+                }
+                let _ = child.kill().await;
+                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                    if let Some(p) = stdout_pipe.as_mut() {
+                        let _ = p.read_to_end(&mut stdout_buf).await;
+                    }
+                    if let Some(p) = stderr_pipe.as_mut() {
+                        let _ = p.read_to_end(&mut stderr_buf).await;
+                    }
+                })
+                .await;
+                Ok(ShellOutput {
+                    stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
+                    stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+                    returncode: -1,
+                    timed_out: true,
+                })
+            }
         }
     }
 }
@@ -121,6 +221,22 @@ fn shell_args(shell_type: ShellType, command: &str) -> Vec<&str> {
         ShellType::Zsh | ShellType::Bash | ShellType::Sh => vec!["-lc", command],
         ShellType::PowerShell => vec!["-NoProfile", "-Command", command],
         ShellType::Cmd => vec!["/C", command],
+    }
+}
+
+/// Owned-`String` variant of [`shell_args`] for the sandboxed path, where the
+/// shell invocation is threaded through `sandbox-exec` as `Vec<String>`.
+fn shell_args_owned(shell_type: ShellType, command: &str) -> Vec<String> {
+    match shell_type {
+        ShellType::Zsh | ShellType::Bash | ShellType::Sh => {
+            vec!["-lc".to_string(), command.to_string()]
+        }
+        ShellType::PowerShell => vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            command.to_string(),
+        ],
+        ShellType::Cmd => vec!["/C".to_string(), command.to_string()],
     }
 }
 
@@ -715,19 +831,32 @@ mod tests {
     #[test]
     fn powershell_path_rejects_redirects_and_subshells() {
         let allowlist: std::collections::HashSet<&str> = ["python"].into_iter().collect();
-        let err = validate_command_for_shell(
-            "python a.py > out.txt",
-            &allowlist,
-            ShellType::PowerShell,
-        )
-        .unwrap_err();
+        let err =
+            validate_command_for_shell("python a.py > out.txt", &allowlist, ShellType::PowerShell)
+                .unwrap_err();
         assert!(err.contains("plain command sequence"));
-        let err = validate_command_for_shell(
-            "python $(whoami)",
-            &allowlist,
-            ShellType::Cmd,
-        )
-        .unwrap_err();
+        let err =
+            validate_command_for_shell("python $(whoami)", &allowlist, ShellType::Cmd).unwrap_err();
         assert!(err.contains("plain command sequence"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_background_process_group_promptly() {
+        let shell = CodexShell::new();
+        let started = std::time::Instant::now();
+        let output = shell
+            .run(
+                Path::new("/tmp"),
+                "sleep 5 & wait",
+                Duration::from_millis(100),
+                None,
+                &HashMap::new(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(output.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
