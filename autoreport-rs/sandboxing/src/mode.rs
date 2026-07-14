@@ -189,7 +189,7 @@ pub fn sandbox_command_argv(
         .split_first()
         .ok_or_else(|| "cannot sandbox an empty command".to_string())?;
     let manager = SandboxManager::new();
-    let windows_sandbox_level = default_windows_sandbox_level();
+    let windows_sandbox_level = default_windows_sandbox_level(spec.network_enabled);
     let sandbox = manager.select_initial(
         &file_system_sandbox_policy,
         network_sandbox_policy,
@@ -227,17 +227,23 @@ pub fn sandbox_command_argv(
     Ok(Some(transformed.command))
 }
 
-/// Restrictive AutoReport modes use the same unelevated Windows backend that
-/// AutoReport selects when Windows sandboxing is enabled. The backend refuses a
-/// policy it cannot enforce, so this cannot silently downgrade a restrictive
-/// command to direct execution. Elevated setup remains an explicit opt-in.
+/// Restrictive AutoReport modes use the native Windows backends instead of a
+/// direct spawn. The restricted-token backend is sufficient when network is
+/// enabled. Offline commands require the elevated backend: it provisions the
+/// offline WFP identity that blocks outbound traffic. Both paths refuse a
+/// policy they cannot enforce, so restrictive commands never downgrade to
+/// direct execution.
 #[cfg(target_os = "windows")]
-const fn default_windows_sandbox_level() -> WindowsSandboxLevel {
-    WindowsSandboxLevel::RestrictedToken
+const fn default_windows_sandbox_level(network_enabled: bool) -> WindowsSandboxLevel {
+    if network_enabled {
+        WindowsSandboxLevel::RestrictedToken
+    } else {
+        WindowsSandboxLevel::Elevated
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-const fn default_windows_sandbox_level() -> WindowsSandboxLevel {
+const fn default_windows_sandbox_level(_network_enabled: bool) -> WindowsSandboxLevel {
     WindowsSandboxLevel::Disabled
 }
 
@@ -273,10 +279,19 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn restrictive_modes_enable_the_windows_backend() {
+    fn network_enabled_modes_use_the_unelevated_windows_backend() {
         assert_eq!(
-            default_windows_sandbox_level(),
+            default_windows_sandbox_level(true),
             WindowsSandboxLevel::RestrictedToken
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn offline_modes_use_the_wfp_enforcing_windows_backend() {
+        assert_eq!(
+            default_windows_sandbox_level(false),
+            WindowsSandboxLevel::Elevated
         );
     }
 
@@ -284,7 +299,7 @@ mod tests {
     #[test]
     fn non_windows_hosts_do_not_select_a_windows_backend() {
         assert_eq!(
-            default_windows_sandbox_level(),
+            default_windows_sandbox_level(false),
             WindowsSandboxLevel::Disabled
         );
     }
