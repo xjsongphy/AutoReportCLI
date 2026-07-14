@@ -14,6 +14,7 @@ members = [
     "autoreport-rs/install-context",
     "autoreport-rs/utils/home-dir",
     "autoreport-rs/utils/rustls-provider",
+    "autoreport-rs/network-proxy",
 ]
 resolver = "2"
 
@@ -78,3 +79,9 @@ which = "6"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+[patch.crates-io]
+# Rama 0.3.0-alpha.4 is the exact version used by Codex's network proxy. Its
+# HAR parser needs this one-line `String -> Box<str>` compatibility fix for
+# the current Rust toolchain.
+rama-http = { path = "third_party/rama-http" }
