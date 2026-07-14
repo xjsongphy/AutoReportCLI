@@ -133,9 +133,9 @@ def stage_platform(destination: Path, item: PlatformPackage, version: str, vendo
     (destination / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
-def npm_pack(directory: Path, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["npm", "pack", "--pack-destination", str(output.parent)], cwd=directory, check=True)
+def npm_pack(directory: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["npm", "pack", "--pack-destination", str(output_dir)], cwd=directory, check=True)
 
 
 def main() -> None:
