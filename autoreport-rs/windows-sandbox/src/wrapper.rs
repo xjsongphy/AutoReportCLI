@@ -274,10 +274,10 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
     }
 
     let autoreport_home =
-        autoreport_home.ok_or_else(|| anyhow!("missing required { AUTOREPORT_HOME_FLAG}"))?;
+        autoreport_home.ok_or_else(|| anyhow!("missing required {AUTOREPORT_HOME_FLAG}"))?;
     if !autoreport_home.is_absolute() {
         bail!(
-            "{ AUTOREPORT_HOME_FLAG} must be absolute: {}",
+            "{AUTOREPORT_HOME_FLAG} must be absolute: {}",
             autoreport_home.display()
         );
     }

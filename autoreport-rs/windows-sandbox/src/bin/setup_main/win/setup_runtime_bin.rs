@@ -91,7 +91,7 @@ pub(super) fn ensure_autoreport_app_runtime_paths_readable(
 fn runtime_paths(local_app_data: Option<PathBuf>, user_profile: Option<PathBuf>) -> Vec<PathBuf> {
     let mut runtime_paths = Vec::new();
     if let Some(local_app_data) = local_app_data {
-        let autoreport_root = local_app_data.join("OpenAI").join("Codex");
+        let autoreport_root = local_app_data.join("OpenAI").join("AutoReport");
         runtime_paths.extend([
             autoreport_root.join("bin"),
             autoreport_root.join("runtimes"),

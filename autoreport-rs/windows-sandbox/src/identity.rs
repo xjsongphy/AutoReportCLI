@@ -172,7 +172,7 @@ pub fn require_logon_sandbox_creds(
         env_map,
         network_identity,
     );
-    // NOTE: Do not addAUTOREPORT_HOME/.sandbox to `needed_write`; it must remain non-writable by the
+    // NOTE: Do not add AUTOREPORT_HOME/.sandbox to `needed_write`; it must remain non-writable by the
     // restricted capability token. The setup helper's `lock_sandbox_dir` is responsible for
     // granting the sandbox group access to this directory without granting the capability SID.
     let mut setup_reason: Option<String> = None;

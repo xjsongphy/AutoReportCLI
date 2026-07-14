@@ -41,8 +41,8 @@ use windows_sys::Win32::Security::FreeSid;
 use windows_sys::Win32::Security::SECURITY_NT_AUTHORITY;
 
 pub const SETUP_VERSION: u32 = 5;
-pub const OFFLINE_USERNAME: &str = "CodexSandboxOffline";
-pub const ONLINE_USERNAME: &str = "CodexSandboxOnline";
+pub const OFFLINE_USERNAME: &str = "AutoReportSandboxOffline";
+pub const ONLINE_USERNAME: &str = "AutoReportSandboxOnline";
 const ERROR_CANCELLED: u32 = 1223;
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x0000_0020;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x0000_0220;
@@ -583,7 +583,7 @@ const PROXY_ENV_KEYS: &[&str] = &[
     "ws_proxy",
     "wss_proxy",
 ];
-const ALLOW_LOCAL_BINDING_ENV_KEY: &str = " AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING";
+const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING";
 
 pub(crate) fn offline_proxy_settings_from_env(
     env_map: &HashMap<String, String>,
@@ -1106,8 +1106,8 @@ fn user_profile_child_name(path: &Path, user_profile: &Path) -> Option<String> {
 }
 
 fn filter_sensitive_write_roots(mut roots: Vec<PathBuf>, autoreport_home: &Path) -> Vec<PathBuf> {
-    // Never grant capability write access toAUTOREPORT_HOME or anything underAUTOREPORT_HOME/.sandbox,
-    //AUTOREPORT_HOME/.sandbox-bin, orAUTOREPORT_HOME/.sandbox-secrets. These locations contain sandbox
+    // Never grant capability write access to AUTOREPORT_HOME or anything under AUTOREPORT_HOME/.sandbox,
+    // AUTOREPORT_HOME/.sandbox-bin, or AUTOREPORT_HOME/.sandbox-secrets. These locations contain sandbox
     // control/state and helper binaries and must remain tamper-resistant.
     let autoreport_home_key = canonical_path_key(autoreport_home);
     let sbx_dir_key = canonical_path_key(&sandbox_dir(autoreport_home));
@@ -1406,7 +1406,7 @@ mod tests {
             "http://127.0.0.1:8080".to_string(),
         );
         env.insert(
-            " AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
+            "AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
             "1".to_string(),
         );
 
@@ -1431,7 +1431,7 @@ mod tests {
             "socks5h://127.0.0.1:1081".to_string(),
         );
         env.insert(
-            " AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
+            "AUTOREPORT_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
             "1".to_string(),
         );
 
@@ -1630,7 +1630,7 @@ mod tests {
     fn expanded_write_roots_still_drop_protected_autoreport_home() {
         let tmp = TempDir::new().expect("tempdir");
         let user_profile = tmp.path().join("user-profile");
-        let autoreport_home = user_profile.join("CodexHome");
+        let autoreport_home = user_profile.join("AutoReportHome");
         let documents = user_profile.join("Documents");
         fs::create_dir_all(&autoreport_home).expect("create autoreport home");
         fs::create_dir_all(&documents).expect("create documents");
