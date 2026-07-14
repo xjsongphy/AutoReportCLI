@@ -228,10 +228,11 @@ impl Tui {
         let workspace_display = workspace.display().to_string();
         let index = FileIndex::new(&workspace);
         index.refresh();
+        let rx = bus.subscribe();
         Self {
             manager,
             bus,
-            rx: bus.subscribe(),
+            rx,
             workspace,
             workspace_display,
             provider_id,
@@ -632,6 +633,39 @@ impl Tui {
         self.recompute_slash();
         self.recompute_mention();
         true
+    }
+
+    /// Resolve the approval request at the front of the shared queue. The
+    /// approval modes are currently clamped to `never`, but keeping this
+    /// complete means a future policy change cannot leave the TUI in a modal
+    /// state with no way to answer the request.
+    fn handle_approval_key(&mut self, key: crossterm::event::KeyEvent) {
+        let decision = match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                crate::policy::ReviewDecision::Approved
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                crate::policy::ReviewDecision::ApprovedForSession
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                crate::policy::ReviewDecision::Denied
+            }
+            _ => return,
+        };
+        let Some(request) = self.pending_approvals.pop_front() else {
+            return;
+        };
+        let label = match decision {
+            crate::policy::ReviewDecision::Approved => "approved",
+            crate::policy::ReviewDecision::ApprovedForSession => "approved for session",
+            crate::policy::ReviewDecision::Denied => "denied",
+        };
+        let bus = self.bus.clone();
+        let call_id = request.call_id;
+        tokio::spawn(async move {
+            let _ = bus.resolve_approval(&call_id, decision).await;
+        });
+        self.system(&format!("command {label}"), SysKind::Info);
     }
 
     fn move_mention(&mut self, dir: i32) {
