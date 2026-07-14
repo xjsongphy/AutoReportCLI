@@ -42,6 +42,37 @@ impl AnthropicProvider {
     fn endpoint(&self) -> String {
         format!("{}/v1/messages", self.api_base)
     }
+
+    /// POST the JSON body with request-level retry on transient failures
+    /// (429 / 5xx / connection / timeout), using codex's jittered backoff.
+    async fn send_with_retry(&self, body: &Value) -> Result<reqwest::Response> {
+        let endpoint = self.endpoint();
+        let api_key = self.api_key.clone();
+        let client = self.client.clone();
+        let body = body.clone();
+        crate::provider::retry::post_with_retry(
+            move || {
+                let client = client.clone();
+                let body = body.clone();
+                let api_key = api_key.clone();
+                let endpoint = endpoint.clone();
+                async move {
+                    client
+                        .post(&endpoint)
+                        .header("x-api-key", &api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION)
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                        .await
+                }
+            },
+            &self.id,
+            crate::provider::retry::DEFAULT_MAX_ATTEMPTS,
+            crate::provider::retry::DEFAULT_BASE_DELAY,
+        )
+        .await
+    }
 }
 
 /// Convert the internal message list into Anthropic's request shape:
@@ -53,7 +84,7 @@ fn convert_messages(messages: &[Message]) -> (String, Vec<Value>) {
 
     for msg in messages {
         match msg.role.as_str() {
-            "system" => system_parts.push(msg.content.clone()),
+            "system" | "developer" => system_parts.push(msg.content.clone()),
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
                 let mut blocks = Vec::new();
@@ -171,21 +202,7 @@ impl LLMProvider for AnthropicProvider {
             false,
         );
 
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("anthropic error {status}: {text}"));
-        }
+        let resp = self.send_with_retry(&body).await?;
         let v: Value = resp.json().await?;
         Ok(parse_final(&v))
     }
@@ -209,21 +226,7 @@ impl LLMProvider for AnthropicProvider {
             true,
         );
 
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("anthropic error {status}: {text}"));
-        }
+        let resp = self.send_with_retry(&body).await?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let client = self.client.clone();
@@ -419,9 +422,7 @@ async fn run_stream(
                                 // Anthropic delivers the thinking block's
                                 // signature as a separate delta; accumulate it
                                 // and emit once at content_block_stop.
-                                if let Some(sig) =
-                                    delta.get("signature").and_then(|x| x.as_str())
-                                {
+                                if let Some(sig) = delta.get("signature").and_then(|x| x.as_str()) {
                                     if let Some(acc) =
                                         current.as_mut().and_then(|c| c.thinking.as_mut())
                                     {

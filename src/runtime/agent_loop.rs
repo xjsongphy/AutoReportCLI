@@ -241,8 +241,7 @@ impl AgentLoop {
         *self.recorder.lock().await = None;
         let new_uuid = uuid::Uuid::new_v4().to_string();
         *self.session_uuid.lock().await = new_uuid.clone();
-        *self.conversation_id.lock().await =
-            format!("{}-{}", self.agent.as_str(), new_uuid);
+        *self.conversation_id.lock().await = format!("{}-{}", self.agent.as_str(), new_uuid);
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: AgentStatus::Idle,
@@ -287,6 +286,13 @@ impl AgentLoop {
         self.set_status(AgentStatus::Thinking);
         self.record(ResponseItem::user_message(content)).await;
 
+        // Progressive disclosure: if the user named a skill (`$skill-name`),
+        // inject its SKILL.md body for this turn so the model has the full
+        // instructions without `cat`-ing the file (codex skill injection).
+        let skill_injection = self
+            .skills
+            .render_injections(&crate::skills::extract_skill_mentions(content));
+
         let turn_token = tokio_util::sync::CancellationToken::new();
         *self.current_turn.lock().await = Some(turn_token.clone());
         self.turn_reported.store(false, Ordering::Relaxed);
@@ -303,7 +309,9 @@ impl AgentLoop {
                 self.record(ResponseItem::user_message(&prompt)).await;
             }
 
-            let interrupted = self.run_completion_cycle(&turn_token).await?;
+            let interrupted = self
+                .run_completion_cycle(&turn_token, &skill_injection)
+                .await?;
             if interrupted {
                 self.record(ResponseItem::user_message(
                     "[interrupted by user — stop what you are doing and wait for the next instruction.]",
@@ -349,6 +357,7 @@ impl AgentLoop {
     async fn run_completion_cycle(
         &self,
         turn_token: &tokio_util::sync::CancellationToken,
+        skill_injection: &str,
     ) -> anyhow::Result<bool> {
         let mut iterations: u32 = 0;
         loop {
@@ -357,7 +366,7 @@ impl AgentLoop {
                 return Ok(true);
             }
 
-            let messages = self.build_request().await;
+            let messages = self.build_request(skill_injection).await;
             let defs = self.tools.definitions();
             let (content, reasoning, reasoning_sig, tool_calls, _usage, intr) =
                 match self.stream_completion(&messages, &defs, turn_token).await {
@@ -552,15 +561,26 @@ impl AgentLoop {
     }
 
     /// codex prompt assembly: fresh `instructions` + `items` (history),
-    /// converted to provider messages.
-    async fn build_request(&self) -> Vec<Message> {
+    /// converted to provider messages. When the user mentioned one or more
+    /// skills this turn (`$skill-name`), the bodies are injected as a user
+    /// message immediately before the last user message (codex
+    /// `BeforeLastUserMessage` placement) so the model sees the full SKILL.md
+    /// context adjacent to the request that triggered it.
+    async fn build_request(&self, skill_injection: &str) -> Vec<Message> {
         let instructions =
             self.prompts
                 .build_system_prompt(self.agent, &self.skills, &self.workspace);
         let items = self.history.lock().await.clone();
-        let mut out = Vec::with_capacity(items.len() + 1);
+        let mut out = Vec::with_capacity(items.len() + 2);
         out.push(Message::system(instructions));
+        // Per-turn `developer` fragment: current time (codex
+        // `current_time_reminder`). Kept out of the static system base so the
+        // system prompt stays byte-stable across turns (prefix-caching ready).
+        out.push(Message::developer(crate::prompts::current_time_reminder()));
         out.extend(items_to_messages(&items));
+        if !skill_injection.is_empty() {
+            inject_before_last_user(&mut out, Message::user(skill_injection.to_string()));
+        }
         out
     }
 
@@ -655,6 +675,20 @@ impl AgentLoop {
     }
 
     async fn execute_tool_call(&self, call: &ProviderToolCall) {
+        // Approval gate. `self.defaults.approval_policy` is consulted here before
+        // a tool runs — the natural injection point for an interactive approval
+        // prompt (codex's untrusted / on-request / granular). Only `Never` is
+        // currently supported (the loader clamps everything else to `Never`),
+        // so today this branch always proceeds directly. When approval modes are
+        // wired up, a non-`Never` policy returns/records an approval request
+        // here instead of calling `self.tools.call` unconditionally.
+        debug_assert!(
+            matches!(
+                self.defaults.approval_policy,
+                crate::policy::AskForApproval::Never
+            ),
+            "non-never approval policy reached the dispatch site; loader should have clamped it"
+        );
         self.bus.publish(BusMessage::ToolCall {
             agent_type: self.agent,
             tool_name: call.name.clone(),
@@ -687,7 +721,8 @@ impl AgentLoop {
 
     async fn maybe_compact(&self) {
         let est = self.estimated_tokens().await;
-        let budget = (self.defaults.compact_threshold * 128_000.0) as usize;
+        let budget =
+            (self.defaults.compact_threshold * self.defaults.context_window as f32) as usize;
         if est > budget {
             self.compact_internal().await;
         }
@@ -799,6 +834,18 @@ impl AgentLoop {
     }
 }
 
+/// Insert `msg` immediately before the last user-role message in `out`, so it
+/// sits adjacent to the request that triggered it (codex
+/// `InitialContextInjection::BeforeLastUserMessage`). If there is no user
+/// message, append at the end.
+fn inject_before_last_user(out: &mut Vec<Message>, msg: Message) {
+    let pos = out.iter().rposition(|m| m.role == "user");
+    match pos {
+        Some(i) => out.insert(i, msg),
+        None => out.push(msg),
+    }
+}
+
 /// codex `items → messages` conversion: turn `ResponseItem`s into the provider's
 /// chat-message wire format. Consecutive `FunctionCall`s fold into one
 /// assistant message's `tool_calls` (matching how the model emitted them). A
@@ -873,17 +920,11 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
             } => {
                 // Stash for the next assistant message. Only carry the
                 // signature when present — providers reject unsigned thinking.
-                let text = content
-                    .clone()
-                    .unwrap_or_default()
-                    .join("\n");
+                let text = content.clone().unwrap_or_default().join("\n");
                 let sig = encrypted_content.clone();
                 flush(&mut pending, &mut out);
                 if !text.is_empty() {
-                    pending_thinking = Some((
-                        text,
-                        sig.filter(|s| !s.is_empty()),
-                    ));
+                    pending_thinking = Some((text, sig.filter(|s| !s.is_empty())));
                 }
             }
             ResponseItem::Compaction { encrypted_content } => {
@@ -903,6 +944,11 @@ fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
                     thinking: None,
                     thinking_signature: None,
                 });
+            }
+            ResponseItem::Other => {
+                // Unknown / codex-only item (local_shell_call, web_search_call,
+                // compaction_trigger, …). Tolerated on resume via
+                // `#[serde(other)]`; not part of the request history we send.
             }
         }
     }
@@ -979,6 +1025,7 @@ fn transcript_text(items: &[ResponseItem]) -> String {
             ResponseItem::FunctionCallOutput { .. } => "tool",
             ResponseItem::Reasoning { .. } => "reasoning",
             ResponseItem::Compaction { .. } => "compaction",
+            ResponseItem::Other => "other",
         };
         if let Some(t) = item.text() {
             s.push_str(&format!("[{label}] {t}\n"));
@@ -1127,7 +1174,10 @@ mod tests {
             .iter()
             .filter(|m| m.role == "tool")
             .any(|m| m.tool_call_id.as_deref() == Some(call_id.as_str()));
-        assert!(answered, "orphan tool_call must get a synthetic tool result");
+        assert!(
+            answered,
+            "orphan tool_call must get a synthetic tool result"
+        );
     }
 
     #[test]

@@ -81,6 +81,14 @@ pub enum ResponseItem {
     Compaction {
         encrypted_content: String,
     },
+    /// Catch-all for unknown / codex-only variants (e.g. `local_shell_call`,
+    /// `web_search_call`, `compaction_trigger`) encountered when resuming a
+    /// rollout written by codex or a future writer. Mirrors codex's `Other`
+    /// arm (`protocol/src/models.rs`); `#[serde(other)]` makes reads tolerate
+    /// forward-compatible type tags instead of dropping the whole line.
+    /// We don't act on these items — they're skipped during history conversion.
+    #[serde(other)]
+    Other,
 }
 
 impl ResponseItem {
@@ -174,6 +182,7 @@ impl ResponseItem {
                 }
             }
             ResponseItem::Compaction { .. } => None,
+            ResponseItem::Other => None,
         }
     }
 }
@@ -485,7 +494,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec = RolloutRecorder::create(ws, "conv-1", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
+        let rec =
+            RolloutRecorder::create(ws, "conv-1", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
         rec.append(&ResponseItem::user_message("hello")).unwrap();
         rec.append(&ResponseItem::assistant_message("hi there"))
             .unwrap();
@@ -538,7 +548,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-open-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec = RolloutRecorder::create(ws, "conv-R", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
+        let rec =
+            RolloutRecorder::create(ws, "conv-R", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
         rec.append(&ResponseItem::user_message("first")).unwrap();
 
         // Simulate a restart: reopen the same path and append a new item.
@@ -570,9 +581,15 @@ mod tests {
         // regardless of what the caller passes.
         let dir = std::env::temp_dir().join(format!("rollout-sanitize-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
-        let rec = RolloutRecorder::create(&dir, "conv-C", &new_uuid(), "2026-06-29T00:00:00Z").unwrap();
+        let rec =
+            RolloutRecorder::create(&dir, "conv-C", &new_uuid(), "2026-06-29T00:00:00Z").unwrap();
         rec.append(&ResponseItem::user_message("hi")).unwrap();
-        let name = rec.path().file_name().unwrap().to_string_lossy().into_owned();
+        let name = rec
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert!(
             !name.contains(':'),
             "filename must not contain colons (invalid on Windows): {name}"
@@ -597,7 +614,10 @@ mod tests {
         RolloutRecorder::create(ws, "conv-B", &sid_b, "2026-07-01T00-00-00Z").unwrap();
         let latest_a = latest_for(ws, &sid_a).unwrap();
         let name_a = latest_a.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name_a.contains(&sid_a), "expected sid_a's file, got {name_a}");
+        assert!(
+            name_a.contains(&sid_a),
+            "expected sid_a's file, got {name_a}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

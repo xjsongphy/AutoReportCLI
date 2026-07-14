@@ -43,6 +43,18 @@ impl Message {
             thinking_signature: None,
         }
     }
+    /// codex developer-role fragment (e.g. `current_time_reminder`). Carries
+    /// per-turn contextual notes kept out of the static system base.
+    pub fn developer(content: impl Into<String>) -> Self {
+        Self {
+            role: "developer".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            thinking: None,
+            thinking_signature: None,
+        }
+    }
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".into(),

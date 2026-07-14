@@ -88,6 +88,19 @@ impl PromptLoader {
     }
 }
 
+/// codex `current_time_reminder` context fragment (verbatim body format):
+/// a per-turn `developer`-role note telling the model the current UTC time,
+/// so date-sensitive report writing has an accurate "today". Kept OUT of the
+/// (otherwise static) system prompt so the system base stays byte-stable
+/// across turns — a prerequisite for prompt-prefix caching. See codex
+/// `core/src/context/current_time_reminder.rs`.
+pub fn current_time_reminder() -> String {
+    format!(
+        "It is {}.",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

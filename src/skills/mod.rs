@@ -143,6 +143,113 @@ impl SkillLoader {
         }
         path.display().to_string()
     }
+
+    /// Render the bodies of every skill explicitly mentioned in `text` (via a
+    /// `$skill-name` token), in catalog order. This is the second half of
+    /// progressive disclosure — the catalog (rendered into the system prompt)
+    /// tells the model which skills exist; this injects a mentioned skill's
+    /// full `SKILL.md` body so the agent doesn't have to `cat` it itself.
+    /// Mirrors codex `core-skills::injection::build_skill_injections`.
+    pub fn render_injections(&self, mentioned: &HashSet<String>) -> String {
+        if mentioned.is_empty() {
+            return String::new();
+        }
+        let mut out = String::new();
+        for skill in self.list() {
+            if !mentioned.contains(&skill.name) {
+                continue;
+            }
+            // `list()` already skipped skills with empty descriptions, but a
+            // direct `load()` also returns the body — use the parsed body we
+            // already have rather than re-reading.
+            let body = if skill.body.is_empty() {
+                match self.load(&skill.name) {
+                    Some(loaded) => loaded.body,
+                    None => continue,
+                }
+            } else {
+                skill.body
+            };
+            out.push_str(&format!(
+                "## Skill `{}` (from {})\n\n{}\n\n",
+                skill.name,
+                self.short_skill_path(&skill.source),
+                body
+            ));
+        }
+        out
+    }
+}
+
+// ---- progressive-disclosure mention parsing (codex core-skills::injection) ----
+
+/// Sigil introducing a skill mention, matching codex (`TOOL_MENTION_SIGIL`).
+const SKILL_MENTION_SIGIL: char = '$';
+
+/// Extract `$skill-name` mentions from `text`, skipping common environment
+/// variables (`$HOME`, `$PATH`, …). Returns the set of mentioned names. Ported
+/// from codex `extract_tool_mentions` (plain-name branch only — we have no
+/// `[name](path)` linked / app / mcp / plugin skills to resolve).
+pub fn extract_skill_mentions(text: &str) -> HashSet<String> {
+    let bytes = text.as_bytes();
+    let mut names = HashSet::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != SKILL_MENTION_SIGIL as u8 {
+            index += 1;
+            continue;
+        }
+        let name_start = index + 1;
+        let Some(&first) = bytes.get(name_start) else {
+            index += 1;
+            continue;
+        };
+        if !is_mention_name_char(first) {
+            index += 1;
+            continue;
+        }
+        let mut name_end = name_start + 1;
+        while let Some(&next) = bytes.get(name_end) {
+            if is_mention_name_char(next) {
+                name_end += 1;
+            } else {
+                break;
+            }
+        }
+        let name = &text[name_start..name_end];
+        if !is_common_env_var(name) {
+            names.insert(name.to_string());
+        }
+        index = name_end;
+    }
+    names
+}
+
+/// A byte that may appear in a skill mention name (codex `is_mention_name_char`).
+fn is_mention_name_char(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b':'
+    )
+}
+
+/// Filter out environment-variable lookups mistaken for mentions (codex
+/// `is_common_env_var`).
+fn is_common_env_var(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "SHELL"
+            | "PWD"
+            | "TMPDIR"
+            | "TEMP"
+            | "TMP"
+            | "LANG"
+            | "TERM"
+            | "XDG_CONFIG_HOME"
+    )
 }
 
 fn discover_skill_files(root: &Path) -> Vec<PathBuf> {
@@ -265,6 +372,45 @@ mod tests {
         let loader = SkillLoader::new(&dir);
         let skill = loader.load("md-report-writer").expect("flat compat skill");
         assert_eq!(skill.name, "md-report-writer");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn extract_skill_mentions_skips_env_vars_and_picks_names() {
+        let m = extract_skill_mentions(
+            "use $latex-compile and $md-report-writer; home is $HOME, path $PATH",
+        );
+        assert!(m.contains("latex-compile"));
+        assert!(m.contains("md-report-writer"));
+        assert!(!m.contains("HOME"));
+        assert!(!m.contains("PATH"));
+        // a bare `$` not followed by a name char is not a mention
+        assert!(extract_skill_mentions("costs $ each and $$ total").is_empty());
+    }
+
+    #[test]
+    fn render_injections_emits_bodies_for_mentioned_only() {
+        let dir = std::env::temp_dir().join(format!("skills-inj-{}", stamp()));
+        let s1 = dir.join(".autoreport").join("skills").join("alpha");
+        let s2 = dir.join(".autoreport").join("skills").join("beta");
+        std::fs::create_dir_all(&s1).unwrap();
+        std::fs::create_dir_all(&s2).unwrap();
+        std::fs::write(
+            s1.join("SKILL.md"),
+            "---\nname: alpha\ndescription: alpha skill\n---\nALPHA BODY",
+        )
+        .unwrap();
+        std::fs::write(
+            s2.join("SKILL.md"),
+            "---\nname: beta\ndescription: beta skill\n---\nBETA BODY",
+        )
+        .unwrap();
+        let loader = SkillLoader::new(&dir);
+        let mut mentioned = HashSet::new();
+        mentioned.insert("beta".to_string());
+        let inj = loader.render_injections(&mentioned);
+        assert!(inj.contains("BETA BODY"), "inj: {inj}");
+        assert!(!inj.contains("ALPHA BODY"), "inj: {inj}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -41,6 +41,36 @@ impl OpenAICompatProvider {
     fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.api_base)
     }
+
+    /// POST the JSON body with request-level retry on transient failures
+    /// (429 / 5xx / connection / timeout), using codex's jittered backoff.
+    async fn send_with_retry(&self, body: &Value) -> Result<reqwest::Response> {
+        let endpoint = self.endpoint();
+        let api_key = self.api_key.clone();
+        let client = self.client.clone();
+        let body = body.clone();
+        crate::provider::retry::post_with_retry(
+            move || {
+                let client = client.clone();
+                let body = body.clone();
+                let api_key = api_key.clone();
+                let endpoint = endpoint.clone();
+                async move {
+                    client
+                        .post(&endpoint)
+                        .bearer_auth(&api_key)
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                        .await
+                }
+            },
+            &self.id,
+            crate::provider::retry::DEFAULT_MAX_ATTEMPTS,
+            crate::provider::retry::DEFAULT_BASE_DELAY,
+        )
+        .await
+    }
 }
 
 fn defaults(kind: &str) -> (&'static str, &'static str) {
@@ -63,7 +93,9 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::new();
     for msg in messages {
         match msg.role.as_str() {
-            "system" => out.push(json!({"role": "system", "content": msg.content})),
+            "system" | "developer" => {
+                out.push(json!({"role": "system", "content": msg.content}))
+            }
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
                 let mut m = json!({"role": "assistant", "content": msg.content});
@@ -161,20 +193,7 @@ impl LLMProvider for OpenAICompatProvider {
         let tools_j = tools_to_json(tools);
         let body = build_body(&msgs, &tools_j, &self.model, temperature, max_tokens, false);
 
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .bearer_auth(&self.api_key)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("{} error {status}: {text}", self.id));
-        }
+        let resp = self.send_with_retry(&body).await?;
         let v: Value = resp.json().await?;
         Ok(parse_final(&v))
     }
@@ -190,20 +209,7 @@ impl LLMProvider for OpenAICompatProvider {
         let tools_j = tools_to_json(tools);
         let body = build_body(&msgs, &tools_j, &self.model, temperature, max_tokens, true);
 
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .bearer_auth(&self.api_key)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("{} error {status}: {text}", self.id));
-        }
+        let resp = self.send_with_retry(&body).await?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let id = self.id.clone();
