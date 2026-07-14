@@ -26,6 +26,10 @@ ts-rs.workspace = true
 autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
 autoreport-utils-path-uri = { path = "../utils/path-uri" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+seccompiler.workspace = true
+
 [dev-dependencies]
 pretty_assertions = "1"
 serde_yaml.workspace = true
