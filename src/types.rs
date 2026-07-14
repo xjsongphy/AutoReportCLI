@@ -214,6 +214,23 @@ pub enum BusMessage {
         agent_type: Option<AgentType>,
         message: String,
     },
+    /// An agent requests human approval before running a command. Published on
+    /// the bus so the TUI surfaces it regardless of which agent is focused —
+    /// the single shared approval channel (no background agent stalls). The
+    /// reply is delivered out-of-band via `Bus::resolve_approval(call_id)`.
+    ApprovalRequest {
+        agent_type: AgentType,
+        call_id: String,
+        /// Display command (e.g. the shell script the agent wants to run).
+        command: String,
+        /// Working directory the command runs in, if known.
+        cwd: Option<String>,
+        /// Pre-classified one-line summary of the command
+        /// ([`crate::policy::ParsedCommand`]); rendered like codex's popup.
+        summary: Vec<crate::policy::ParsedCommand>,
+        /// Optional human-readable reason (e.g. "retry without sandbox").
+        reason: Option<String>,
+    },
 }
 
 impl BusMessage {
@@ -225,7 +242,8 @@ impl BusMessage {
             | BusMessage::ToolCall { agent_type, .. }
             | BusMessage::ToolResult { agent_type, .. }
             | BusMessage::StatusChange { agent_type, .. }
-            | BusMessage::Report { agent_type, .. } => Some(*agent_type),
+            | BusMessage::Report { agent_type, .. }
+            | BusMessage::ApprovalRequest { agent_type, .. } => Some(*agent_type),
             BusMessage::SystemNotice { agent_type, .. } => *agent_type,
             BusMessage::TaskUpdate { target_agent, .. } => Some(*target_agent),
             BusMessage::Error { agent_type, .. } => *agent_type,

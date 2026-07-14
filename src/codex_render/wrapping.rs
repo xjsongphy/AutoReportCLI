@@ -17,6 +17,10 @@
 //!   on the same line still break at every character boundary (the
 //!   custom splitter returns all char indices for non-URL words).
 //!
+//!   Mixed URL/prose lines additionally go through [`mixed_url_wrap_line`]:
+//!   prose words stay whole while a genuinely overlong non-URL token can
+//!   still split. Matches current codex (`codex-rs/tui/src/wrapping.rs`).
+//!
 //! Callers that *might* encounter URLs should use the `adaptive_*`
 //! functions. Callers that definitely will not (code blocks, pure
 //! numeric output) can use the standard path for speed.
@@ -47,8 +51,16 @@ where
     for (line_index, line) in textwrap::wrap(text, &opts).iter().enumerate() {
         match line {
             std::borrow::Cow::Borrowed(slice) => {
-                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
-                let end = start + slice.len();
+                let range = borrowed_slice_range(text, slice).unwrap_or_else(|| {
+                    let synthetic_prefix = if line_index == 0 {
+                        opts.initial_indent
+                    } else {
+                        opts.subsequent_indent
+                    };
+                    map_owned_wrapped_line_to_range(text, cursor, slice, synthetic_prefix)
+                });
+                let start = range.start;
+                let end = range.end;
                 let trailing_spaces = text[end..].chars().take_while(|c| *c == ' ').count();
                 lines.push(start..end + trailing_spaces + 1);
                 cursor = end + trailing_spaces;
@@ -82,10 +94,16 @@ where
     for (line_index, line) in textwrap::wrap(text, &opts).iter().enumerate() {
         match line {
             std::borrow::Cow::Borrowed(slice) => {
-                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
-                let end = start + slice.len();
-                lines.push(start..end);
-                cursor = end;
+                let range = borrowed_slice_range(text, slice).unwrap_or_else(|| {
+                    let synthetic_prefix = if line_index == 0 {
+                        opts.initial_indent
+                    } else {
+                        opts.subsequent_indent
+                    };
+                    map_owned_wrapped_line_to_range(text, cursor, slice, synthetic_prefix)
+                });
+                lines.push(range.clone());
+                cursor = range.end;
             }
             std::borrow::Cow::Owned(slice) => {
                 let synthetic_prefix = if line_index == 0 {
@@ -100,6 +118,25 @@ where
         }
     }
     lines
+}
+
+/// Safe alternative to `slice.as_ptr().offset_from(text.as_ptr())`: returns the
+/// byte range of a borrowed `slice` within `text`, or `None` if `slice` is not
+/// actually a borrow of `text` (provenance check). Ported from codex
+/// `tui::wrapping::borrowed_slice_range`. The previous `unsafe offset_from`
+/// form was sound today but fragile — a borrowed slice that failed the
+/// provenance preconditions of `offset_from` would be UB.
+fn borrowed_slice_range(text: &str, slice: &str) -> Option<Range<usize>> {
+    let text_start = text.as_ptr() as usize;
+    let text_end = text_start.checked_add(text.len())?;
+    let slice_start = slice.as_ptr() as usize;
+    let slice_end = slice_start.checked_add(slice.len())?;
+
+    if slice_start < text_start || slice_end > text_end {
+        return None;
+    }
+
+    Some((slice_start - text_start)..(slice_end - text_start))
 }
 
 /// Maps an owned (materialized) wrapped line back to a byte range in `text`.
@@ -483,17 +520,203 @@ fn split_non_url_word(word: &str) -> Vec<usize> {
 /// URL-preserving options when the line contains a URL-like token.
 ///
 /// When no URL is detected, wrapping behavior is identical to
-/// [`word_wrap_line`]. When a URL is detected, the line is wrapped with
-/// [`url_preserving_wrap_options`] — URLs stay intact while non-URL
-/// words on the same line still break normally.
+/// [`word_wrap_line`]. URL-only lines use [`url_preserving_wrap_options`]
+/// so terminal link detection keeps seeing one intact token. Mixed URL/prose
+/// lines use [`mixed_url_wrap_line`] so ordinary prose still moves as whole
+/// words while a genuinely overlong non-URL token can still split if needed.
 #[must_use]
 pub(crate) fn adaptive_wrap_line<'a>(line: &'a Line<'a>, base: RtOptions<'a>) -> Vec<Line<'a>> {
-    let selected = if line_contains_url_like(line) {
-        url_preserving_wrap_options(base)
+    if !line_contains_url_like(line) {
+        return word_wrap_line(line, base);
+    }
+
+    if line_has_mixed_url_and_non_url_tokens(line) {
+        mixed_url_wrap_line(line, base)
     } else {
-        base
-    };
-    word_wrap_line(line, selected)
+        word_wrap_line(line, url_preserving_wrap_options(base))
+    }
+}
+
+// ---- mixed URL + prose wrapping (verbatim port of codex tui::wrapping) ----
+
+#[derive(Clone, Debug)]
+struct MixedUrlWord {
+    range: Range<usize>,
+    is_url: bool,
+}
+
+impl MixedUrlWord {
+    fn width(&self, text: &str) -> usize {
+        textwrap::core::display_width(&text[self.range.clone()])
+    }
+}
+
+fn mixed_url_wrap_line<'a>(line: &'a Line<'a>, rt_opts: RtOptions<'a>) -> Vec<Line<'a>> {
+    let (flat, span_bounds) = flatten_line(line);
+    let initial_width_available = rt_opts
+        .width
+        .saturating_sub(rt_opts.initial_indent.width())
+        .max(1);
+    let subsequent_width_available = rt_opts
+        .width
+        .saturating_sub(rt_opts.subsequent_indent.width())
+        .max(1);
+    let ranges = mixed_url_wrap_ranges(&flat, initial_width_available, subsequent_width_available);
+
+    let mut out = Vec::new();
+    for (idx, range) in ranges.iter().enumerate() {
+        let mut wrapped_line = if idx == 0 {
+            rt_opts.initial_indent.clone()
+        } else {
+            rt_opts.subsequent_indent.clone()
+        }
+        .style(line.style);
+        let sliced = slice_line_spans(line, &span_bounds, range);
+        let mut spans = wrapped_line.spans;
+        spans.extend(
+            sliced
+                .spans
+                .into_iter()
+                .map(|span| span.patch_style(line.style)),
+        );
+        wrapped_line.spans = spans;
+        out.push(wrapped_line);
+    }
+
+    if out.is_empty() {
+        vec![rt_opts.initial_indent.clone()]
+    } else {
+        out
+    }
+}
+
+fn mixed_url_wrap_ranges(
+    text: &str,
+    initial_width: usize,
+    subsequent_width: usize,
+) -> Vec<Range<usize>> {
+    let leading_space_width = text.chars().take_while(|ch| *ch == ' ').count();
+    let mut words = Vec::new();
+    let mut cursor = 0usize;
+    for word in textwrap::WordSeparator::AsciiSpace.find_words(text) {
+        let word_start = cursor;
+        let word_end = word_start + word.word.len();
+        let trailing_space_end = word_end + word.whitespace.len();
+        if !word.word.is_empty() {
+            words.push(MixedUrlWord {
+                range: word_start..word_end,
+                is_url: is_url_like_token(word.word),
+            });
+        }
+        cursor = trailing_space_end;
+    }
+
+    let mut lines = Vec::new();
+    let mut line_start = None;
+    let mut line_end = 0usize;
+    let mut line_width = 0usize;
+    let mut line_limit = initial_width.max(1);
+
+    for word in words {
+        let mut pending = split_mixed_url_word(text, word, line_limit);
+        let mut pending_idx = 0usize;
+
+        while let Some(piece) = pending.get(pending_idx).cloned() {
+            let empty_line_prefix_width = if line_start.is_none() && lines.is_empty() {
+                leading_space_width
+            } else {
+                0
+            };
+            let empty_line_piece_limit = line_limit.saturating_sub(empty_line_prefix_width).max(1);
+            if line_start.is_none() && !piece.is_url && piece.width(text) > empty_line_piece_limit {
+                pending.splice(
+                    pending_idx..=pending_idx,
+                    split_mixed_url_word(text, piece, empty_line_piece_limit),
+                );
+                continue;
+            }
+
+            let piece_width = piece.width(text);
+            let inter_word_space = line_start
+                .map(|_| text[line_end..piece.range.start].len())
+                .unwrap_or(0);
+            let fits = if line_start.is_none() {
+                piece.is_url
+                    || empty_line_prefix_width + piece_width <= line_limit
+                    || empty_line_prefix_width >= line_limit
+            } else {
+                line_width + inter_word_space + piece_width <= line_limit
+            };
+
+            if fits {
+                if line_start.is_none() {
+                    let is_first_output_line = lines.is_empty();
+                    let start = if is_first_output_line {
+                        0
+                    } else {
+                        piece.range.start
+                    };
+                    line_start = Some(start);
+                    line_width = if is_first_output_line {
+                        leading_space_width + piece_width
+                    } else {
+                        piece_width
+                    };
+                } else {
+                    line_width += inter_word_space + piece_width;
+                }
+                line_end = piece.range.end;
+                pending_idx += 1;
+                continue;
+            }
+
+            if let Some(start) = line_start.take() {
+                lines.push(start..line_end);
+            }
+            line_end = 0;
+            line_width = 0;
+            line_limit = subsequent_width.max(1);
+        }
+    }
+
+    if let Some(start) = line_start {
+        lines.push(start..line_end);
+    }
+
+    lines
+}
+
+fn split_mixed_url_word(text: &str, word: MixedUrlWord, line_limit: usize) -> Vec<MixedUrlWord> {
+    if word.is_url || word.width(text) <= line_limit {
+        return vec![word];
+    }
+
+    let source = textwrap::core::Word::from(&text[word.range.clone()]);
+    let mut offset = word.range.start;
+    let mut pieces = Vec::new();
+    for piece in source.break_apart(line_limit.max(1)) {
+        let end = offset + piece.word.len();
+        pieces.push(MixedUrlWord {
+            range: offset..end,
+            is_url: false,
+        });
+        offset = end;
+    }
+    pieces
+}
+
+fn flatten_line(line: &Line<'_>) -> (String, Vec<(Range<usize>, ratatui::style::Style)>) {
+    let mut flat = String::new();
+    let mut span_bounds = Vec::new();
+    let mut acc = 0usize;
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let start = acc;
+        flat.push_str(text);
+        acc += text.len();
+        span_bounds.push((start..acc, span.style));
+    }
+    (flat, span_bounds)
 }
 
 /// Wraps multiple input lines with URL-aware heuristics, applying
@@ -876,5 +1099,46 @@ fn slice_line_spans<'a>(
         style: original.style,
         alignment: original.alignment,
         spans: acc,
+    }
+}
+
+#[cfg(test)]
+mod mixed_url_tests {
+    //! Verify the mixed URL+prose wrapping port keeps prose words whole and
+    //! URLs intact — the behaviour codex's `mixed_url_wrap_line` provides.
+    use super::*;
+
+    fn reflow(text: &str, width: usize) -> Vec<String> {
+        mixed_url_wrap_ranges(text, width, width)
+            .into_iter()
+            .map(|r| text[r].to_string())
+            .collect()
+    }
+
+    #[test]
+    fn prose_words_stay_whole_with_a_url_present() {
+        // Narrow width: the long URL can't fit, but prose words must NOT be
+        // char-split (the old 2-branch path split them at every char).
+        let lines = reflow("see https://example.com/very/long/path/abc/def for details", 16);
+        let joined = lines.join(" | ");
+        assert!(joined.contains("see"), "lost 'see': {joined}");
+        assert!(joined.contains("for"), "lost 'for': {joined}");
+        assert!(joined.contains("details"), "'details' was char-split: {joined}");
+    }
+
+    #[test]
+    fn url_stays_intact_when_it_fits() {
+        let lines = reflow("go https://x.io now", 80);
+        let joined = lines.join(" | ");
+        assert!(joined.contains("https://x.io"), "url got split: {joined}");
+    }
+
+    #[test]
+    fn long_non_url_token_can_still_split() {
+        // A genuinely overlong non-URL token with no break points must still
+        // break (otherwise the line overflows width indefinitely).
+        let lines = reflow("aaaaaaaaaaaaaaaaaaaaaaaaaa bb", 10);
+        // the 'a' run is split across multiple lines
+        assert!(lines.len() >= 2, "expected the long token to split: {lines:?}");
     }
 }

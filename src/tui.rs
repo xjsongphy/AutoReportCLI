@@ -10,6 +10,7 @@ use crate::codex_render::markdown_render;
 use crate::config::{load_settings, save_settings};
 use crate::config_ui::{ConfigScreen, Outcome};
 use crate::file_search::FileIndex;
+use crate::model_ui::ModelScreen;
 use crate::runtime::LoopManager;
 use crate::types::{AgentStatus, AgentType, BusMessage};
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -24,7 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -108,7 +109,11 @@ const SLASH_COMMANDS: &[SlashCommandItem] = &[
     },
     SlashCommandItem {
         name: "config",
-        description: "view and edit provider settings",
+        description: "view and edit API settings",
+    },
+    SlashCommandItem {
+        name: "models",
+        description: "assign main/sub APIs and model names",
     },
     SlashCommandItem {
         name: "compact",
@@ -142,6 +147,7 @@ const SLASH_COMMANDS: &[SlashCommandItem] = &[
 
 pub struct Tui {
     manager: Arc<LoopManager>,
+    bus: Bus,
     workspace: PathBuf,
     workspace_display: String,
     provider_id: String,
@@ -155,14 +161,59 @@ pub struct Tui {
     index: FileIndex,
     mention: Option<Mention>,
     slash: Option<SlashCompletion>,
-    overlay: Option<ConfigScreen>,
+    overlay: Option<Overlay>,
     want_config: bool,
+    want_models: bool,
     tick: usize,
     // `/ide` toggle state — mirrors codex's IdeContextState. When enabled, each
     // outgoing user turn is prefixed with IDE context fetched over the codex
     // IPC socket (`\\.\pipe\codex-ipc` / `$TMPDIR/codex-ipc/ipc-<uid>.sock`).
     ide_enabled: bool,
     ide_warned: bool,
+    /// Pending human-approval requests from any agent (single shared channel —
+    /// ported from codex's `ApprovalOverlay` queue). Front = currently shown.
+    pending_approvals: VecDeque<PendingApproval>,
+}
+
+/// One queued approval request, ported from codex's `ApprovalRequest::Exec`
+/// (`tui/src/bottom_pane/approval_overlay.rs`). Carries the originating agent
+/// so the popup can show which agent is asking (codex's `thread_label`).
+#[derive(Clone, Debug)]
+struct PendingApproval {
+    agent: AgentType,
+    call_id: String,
+    command: String,
+    cwd: Option<String>,
+    summary: Vec<crate::policy::ParsedCommand>,
+    reason: Option<String>,
+}
+
+enum Overlay {
+    Api(ConfigScreen),
+    Models(ModelScreen),
+}
+
+impl Overlay {
+    fn draw(&mut self, frame: &mut Frame<'_>) {
+        match self {
+            Self::Api(screen) => screen.draw(frame),
+            Self::Models(screen) => screen.draw(frame),
+        }
+    }
+
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<Outcome> {
+        match self {
+            Self::Api(screen) => screen.handle_key(key),
+            Self::Models(screen) => screen.handle_key(key),
+        }
+    }
+
+    fn settings(&self) -> &crate::config::Settings {
+        match self {
+            Self::Api(screen) => &screen.settings,
+            Self::Models(screen) => &screen.settings,
+        }
+    }
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -179,6 +230,7 @@ impl Tui {
         index.refresh();
         Self {
             manager,
+            bus,
             rx: bus.subscribe(),
             workspace,
             workspace_display,
@@ -194,9 +246,11 @@ impl Tui {
             slash: None,
             overlay: None,
             want_config: false,
+            want_models: false,
             tick: 0,
             ide_enabled: false,
             ide_warned: false,
+            pending_approvals: VecDeque::new(),
         }
     }
 
@@ -218,7 +272,18 @@ impl Tui {
             if self.want_config {
                 self.want_config = false;
                 let settings = load_settings(&self.workspace).unwrap_or_default();
-                self.overlay = Some(ConfigScreen::new(settings, self.workspace.clone()));
+                self.overlay = Some(Overlay::Api(ConfigScreen::new(
+                    settings,
+                    self.workspace.clone(),
+                )));
+            }
+            if self.want_models {
+                self.want_models = false;
+                let settings = load_settings(&self.workspace).unwrap_or_default();
+                self.overlay = Some(Overlay::Models(ModelScreen::new(
+                    settings,
+                    self.workspace.clone(),
+                )));
             }
             terminal.draw(|f| self.draw(f))?;
 
@@ -402,6 +467,26 @@ impl Tui {
             BusMessage::Error { message, .. } => {
                 self.system(&format!("error: {message}"), SysKind::Error);
             }
+            BusMessage::ApprovalRequest {
+                agent_type,
+                call_id,
+                command,
+                cwd,
+                summary,
+                reason,
+            } => {
+                // Single shared approval queue: any agent's request lands here
+                // regardless of which agent is focused. Ported from codex's
+                // `ApprovalOverlay::enqueue_request`.
+                self.pending_approvals.push_back(PendingApproval {
+                    agent: agent_type,
+                    call_id,
+                    command,
+                    cwd,
+                    summary,
+                    reason,
+                });
+            }
             // Report messages resolve Main's send_to_agent internally; not a
             // user-visible cell.
             _ => {}
@@ -413,16 +498,23 @@ impl Tui {
             return true;
         };
 
-        // While the /config overlay is open, route all keys to it.
+        // While an approval popup is open, it owns all keys (codex semantics:
+        // the modal must emit an explicit decision before anything else runs).
+        if !self.pending_approvals.is_empty() {
+            self.handle_approval_key(key);
+            return true;
+        }
+
+        // While a configuration overlay is open, route all keys to it.
         if let Some(screen) = self.overlay.as_mut() {
             if let Some(outcome) = screen.handle_key(key) {
                 match outcome {
                     Outcome::Saved => {
-                        if let Err(e) = save_settings(&self.workspace, &screen.settings) {
+                        if let Err(e) = save_settings(&self.workspace, screen.settings()) {
                             self.system(&format!("config save failed: {e}"), SysKind::Error);
                         } else {
                             self.system(
-                                "config saved to autoreport.config.yaml — restart to apply",
+                                "configuration saved to autoreport.config.yaml — restart to apply",
                                 SysKind::Info,
                             );
                         }
@@ -774,10 +866,7 @@ impl Tui {
                             SysKind::Info,
                         );
                     } else {
-                        self.system(
-                            "IDE context is on. Connected to your IDE.",
-                            SysKind::Info,
-                        );
+                        self.system("IDE context is on. Connected to your IDE.", SysKind::Info);
                     }
                 }
                 Err(err) => {
@@ -827,11 +916,14 @@ impl Tui {
         let rest: String = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit provider settings\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
+                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /models           assign main/sub APIs and model names\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
                 SysKind::Info,
             ),
             "config" => {
                 self.want_config = true;
+            }
+            "models" => {
+                self.want_models = true;
             }
             "agents" => {
                 let mut s = String::from("Agents:\n");
@@ -938,10 +1030,7 @@ impl Tui {
         ];
         if self.ide_enabled {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                "IDE●",
-                Style::default().fg(Color::Magenta),
-            ));
+            spans.push(Span::styled("IDE●", Style::default().fg(Color::Magenta)));
         }
         for a in AgentType::ALL {
             let st = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
