@@ -20,6 +20,7 @@ opentelemetry-appender-tracing = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "http-proto", "http-json", "logs", "metrics", "trace", "reqwest-blocking-client", "reqwest-rustls", "tls", "tls-roots"] }
 opentelemetry-semantic-conventions = "0.31.0"
 opentelemetry_sdk = { version = "0.31.0", features = ["experimental_trace_batch_span_processor_with_async_runtime", "experimental_metrics_custom_reader", "logs", "metrics", "rt-tokio", "testing", "trace"] }
+os_info = "3.12.0"
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +28,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry = "0.32.0"
 tracing-subscriber = "0.3.22"
+thiserror.workspace = true
 autoreport-protocol = { path = "../protocol" }
 autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
 autoreport-utils-string = { path = "../utils/string" }
