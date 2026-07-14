@@ -10,8 +10,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test native Seatbelt policy generation
-        run: cargo test -p autoreport-sandboxing
+      - name: Test native Seatbelt policy and exec integration
+        run: |
+          cargo test -p autoreport-sandboxing
+          cargo test -p autoreport-tools --test isolation
       - name: Stage the host macOS npm package
         run: python3 autoreport-cli/scripts/build_npm_package.py --package host --force
       - name: Verify staged package layout
