@@ -1,0 +1,16 @@
+[package]
+name = "autoreport-utils-home-dir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+autoreport-utils-absolute-path = { path = "../absolute-path" }
+dirs = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+[lib]
+doctest = false

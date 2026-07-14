@@ -1,0 +1,18 @@
+[package]
+name = "autoreport-install-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_install_context"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+autoreport-utils-home-dir = { path = "../utils/home-dir" }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"

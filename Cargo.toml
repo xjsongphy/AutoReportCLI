@@ -10,6 +10,9 @@ members = [
     "autoreport-rs/utils/absolute-path",
     "autoreport-rs/utils/path-uri",
     "autoreport-rs/sandboxing",
+    "autoreport-rs/process-hardening",
+    "autoreport-rs/install-context",
+    "autoreport-rs/utils/home-dir",
 ]
 resolver = "2"
 
