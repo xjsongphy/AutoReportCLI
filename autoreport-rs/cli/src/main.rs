@@ -49,8 +49,31 @@ struct Cli {
     verbose: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    dispatch_windows_sandbox_wrapper();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+#[cfg(target_os = "windows")]
+fn dispatch_windows_sandbox_wrapper() {
+    use std::ffi::OsStr;
+
+    if std::env::args_os().nth(1).as_deref()
+        == Some(OsStr::new(
+            autoreport_windows_sandbox::AUTOREPORT_WINDOWS_SANDBOX_ARG1,
+        ))
+    {
+        autoreport_windows_sandbox::run_windows_sandbox_wrapper_main();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dispatch_windows_sandbox_wrapper() {}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.verbose {

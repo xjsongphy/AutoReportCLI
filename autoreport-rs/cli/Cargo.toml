@@ -22,3 +22,6 @@ autoreport-core = { path = "../core" }
 autoreport-sandboxing = { path = "../sandboxing" }
 autoreport-tui = { path = "../tui" }
 autoreport-runtime = { path = "../runtime" }
+
+[target.'cfg(windows)'.dependencies]
+autoreport-windows-sandbox = { path = "../windows-sandbox" }
