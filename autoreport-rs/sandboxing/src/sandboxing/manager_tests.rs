@@ -547,11 +547,7 @@ fn transform_for_direct_spawn_windows_routes_wrapper_through_current_executable(
     let current_exe = std::env::current_exe().expect("current executable");
     assert_eq!(exec_request.sandbox, SandboxType::None);
     assert_ne!(wrapper_exe, configured_helper);
-    assert_eq!(wrapper_exe.file_name(), current_exe.file_name());
-    assert_eq!(
-        wrapper_exe.parent().and_then(std::path::Path::file_name),
-        Some(std::ffi::OsStr::new(".sandbox-bin"))
-    );
+    assert_eq!(wrapper_exe, current_exe);
     assert!(wrapper_exe.exists());
     assert!(
         exec_request

@@ -535,13 +535,11 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
     // The sandbox argument is handled by AutoReport's CLI entrypoint, not by
     // arbitrary tool programs such as cmd.exe or PowerShell. Keep the tool
     // executable as the inner command, but route the outer invocation through
-    // the current AutoReport executable so `dispatch_windows_sandbox_wrapper`
-    // can enter the native backend. If current_exe cannot be resolved, retain
-    // the source-program fallback used by the vendored implementation.
-    let wrapper = autoreport_windows_sandbox::resolve_current_exe_for_launch(
-        autoreport_home,
-        source.to_string_lossy().as_ref(),
-    );
+    // the installed AutoReport executable so `dispatch_windows_sandbox_wrapper`
+    // can enter the native backend. Do not materialize this outer executable:
+    // the wrapper must retain its package-relative autoreport-resources lookup
+    // in order to find the setup and command-runner helpers.
+    let wrapper = std::env::current_exe().unwrap_or_else(|_| source.clone());
 
     let inner_command = std::mem::take(&mut request.command);
     let proxy_enforced = request.network.is_some();
