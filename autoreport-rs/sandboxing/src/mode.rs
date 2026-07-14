@@ -20,9 +20,11 @@ use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::PathUri;
 
 use crate::sandboxing::SandboxCommand;
+use crate::sandboxing::SandboxDirectSpawnTransformRequest;
 use crate::sandboxing::SandboxManager;
 use crate::sandboxing::SandboxTransformRequest;
 use crate::sandboxing::SandboxablePreference;
+use crate::windows_sandbox::WindowsSandboxProxySettingsMode;
 
 /// Coarse sandbox preset, mirroring the codex `PermissionProfile` flavors that
 /// matter for an unattended report-writing CLI.
@@ -181,6 +183,8 @@ pub fn sandbox_command_argv(
     );
     let cwd_uri = PathUri::from_host_native_path(cwd)
         .map_err(|err| format!("sandbox cwd is invalid: {err}"))?;
+    let workspace_root = AbsolutePathBuf::from_absolute_path_checked(cwd)
+        .map_err(|err| format!("sandbox workspace root is invalid: {err}"))?;
     let (program, args) = command
         .split_first()
         .ok_or_else(|| "cannot sandbox an empty command".to_string())?;
@@ -194,25 +198,29 @@ pub fn sandbox_command_argv(
     );
     let linux_helper = resolve_linux_sandbox_executable()?;
     let transformed = manager
-        .transform(SandboxTransformRequest {
-            command: SandboxCommand {
-                program: OsString::from(program),
-                args: args.to_vec(),
-                cwd: cwd_uri.clone(),
-                env: HashMap::new(),
-                managed_network: None,
-                additional_permissions: None,
+        .transform_for_direct_spawn(SandboxDirectSpawnTransformRequest {
+            transform: SandboxTransformRequest {
+                command: SandboxCommand {
+                    program: OsString::from(program),
+                    args: args.to_vec(),
+                    cwd: cwd_uri.clone(),
+                    env: HashMap::new(),
+                    managed_network: None,
+                    additional_permissions: None,
+                },
+                permissions: &permission_profile,
+                sandbox,
+                enforce_managed_network: false,
+                environment_id: None,
+                network: None,
+                sandbox_policy_cwd: &cwd_uri,
+                autoreport_linux_sandbox_exe: linux_helper.as_deref(),
+                use_legacy_landlock: false,
+                windows_sandbox_level: WindowsSandboxLevel::Disabled,
+                windows_sandbox_private_desktop: false,
             },
-            permissions: &permission_profile,
-            sandbox,
-            enforce_managed_network: false,
-            environment_id: None,
-            network: None,
-            sandbox_policy_cwd: &cwd_uri,
-            autoreport_linux_sandbox_exe: linux_helper.as_deref(),
-            use_legacy_landlock: false,
-            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-            windows_sandbox_private_desktop: false,
+            workspace_roots: std::slice::from_ref(&workspace_root),
+            windows_sandbox_proxy_settings_mode: WindowsSandboxProxySettingsMode::Reconcile,
         })
         .map_err(|err| format!("failed to prepare sandbox: {err}"))?;
     Ok(Some(transformed.command))
