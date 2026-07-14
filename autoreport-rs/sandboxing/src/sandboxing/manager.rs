@@ -696,3 +696,7 @@ fn linux_sandbox_arg0_override(exe: &Path) -> String {
         CODEX_LINUX_SANDBOX_ARG0.to_string()
     }
 }
+
+#[cfg(test)]
+#[path = "manager_tests.rs"]
+mod tests;
