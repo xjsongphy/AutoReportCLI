@@ -69,10 +69,10 @@ impl IdeContextError {
                 "The selected IDE context is too large. Clear any large selection in your IDE and try /ide again.".to_string()
             }
             IdeContextError::Send(_) => {
-                "Codex could not request IDE context. Try /ide again.".to_string()
+                "AutoReport could not request IDE context. Try /ide again.".to_string()
             }
             IdeContextError::Read(_) | IdeContextError::InvalidResponse(_) => {
-                "Codex could not read IDE context. Try /ide again.".to_string()
+                "AutoReport could not read IDE context. Try /ide again.".to_string()
             }
         }
     }
@@ -112,7 +112,7 @@ impl IdeContextError {
                 hint_with_retry("Codex received an unexpected IDE context response.")
             }
             IdeContextError::RequestFailed(_) => hint_with_retry(IDE_DID_NOT_PROVIDE_CONTEXT_HINT),
-            IdeContextError::Read(_) => hint_with_retry("Codex could not read IDE context."),
+            IdeContextError::Read(_) => hint_with_retry("AutoReport could not read IDE context."),
         }
     }
 
