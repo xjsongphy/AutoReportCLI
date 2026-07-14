@@ -1,0 +1,21 @@
+{
+  "name": "@autoreport/cli",
+  "version": "0.1.1",
+  "description": "AutoReportCLI packages the native report-writing agent for npm.",
+  "license": "MIT",
+  "bin": {
+    "autoreport": "bin/autoreport.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/autoreport.js",
+    "vendor"
+  ],
+  "scripts": {
+    "build": "python3 scripts/build_npm_package.py",
+    "pack:dry-run": "npm pack --dry-run"
+  }
+}

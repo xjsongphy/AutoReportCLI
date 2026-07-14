@@ -65,7 +65,7 @@ cargo build --release
 如果你希望在任意目录直接运行 `autoreport`，需要额外安装到 `PATH`：
 
 ```bash
-cargo install --path .
+cargo install --path codex-rs/cli
 ```
 
 或者直接运行构建产物：
@@ -121,10 +121,32 @@ Provider 可以通过以下任一方式配置：
 
 ## 开发
 
+Rust 源码采用与 Codex 一致的 workspace 组织，而不是单一的 `src/` 目录：
+
+```text
+codex-rs/
+├── cli/          可执行程序入口
+├── core/         配置、Provider、Agent、skills 与领域类型
+├── protocol/     共享策略与 sandbox 协议类型
+├── rollout/      兼容 Codex 的会话持久化
+├── runtime/      持久 Agent loop 与编排
+├── sandboxing/   跨平台执行策略
+├── tools/        工具定义与本地 handler
+├── tui/          终端 UI、渲染与 IDE 上下文
+└── utils/        absolute-path 与 path-URI crate
+```
+
 运行测试：
 
 ```bash
 cargo test
+```
+
+为当前 Rust target 构建包含原生二进制的 npm 包：
+
+```bash
+npm run build:npm
+(cd autoreport && npm pack --dry-run)
 ```
 
 实现状态和对等清单见 **[docs/PARITY.md](docs/PARITY.md)**。
