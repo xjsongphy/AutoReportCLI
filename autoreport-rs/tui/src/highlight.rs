@@ -182,8 +182,8 @@ fn load_custom_theme(name: &str, codex_home: &Path) -> Option<Theme> {
 }
 
 fn adaptive_default_theme_selection() -> (EmbeddedThemeName, &'static str) {
-    match crate::codex_render::terminal_palette::default_bg() {
-        Some(bg) if crate::codex_render::color::is_light(bg) => {
+    match crate::terminal_palette::default_bg() {
+        Some(bg) if crate::color::is_light(bg) => {
             (EmbeddedThemeName::CatppuccinLatte, "catppuccin-latte")
         }
         _ => (EmbeddedThemeName::CatppuccinMocha, "catppuccin-mocha"),

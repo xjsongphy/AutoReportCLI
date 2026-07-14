@@ -5,11 +5,11 @@
 //! transcripts show the real file target (including normalized location suffixes) and can shorten
 //! absolute paths relative to a known working directory.
 
-use crate::codex_render::codex_utils_string::normalize_markdown_hash_location_suffix;
-use crate::codex_render::highlight::highlight_code_to_lines;
-use crate::codex_render::line_utils::line_to_static;
-use crate::codex_render::wrapping::RtOptions;
-use crate::codex_render::wrapping::adaptive_wrap_line;
+use crate::highlight::highlight_code_to_lines;
+use crate::line_utils::line_to_static;
+use crate::utils_string::normalize_markdown_hash_location_suffix;
+use crate::wrapping::RtOptions;
+use crate::wrapping::adaptive_wrap_line;
 use dirs::home_dir;
 use pulldown_cmark::CodeBlockKind;
 use pulldown_cmark::CowStr;

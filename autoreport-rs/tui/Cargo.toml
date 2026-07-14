@@ -1,0 +1,49 @@
+[package]
+name = "autoreport-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "AutoReport terminal user interface"
+
+[lib]
+name = "autoreport_tui"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+crossterm.workspace = true
+diffy.workspace = true
+dirs.workspace = true
+dunce.workspace = true
+ignore.workspace = true
+libc.workspace = true
+nucleo.workspace = true
+pulldown-cmark.workspace = true
+ratatui.workspace = true
+regex-lite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+syntect.workspace = true
+textwrap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tracing.workspace = true
+two-face.workspace = true
+url.workspace = true
+urlencoding.workspace = true
+uuid.workspace = true
+autoreport-core = { path = "../core" }
+autoreport-runtime = { path = "../runtime" }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }

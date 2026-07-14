@@ -16,14 +16,14 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use autoreport_cli::bus::Bus;
-use autoreport_cli::config;
-use autoreport_cli::config::Settings;
-use autoreport_cli::config_ui::{ConfigScreen, Outcome};
-use autoreport_cli::model_ui::ModelScreen;
-use autoreport_cli::provider::build_provider;
-use autoreport_cli::runtime::LoopManager;
-use autoreport_cli::tui::Tui;
+use autoreport_core::bus::Bus;
+use autoreport_core::config;
+use autoreport_core::config::Settings;
+use autoreport_core::provider::build_provider;
+use autoreport_runtime::LoopManager;
+use autoreport_tui::Tui;
+use autoreport_tui::config_update::{ConfigScreen, Outcome};
+use autoreport_tui::model_migration::ModelScreen;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
     //    existing cache and continues. `--no-sync` skips the fetch; use the
     //    existing cache instead. `--sync-presets` forces a full fetch + exits.
     let should_sync =
-        cli.sync_presets || (!cli.no_sync && !autoreport_cli::sync::cache_is_warm(&workspace));
+        cli.sync_presets || (!cli.no_sync && !autoreport_core::sync::cache_is_warm(&workspace));
     if should_sync {
         let report =
-            autoreport_cli::sync::sync_all(&workspace, std::time::Duration::from_secs(10)).await;
+            autoreport_core::sync::sync_all(&workspace, std::time::Duration::from_secs(10)).await;
         if report.total() > 0 {
             eprintln!(
                 "synced {} preset(s) and {} skill(s) from cc-switch + skills repos",
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     // Always register providers from the (now possibly refreshed) preset cache.
     // cc-switch's real shape: each entry's `settingsConfig.env` block carries
     // the base URL, auth-token env var, and default model.
-    let cfg_dir = autoreport_cli::sync::external_dir(&workspace)
+    let cfg_dir = autoreport_core::sync::external_dir(&workspace)
         .join("cc-switch")
         .join("src")
         .join("config");
@@ -116,11 +116,11 @@ async fn main() -> Result<()> {
     ] {
         let path = cfg_dir.join(file);
         if let Ok(body) = std::fs::read_to_string(&path) {
-            let kind = autoreport_cli::sync::file_kind(file)
+            let kind = autoreport_core::sync::file_kind(file)
                 .map(|(k, _)| k)
                 .unwrap_or("openai");
-            let presets = autoreport_cli::sync::parse_presets(&body, kind);
-            autoreport_cli::sync::register_providers(&mut settings, &presets);
+            let presets = autoreport_core::sync::parse_presets(&body, kind);
+            autoreport_core::sync::register_providers(&mut settings, &presets);
         }
     }
 
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
     // 3) Start the agent loops (one per type, all persistent).
     let bus = Bus::new();
     let sandbox =
-        autoreport_cli::sandbox::SandboxSpec::new(settings.sandbox_mode, settings.sandbox_network);
+        autoreport_sandboxing::SandboxSpec::new(settings.sandbox_mode, settings.sandbox_network);
     let mut manager = LoopManager::new(
         &workspace,
         main_provider,

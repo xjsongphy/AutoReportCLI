@@ -1,7 +1,7 @@
 //! Smoke test for the vendored codex markdown renderer (exercises syntect
 //! highlighting for a fenced code block).
 
-use autoreport_cli::codex_render::markdown_render;
+use autoreport_tui::markdown_render;
 
 #[test]
 fn renders_markdown_and_code_via_codex() {

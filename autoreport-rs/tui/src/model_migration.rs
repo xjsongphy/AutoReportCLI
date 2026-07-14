@@ -3,9 +3,9 @@
 //! API credentials and base URLs live in `/config`; this page owns only the
 //! per-agent API selection and model identifier.
 
-use crate::config::schema::{ModelConfig, Settings};
-use crate::config::{resolve_api_key, save_settings};
-use crate::config_ui::Outcome;
+use crate::config_update::Outcome;
+use autoreport_core::config::schema::{ModelConfig, Settings};
+use autoreport_core::config::{resolve_api_key, save_settings};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -496,7 +496,7 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::ProviderConfig;
+    use autoreport_core::config::schema::ProviderConfig;
 
     fn api() -> ProviderConfig {
         ProviderConfig {

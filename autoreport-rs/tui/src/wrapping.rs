@@ -36,7 +36,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 use textwrap::Options;
 
-use crate::codex_render::line_utils::push_owned_lines;
+use crate::line_utils::push_owned_lines;
 
 /// Returns byte-ranges into `text` for each wrapped line, including
 /// trailing whitespace and a +1 sentinel byte. Used by the textarea
