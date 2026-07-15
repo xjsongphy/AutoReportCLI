@@ -1893,7 +1893,7 @@ mod tests {
         let extra_autoreport = extra_write_root.join(".autoreport");
         let explicit_deny = tmp.path().join("explicit-deny");
         fs::create_dir_all(&command_git).expect("create command .git");
-        fs::create_dir_all(&extra_codex).expect("create extra .autoreport");
+        fs::create_dir_all(&extra_autoreport).expect("create extra .autoreport");
         let writable_roots = vec![
             AbsolutePathBuf::from_absolute_path(&extra_write_root).expect("absolute writable root"),
         ];
@@ -1918,7 +1918,7 @@ mod tests {
         assert_eq!(
             [
                 dunce::canonicalize(&command_git).expect("canonical command .git"),
-                dunce::canonicalize(&extra_codex).expect("canonical extra .autoreport"),
+                dunce::canonicalize(&extra_autoreport).expect("canonical extra .autoreport"),
                 explicit_deny,
             ]
             .into_iter()
