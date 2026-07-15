@@ -276,6 +276,11 @@ impl AgentLoop {
     }
 
     async fn append_to_rollout(&self, item: &ResponseItem) -> anyhow::Result<()> {
+        // Lazily create the rollout file on first append, then hand the encoded
+        // line to the recorder's dedicated writer task over an mpsc channel.
+        // `append` is a non-blocking channel send, so this hot-path call never
+        // stalls the async agent-loop worker on file I/O (codex
+        // `rollout::recorder` writer-task design).
         let mut rec = self.recorder.lock().await;
         if rec.is_none() {
             let cid = self.conversation_id.lock().await.clone();
@@ -283,8 +288,7 @@ impl AgentLoop {
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
             *rec = Some(RolloutRecorder::create(&self.workspace, &cid, &sid, &ts)?);
         }
-        rec.as_ref().unwrap().append(item)?;
-        Ok(())
+        rec.as_ref().unwrap().append(item)
     }
 
     async fn process_turn(&self, content: &str, source: MessageSource) -> anyhow::Result<()> {
@@ -419,22 +423,13 @@ impl AgentLoop {
             }
 
             self.set_status(AgentStatus::RunningTool);
-            let mut interrupted = false;
-            let mut executed = 0;
-            for (idx, call) in tool_calls.iter().enumerate() {
-                if turn_token.is_cancelled() {
-                    interrupted = true;
-                    break;
-                }
-                self.execute_tool_call(call).await;
-                executed = idx + 1;
-            }
-            if interrupted {
-                // Record synthetic outputs for calls that never ran, so the
-                // next request doesn't carry a FunctionCall without a matching
-                // FunctionCallOutput (both Anthropic and OpenAI reject that with
-                // a 400). Mirrors codex's `normalize::ensure_call_outputs_present`.
-                for call in tool_calls.iter().skip(executed) {
+            if turn_token.is_cancelled() {
+                // None should run. Record synthetic outputs for every call so
+                // the next request doesn't carry a FunctionCall without a
+                // matching FunctionCallOutput (both Anthropic and OpenAI reject
+                // that with a 400). Mirrors codex's
+                // `normalize::ensure_call_outputs_present`.
+                for call in &tool_calls {
                     self.record(ResponseItem::function_call_output(
                         &call.id,
                         "[aborted: turn interrupted before this tool ran]",
@@ -443,6 +438,15 @@ impl AgentLoop {
                 }
                 return Ok(true);
             }
+            // Dispatch concurrently (codex `FuturesOrdered`). Each
+            // `execute_tool_call` publishes its own ToolCall/ToolResult events
+            // and records its output keyed by `call_id`, so concurrent
+            // execution is safe — shared state uses interior locking, the bus
+            // is a broadcast, and outputs match calls by id, not history
+            // position. `join_all` polls them concurrently without spawning
+            // detached tasks; dropping the future would cancel the rest.
+            let futs = tool_calls.iter().map(|call| self.execute_tool_call(call));
+            futures::future::join_all(futs).await;
             self.set_status(AgentStatus::Thinking);
 
             iterations += 1;
