@@ -23,6 +23,9 @@ jobs:
           # The bundled bubblewrap sources use libcap. This build intentionally
           # uses the runner's libcap headers and static archive with musl-gcc.
           PKG_CONFIG_ALLOW_CROSS: "1"
+          # Debian keeps Linux UAPI's architecture-specific `asm` headers
+          # outside /usr/include; use them only after musl's own headers.
+          CFLAGS_x86_64_unknown_linux_musl: -idirafter/usr/include/x86_64-linux-gnu
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
