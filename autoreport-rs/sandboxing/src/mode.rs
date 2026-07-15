@@ -419,6 +419,10 @@ mod tests {
         );
     }
 
+    // `Tmpdir` resolves from TMPDIR, which is intentionally absent from the
+    // Windows policy evaluator. The Windows backend applies temporary-file
+    // access separately, so this direct path assertion is Unix-specific.
+    #[cfg(unix)]
     #[test]
     fn regular_workspaces_keep_temporary_file_write_access() {
         let workspace = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
