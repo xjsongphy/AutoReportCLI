@@ -68,6 +68,13 @@ cargo build --release
 cargo install --path autoreport-rs/cli
 ```
 
+Linux 还需要安装同目录的沙箱辅助程序；缺少它时，受限的 `exec` 会失败关闭，
+不会降级为未隔离执行：
+
+```bash
+cargo install --path autoreport-rs/linux-sandbox
+```
+
 或者直接运行构建产物：
 
 ```bash

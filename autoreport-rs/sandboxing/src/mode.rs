@@ -92,9 +92,9 @@ impl SandboxSpec {
 pub fn build_filesystem_policy(
     spec: &SandboxSpec,
     workspace_root: &Path,
-) -> FileSystemSandboxPolicy {
+) -> Result<FileSystemSandboxPolicy, String> {
     match spec.mode {
-        SandboxMode::ReadOnly => FileSystemSandboxPolicy::read_only(),
+        SandboxMode::ReadOnly => Ok(FileSystemSandboxPolicy::read_only()),
         SandboxMode::WorkspaceWrite => {
             let mut entries = vec![FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -103,7 +103,7 @@ pub fn build_filesystem_policy(
                 access: FileSystemAccessMode::Read,
             }];
             if let Some(root) = spec.writable_root.as_deref() {
-                let root = AbsolutePathBuf::resolve_path_against_base(root, workspace_root);
+                let root = resolve_agent_writable_root(root, workspace_root)?;
                 entries.push(FileSystemSandboxEntry {
                     path: FileSystemPath::Path { path: root },
                     access: FileSystemAccessMode::Write,
@@ -131,13 +131,72 @@ pub fn build_filesystem_policy(
                     },
                 ]);
             }
-            FileSystemSandboxPolicy::restricted(entries)
+            Ok(FileSystemSandboxPolicy::restricted(entries))
         }
         SandboxMode::DangerFullAccess => {
             let _ = workspace_root;
-            FileSystemSandboxPolicy::unrestricted()
+            Ok(FileSystemSandboxPolicy::unrestricted())
         }
     }
+}
+
+/// Resolve and validate the one writable directory assigned to an agent.
+///
+/// This is deliberately stricter than a lexical `starts_with`: a writable
+/// symlink such as `workspace/agent -> /outside` must not turn an apparently
+/// workspace-scoped policy into a grant for the symlink target.
+fn resolve_agent_writable_root(
+    writable_root: &Path,
+    workspace_root: &Path,
+) -> Result<AbsolutePathBuf, String> {
+    let workspace = canonicalize_path_with_missing_tail(workspace_root)?;
+    let root = AbsolutePathBuf::resolve_path_against_base(writable_root, workspace_root);
+    let root_canonical = canonicalize_path_with_missing_tail(root.as_path())?;
+    if root_canonical == workspace || !root_canonical.starts_with(&workspace) {
+        return Err(format!(
+            "agent writable root '{}' must be a strict descendant of workspace '{}'",
+            writable_root.display(),
+            workspace_root.display()
+        ));
+    }
+    // Keep the logical path in the policy. The platform backends already
+    // normalize aliases and preserve nested symlinks where required; using
+    // the canonical form here would make macOS `/var` versus `/private/var`
+    // callers fail policy matching. Canonical paths are used only to validate
+    // containment above.
+    Ok(root)
+}
+
+/// Canonicalize as much of a path as exists, retaining a missing tail. This
+/// catches symlink escapes in existing ancestors while still allowing a tool
+/// to create its assigned output directory on first use.
+fn canonicalize_path_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    let path = AbsolutePathBuf::from_absolute_path(path)
+        .map_err(|err| format!("path is invalid: {err}"))?
+        .into_path_buf();
+    let mut existing = path.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing.file_name().ok_or_else(|| {
+            format!(
+                "could not resolve an existing ancestor for '{}'",
+                path.display()
+            )
+        })?;
+        missing.push(name.to_os_string());
+        existing = existing.parent().ok_or_else(|| {
+            format!(
+                "could not resolve an existing ancestor for '{}'",
+                path.display()
+            )
+        })?;
+    }
+    let mut canonical = dunce::canonicalize(existing)
+        .map_err(|err| format!("could not canonicalize '{}': {err}", existing.display()))?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
 }
 
 fn workspace_is_inside_temporary_root(workspace_root: &Path) -> bool {
@@ -169,8 +228,8 @@ pub fn seatbelt_command_argv(
     command: Vec<String>,
     cwd: &Path,
     spec: &SandboxSpec,
-) -> Option<Vec<String>> {
-    sandbox_command_argv(command, cwd, spec).ok().flatten()
+) -> Result<Option<Vec<String>>, String> {
+    sandbox_command_argv(command, cwd, spec)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -178,8 +237,8 @@ pub fn seatbelt_command_argv(
     _command: Vec<String>,
     _cwd: &Path,
     _spec: &SandboxSpec,
-) -> Option<Vec<String>> {
-    None
+) -> Result<Option<Vec<String>>, String> {
+    Ok(None)
 }
 
 /// Return a platform sandbox launcher for `command`. `None` means explicitly
@@ -194,7 +253,7 @@ pub fn sandbox_command_argv(
         return Ok(None);
     }
 
-    let file_system_sandbox_policy = build_filesystem_policy(spec, cwd);
+    let file_system_sandbox_policy = build_filesystem_policy(spec, cwd)?;
     let network_sandbox_policy = build_network_policy(spec);
     let permission_profile = PermissionProfile::from_runtime_permissions(
         &file_system_sandbox_policy,
@@ -304,13 +363,12 @@ mod tests {
     #[test]
     fn workspace_write_preserves_metadata_protection() {
         let workspace = tempfile::tempdir().expect("workspace");
+        let agent_root = workspace.path().join("agent");
         let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
-            .with_writable_root(Some(workspace.path()));
-        let policy = build_filesystem_policy(&spec, workspace.path());
+            .with_writable_root(Some(&agent_root));
+        let policy = build_filesystem_policy(&spec, workspace.path()).expect("policy");
 
-        assert!(
-            policy.can_write_path_with_cwd(&workspace.path().join("report.md"), workspace.path())
-        );
+        assert!(policy.can_write_path_with_cwd(&agent_root.join("report.md"), workspace.path()));
         for protected_path in [".git/config", ".agents/state", ".autoreport/config.toml"] {
             assert!(
                 !policy.can_write_path_with_cwd(
@@ -336,7 +394,7 @@ mod tests {
             build_network_policy(&full_access),
             NetworkSandboxPolicy::Enabled
         );
-        let policy = build_filesystem_policy(&full_access, workspace.path());
+        let policy = build_filesystem_policy(&full_access, workspace.path()).expect("policy");
         assert!(
             policy.can_write_path_with_cwd(
                 &workspace.path().join("unrestricted.txt"),
@@ -352,7 +410,7 @@ mod tests {
         std::fs::create_dir_all(&agent_root).expect("agent root");
         let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
             .with_writable_root(Some(&agent_root));
-        let policy = build_filesystem_policy(&spec, workspace.path());
+        let policy = build_filesystem_policy(&spec, workspace.path()).expect("policy");
 
         assert!(policy.can_write_path_with_cwd(&agent_root.join("report.md"), workspace.path()));
         assert!(
@@ -369,12 +427,39 @@ mod tests {
         std::fs::create_dir_all(&agent_root).expect("agent root");
         let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
             .with_writable_root(Some(&agent_root));
-        let policy = build_filesystem_policy(&spec, workspace.path());
+        let policy = build_filesystem_policy(&spec, workspace.path()).expect("policy");
 
         assert!(policy.can_write_path_with_cwd(
             &std::env::temp_dir().join("autoreport-sandbox-temp-probe"),
             workspace.path()
         ));
+    }
+
+    #[test]
+    fn workspace_write_rejects_external_writable_root() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
+            .with_writable_root(Some(outside.path()));
+
+        let err = build_filesystem_policy(&spec, workspace.path()).expect_err("outside root");
+        assert!(err.contains("strict descendant"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_write_rejects_writable_root_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let agent_link = workspace.path().join("agent");
+        symlink(outside.path(), &agent_link).expect("agent symlink");
+        let spec = SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
+            .with_writable_root(Some(&agent_link));
+
+        let err = build_filesystem_policy(&spec, workspace.path()).expect_err("symlink escape");
+        assert!(err.contains("strict descendant"), "unexpected error: {err}");
     }
 
     #[cfg(target_os = "windows")]

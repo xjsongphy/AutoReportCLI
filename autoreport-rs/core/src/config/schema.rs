@@ -24,8 +24,8 @@ pub struct Settings {
     #[serde(default = "default_context_window")]
     pub context_window: usize,
     /// OS-level sandbox applied to `exec` tool commands. Defaults to AutoReport's
-    /// `workspace-write` (read all, write the workspace root + tmp, protect
-    /// `.git`/`.agents`/`.autoreport`). See [`crate::sandbox`] for the backends.
+    /// `workspace-write` (read all, write only the current agent's assigned
+    /// directory + tmp, protect `.git`/`.agents`/`.autoreport`).
     #[serde(default)]
     pub sandbox_mode: SandboxMode,
     /// Whether to allow outbound network access for sandboxed `exec` commands.

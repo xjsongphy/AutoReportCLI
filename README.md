@@ -70,6 +70,13 @@ Install globally if you want `autoreport` available from any directory:
 cargo install --path autoreport-rs/cli
 ```
 
+On Linux, install the companion sandbox launcher into the same Cargo bin
+directory as well. Restricted `exec` commands fail closed if it is absent:
+
+```bash
+cargo install --path autoreport-rs/linux-sandbox
+```
+
 Or run the built binary directly:
 
 ```bash

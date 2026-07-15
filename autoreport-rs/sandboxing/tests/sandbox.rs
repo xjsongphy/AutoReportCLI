@@ -23,6 +23,7 @@ use autoreport_sandboxing::seatbelt_command_argv;
 fn argv_for(mode: SandboxMode, cwd: &Path, command: &[&str]) -> Vec<String> {
     let spec = SandboxSpec::new(mode, false).with_writable_root(Some(&cwd.join("Outline")));
     seatbelt_command_argv(command.iter().map(|s| s.to_string()).collect(), cwd, &spec)
+        .expect("seatbelt policy should be valid")
         .expect("seatbelt argv should be produced on macOS for non-full-access modes")
 }
 
@@ -81,7 +82,8 @@ fn workspace_write_protected_metadata_is_read_only() {
         &SandboxSpec::new(SandboxMode::WorkspaceWrite, false)
             .with_writable_root(Some(&cwd.join("Outline"))),
         &cwd,
-    );
+    )
+    .expect("policy");
 
     assert!(policy.can_write_path_with_cwd(&cwd.join("Outline/outline.txt"), &cwd));
     assert!(!policy.can_write_path_with_cwd(&cwd.join("Theory/report.md"), &cwd));
@@ -105,6 +107,7 @@ fn workspace_write_executes_with_agent_only_write_access() {
         workspace.path(),
         &spec,
     )
+    .expect("seatbelt policy should be valid")
     .expect("seatbelt argv");
     let (program, args) = argv.split_first().expect("seatbelt launcher");
     let output = Command::new(program)
