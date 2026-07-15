@@ -20,6 +20,9 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          # The bundled bubblewrap sources use libcap. This build intentionally
+          # uses the runner's libcap headers and static archive with musl-gcc.
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
