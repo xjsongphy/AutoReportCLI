@@ -11,4 +11,4 @@ pub mod manifest;
 pub mod registry;
 pub mod task_tools;
 
-pub use registry::ToolRegistry;
+pub use registry::{ToolExecutionContext, ToolRegistry};

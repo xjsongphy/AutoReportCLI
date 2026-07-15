@@ -15,6 +15,16 @@ pub struct ToolOutput {
     pub error: Option<String>,
 }
 
+/// Runtime-only authority attached to a tool call after an approval decision.
+///
+/// This context is never exposed in a tool schema or model-provided argument,
+/// so a model cannot forge `require_escalated` by adding a JSON field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolExecutionContext {
+    /// Run this one `exec` call outside the normal restrictive sandbox.
+    pub allow_escalated_exec: bool,
+}
+
 impl ToolOutput {
     pub fn ok(result: Value) -> Self {
         Self {
@@ -36,6 +46,10 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn input_schema(&self) -> Value;
     async fn call(&self, args: &Value) -> ToolOutput;
+
+    async fn call_with_context(&self, args: &Value, _context: ToolExecutionContext) -> ToolOutput {
+        self.call(args).await
+    }
 }
 
 #[derive(Default, Clone)]
@@ -68,8 +82,18 @@ impl ToolRegistry {
     }
 
     pub async fn call(&self, name: &str, args: &Value) -> ToolOutput {
+        self.call_with_context(name, args, ToolExecutionContext::default())
+            .await
+    }
+
+    pub async fn call_with_context(
+        &self,
+        name: &str,
+        args: &Value,
+        context: ToolExecutionContext,
+    ) -> ToolOutput {
         match self.get(name) {
-            Some(tool) => tool.call(args).await,
+            Some(tool) => tool.call_with_context(args, context).await,
             None => ToolOutput::err(format!("unknown tool '{name}'")),
         }
     }

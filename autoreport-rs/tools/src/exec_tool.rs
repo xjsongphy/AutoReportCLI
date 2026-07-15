@@ -6,7 +6,7 @@
 
 use crate::codex_shell::CodexShell;
 use crate::file_tools::FsCtx;
-use crate::registry::{Tool, ToolOutput, arg_str};
+use crate::registry::{Tool, ToolExecutionContext, ToolOutput, arg_str};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -56,15 +56,47 @@ impl Tool for ExecTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Full shell command line, e.g. `python3 analyze.py && rg result Data/Processed`."},
-                "command_description": {"type": "string", "description": "Short human description of what this does."}
+                "command_description": {"type": "string", "description": "Short human description of what this does."},
+                "sandbox_permissions": {"type": "string", "enum": ["use_default", "require_escalated"], "description": "Use `require_escalated` only when the command needs to run outside the normal sandbox; it requires user approval."},
+                "justification": {"type": "string", "description": "User-facing explanation required with `require_escalated`."}
             },
             "required": ["command"]
         })
     }
     async fn call(&self, args: &Value) -> ToolOutput {
+        self.call_with_context(args, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn call_with_context(&self, args: &Value, context: ToolExecutionContext) -> ToolOutput {
         let command = match arg_str(args, "command") {
             Ok(c) => c,
             Err(e) => return ToolOutput::err(e),
+        };
+        let requested_escalation = args
+            .get("sandbox_permissions")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "require_escalated");
+        if requested_escalation && !context.allow_escalated_exec {
+            return ToolOutput::err(
+                "require_escalated was not approved; request approval through the runtime first",
+            );
+        }
+        if requested_escalation
+            && args
+                .get("justification")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return ToolOutput::err("require_escalated requires a non-empty justification");
+        }
+        let sandbox = if context.allow_escalated_exec {
+            autoreport_sandboxing::SandboxSpec::new(
+                autoreport_sandboxing::SandboxMode::DangerFullAccess,
+                true,
+            )
+        } else {
+            self.sandbox.clone()
         };
         let output = match self
             .shell
@@ -74,7 +106,7 @@ impl Tool for ExecTool {
                 self.timeout,
                 None,
                 &HashMap::new(),
-                Some(&self.sandbox),
+                Some(&sandbox),
             )
             .await
         {
@@ -89,6 +121,7 @@ impl Tool for ExecTool {
             "timed_out": output.timed_out,
             "shell": self.shell.detected_shell().name(),
             "allowed_write_dir": self.ctx.allowed_write_dir().map(|p| p.display().to_string()),
+            "sandbox": sandbox.mode.as_kebab(),
         }))
     }
 }

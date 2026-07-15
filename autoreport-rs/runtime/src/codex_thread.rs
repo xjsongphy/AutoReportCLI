@@ -19,6 +19,7 @@ use crate::history::{
 };
 use autoreport_core::bus::Bus;
 use autoreport_core::config::AgentDefaults;
+use autoreport_core::exec_policy::ExecPolicyManager;
 use autoreport_core::prompts::PromptLoader;
 use autoreport_core::provider::LLMProvider;
 use autoreport_core::provider::types::{Message, ToolCall as ProviderToolCall};
@@ -27,8 +28,8 @@ use autoreport_core::taskboard::TaskBoard;
 use autoreport_core::types::{AgentStatus, AgentType, BusMessage, MessageSource};
 use autoreport_rollout as rollout;
 use autoreport_rollout::{ResponseItem, RolloutRecorder};
-use autoreport_tools::ToolRegistry;
 use autoreport_tools::manifest::ManifestStore;
+use autoreport_tools::{ToolExecutionContext, ToolRegistry};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,6 +67,7 @@ pub struct AgentLoop {
     bus: Bus,
     task_board: TaskBoard,
     defaults: AgentDefaults,
+    exec_policy: Arc<ExecPolicyManager>,
     /// codex-style history of conversation items.
     history: Arc<Mutex<Vec<ResponseItem>>>,
     status: AgentStatusLock,
@@ -99,6 +101,7 @@ impl AgentLoop {
         bus: Bus,
         task_board: TaskBoard,
         defaults: AgentDefaults,
+        exec_policy: Arc<ExecPolicyManager>,
     ) -> Self {
         let (op_tx, op_rx) = mpsc::channel(64);
         let session_uuid = uuid::Uuid::new_v4().to_string();
@@ -114,6 +117,7 @@ impl AgentLoop {
             bus,
             task_board,
             defaults,
+            exec_policy,
             history: Arc::new(Mutex::new(Vec::new())),
             status: AgentStatusLock::new(AgentStatus::Idle),
             op_tx,
@@ -686,61 +690,69 @@ impl AgentLoop {
     }
 
     async fn execute_tool_call(&self, call: &ProviderToolCall) {
-        // Approval gate (codex's `ExecApprovalRequest` analogue). Under any
-        // non-`Never` policy, the `exec` tool must ask the user before running.
-        // We publish `BusMessage::ApprovalRequest` on the shared bus — the TUI
-        // surfaces it regardless of which agent is focused (single channel, no
-        // background stall) — and park here on the broker's oneshot until the
-        // user decides. `Denied` short-circuits: the command never runs and the
-        // denial is returned to the model as the tool output. Other tools
-        // (read-only listing, patching the agent's own write dir, coordination)
-        // proceed directly, matching codex's exec-only approval scope.
-        use autoreport_core::policy::{AskForApproval, ReviewDecision, summarize_command};
-        let needs_approval = !matches!(
-            self.defaults.approval_policy,
-            AskForApproval::Never
-        ) && call.name == "exec";
-        if needs_approval {
+        // Execpolicy determines whether this exact command is allowed,
+        // forbidden, or needs an approval. The model-visible escalation flag
+        // is only a request: `ToolExecutionContext` below is the unforgeable
+        // runtime authority granted after the user approves it.
+        use autoreport_core::exec_policy::ExecApprovalRequirement;
+        use autoreport_core::policy::{ReviewDecision, summarize_command};
+        let mut execution_context = ToolExecutionContext::default();
+        if call.name == "exec" {
             let command = call
                 .arguments
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
-            let summary = summarize_command(&argv);
-            let rx = self.bus.register_approval(&call.id).await;
-            self.bus.publish(BusMessage::ApprovalRequest {
-                agent_type: self.agent,
-                call_id: call.id.clone(),
-                command: command.clone(),
-                cwd: None,
-                summary,
-                reason: None,
-            });
-            match rx.await {
-                Ok(ReviewDecision::Denied) => {
-                    let denial = "command denied by user; try a different approach".to_string();
-                    self.bus.publish(BusMessage::ToolResult {
-                        agent_type: self.agent,
-                        tool_name: call.name.clone(),
-                        result: Value::String(denial.clone()),
-                        error: Some(denial.clone()),
-                    });
-                    self.record(ResponseItem::function_call_output(&call.id, denial))
+            let requests_escalation = call
+                .arguments
+                .get("sandbox_permissions")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "require_escalated");
+            let requirement = self.exec_policy.evaluate(
+                &command,
+                self.defaults.approval_policy,
+                requests_escalation,
+            );
+            if let ExecApprovalRequirement::Forbidden { reason } = requirement {
+                self.publish_tool_denial(call, reason).await;
+                return;
+            }
+            if let ExecApprovalRequirement::NeedsApproval { reason } = requirement {
+                let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+                let summary = summarize_command(&argv);
+                let rx = self.bus.register_approval(&call.id).await;
+                self.bus.publish(BusMessage::ApprovalRequest {
+                    agent_type: self.agent,
+                    call_id: call.id.clone(),
+                    command: command.clone(),
+                    cwd: None,
+                    summary,
+                    reason,
+                });
+                match rx.await {
+                    Ok(ReviewDecision::Denied) => {
+                        self.publish_tool_denial(
+                            call,
+                            "command denied by user; try a different approach".to_string(),
+                        )
                         .await;
-                    return;
-                }
-                Ok(ReviewDecision::Approved | ReviewDecision::ApprovedForSession) => {
-                    // fall through and run the command
-                }
-                // Resolved without a decision (e.g. process tearing down):
-                // treat as denied so we never run an unapproved command.
-                Err(_) => {
-                    let denial = "approval request cancelled".to_string();
-                    self.record(ResponseItem::function_call_output(&call.id, denial))
-                        .await;
-                    return;
+                        return;
+                    }
+                    Ok(ReviewDecision::ApprovedForSession) => {
+                        self.exec_policy.approve_for_session(&command);
+                        execution_context.allow_escalated_exec = requests_escalation;
+                    }
+                    Ok(ReviewDecision::Approved) => {
+                        execution_context.allow_escalated_exec = requests_escalation;
+                    }
+                    // Resolved without a decision (e.g. process tearing down):
+                    // treat as denied so we never run an unapproved command.
+                    Err(_) => {
+                        self.publish_tool_denial(call, "approval request cancelled".to_string())
+                            .await;
+                        return;
+                    }
                 }
             }
         }
@@ -749,7 +761,10 @@ impl AgentLoop {
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
         });
-        let out = self.tools.call(&call.name, &call.arguments).await;
+        let out = self
+            .tools
+            .call_with_context(&call.name, &call.arguments, execution_context)
+            .await;
         let result_value = match (&out.result, &out.error) {
             (_, Some(e)) => Value::String(e.clone()),
             (r, None) => r.clone(),
@@ -771,6 +786,17 @@ impl AgentLoop {
             self.turn_reported.store(true, Ordering::Relaxed);
         }
         self.record(ResponseItem::function_call_output(&call.id, result_text))
+            .await;
+    }
+
+    async fn publish_tool_denial(&self, call: &ProviderToolCall, denial: String) {
+        self.bus.publish(BusMessage::ToolResult {
+            agent_type: self.agent,
+            tool_name: call.name.clone(),
+            result: Value::String(denial.clone()),
+            error: Some(denial.clone()),
+        });
+        self.record(ResponseItem::function_call_output(&call.id, denial))
             .await;
     }
 

@@ -6,6 +6,7 @@ use crate::AgentLoop;
 use anyhow::Result;
 use autoreport_core::bus::Bus;
 use autoreport_core::config::AgentDefaults;
+use autoreport_core::exec_policy::ExecPolicyManager;
 use autoreport_core::prompts::PromptLoader;
 use autoreport_core::provider::LLMProvider;
 use autoreport_core::skills::SkillLoader;
@@ -28,6 +29,7 @@ pub struct LoopManager {
     prompts: PromptLoader,
     defaults: AgentDefaults,
     sandbox: autoreport_sandboxing::SandboxSpec,
+    exec_policy: Arc<ExecPolicyManager>,
     loops: HashMap<AgentType, Arc<AgentLoop>>,
     main_provider: Arc<dyn LLMProvider>,
     sub_provider: Arc<dyn LLMProvider>,
@@ -47,6 +49,10 @@ impl LoopManager {
         let manifest = ManifestStore::new(workspace);
         let skills = SkillLoader::new(workspace);
         let prompts = PromptLoader::new(workspace);
+        let exec_policy = ExecPolicyManager::load(workspace).unwrap_or_else(|err| {
+            log::warn!("failed to load execpolicy rules; starting with an empty policy: {err}");
+            ExecPolicyManager::empty(workspace)
+        });
         Self {
             workspace: workspace.to_path_buf(),
             bus,
@@ -56,6 +62,7 @@ impl LoopManager {
             prompts,
             defaults,
             sandbox,
+            exec_policy: Arc::new(exec_policy),
             loops: HashMap::new(),
             main_provider,
             sub_provider,
@@ -83,6 +90,7 @@ impl LoopManager {
                 self.bus.clone(),
                 self.task_board.clone(),
                 self.defaults.clone(),
+                self.exec_policy.clone(),
             ));
             loop_.clone().start();
             self.loops.insert(agent, loop_);
