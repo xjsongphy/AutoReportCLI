@@ -63,7 +63,7 @@ fn is_bwrap_unavailable_output(output: &Output) -> bool {
     String::from_utf8_lossy(&output.stderr).contains(BWRAP_UNAVAILABLE_ERR)
 }
 
-async fn should_skip_bwrap_tests() -> bool {
+async fn bwrap_skip_reason() -> Option<String> {
     let mut env = create_env_from_core_vars();
     strip_proxy_env(&mut env);
 
@@ -75,7 +75,19 @@ async fn should_skip_bwrap_tests() -> bool {
         NETWORK_TIMEOUT_MS,
     )
     .await;
-    is_bwrap_unavailable_output(&output)
+    if is_bwrap_unavailable_output(&output) {
+        return Some("bubblewrap is unavailable in this environment".to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_managed_proxy_permission_error(stderr.as_ref()) {
+        return Some(format!(
+            "bubblewrap requires kernel namespace privileges unavailable here: {}",
+            stderr.trim()
+        ));
+    }
+
+    None
 }
 
 fn is_managed_proxy_permission_error(stderr: &str) -> bool {
@@ -85,8 +97,8 @@ fn is_managed_proxy_permission_error(stderr: &str) -> bool {
 }
 
 async fn managed_proxy_skip_reason() -> Option<String> {
-    if should_skip_bwrap_tests().await {
-        return Some("bubblewrap is unavailable in this environment".to_string());
+    if let Some(skip_reason) = bwrap_skip_reason().await {
+        return Some(skip_reason);
     }
 
     let mut env = create_env_from_core_vars();
@@ -182,8 +194,8 @@ async fn managed_proxy_mode_fails_closed_without_proxy_env() {
 
 #[tokio::test]
 async fn workspace_write_allows_agent_root_and_denies_sibling_paths() {
-    if should_skip_bwrap_tests().await {
-        eprintln!("skipping bwrap filesystem test: bwrap sandbox prerequisites are unavailable");
+    if let Some(skip_reason) = bwrap_skip_reason().await {
+        eprintln!("skipping bwrap filesystem test: {skip_reason}");
         return;
     }
 
