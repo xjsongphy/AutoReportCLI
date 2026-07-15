@@ -27,3 +27,6 @@ pub use mode::SandboxMode;
 pub use mode::SandboxSpec;
 pub use mode::sandbox_command_argv;
 pub use mode::seatbelt_command_argv;
+#[cfg(target_os = "linux")]
+pub use sandboxing::find_system_bwrap_in_path;
+pub use sandboxing::landlock;

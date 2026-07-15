@@ -14,6 +14,16 @@ pub mod models;
 pub mod permissions;
 pub mod protocol_types;
 
+/// Compatibility namespace for vendored sandbox sources that still import the
+/// split filesystem policy types through `protocol`.
+pub mod protocol {
+    pub use crate::permissions::{
+        FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSandboxPolicy,
+        FileSystemSpecialPath, NetworkSandboxPolicy,
+    };
+    pub use crate::protocol_types::WritableRoot;
+}
+
 pub use config_types::WindowsSandboxLevel;
 pub use config_types::WindowsSandboxProxySettingsMode;
 pub use error::CodexErr;
