@@ -39,9 +39,100 @@ impl Tui {
             self.draw_mention_popup(f, chunks[2]);
         }
 
+        if !self.pending_approvals.is_empty() {
+            self.draw_approval_popup(f);
+        }
+
         if let Some(screen) = self.overlay.as_mut() {
             screen.draw(f);
         }
+    }
+
+    /// Approval modal — ported in spirit from codex's `ApprovalOverlay::draw`
+    /// (`tui/src/bottom_pane/approval_overlay.rs`). Shows which agent is asking
+    /// (codex's `thread_label`), the command summary, the raw command, and the
+    /// decision keys (mirrors `handle_approval_key`: y/enter, a, n/esc). Draws
+    /// a queue-depth hint when more than one agent is waiting.
+    fn draw_approval_popup(&self, f: &mut Frame<'_>) {
+        let Some(req) = self.pending_approvals.front() else {
+            return;
+        };
+        let area = f.area();
+        let width = 64u16.min(area.width.saturating_sub(4));
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            format!(" {} agent wants to run a command ", req.agent.label()),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::raw(""));
+        for p in &req.summary {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", p.summary()),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        if let Some(r) = &req.reason {
+            lines.push(Line::from(Span::styled(
+                format!("  reason: {r}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::raw(""));
+        // `$ <command>` like codex's transcript exec cell.
+        let cmd = if req.command.is_empty() {
+            "(no command)".to_string()
+        } else {
+            req.command.clone()
+        };
+        for (i, line) in cmd.lines().enumerate() {
+            let prefix = if i == 0 { "$ " } else { "  " };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{line}"),
+                Style::default().fg(Color::Magenta),
+            )));
+        }
+        if let Some(cwd) = &req.cwd {
+            lines.push(Line::from(Span::styled(
+                format!("  cwd: {cwd}"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("[y]", Style::default().fg(Color::Green)),
+            Span::raw(" approve   "),
+            Span::styled("[a]", Style::default().fg(Color::Green)),
+            Span::raw(" this session   "),
+            Span::styled("[n]/Esc", Style::default().fg(Color::Red)),
+            Span::raw(" deny"),
+        ]));
+        if self.pending_approvals.len() > 1 {
+            lines.push(Line::from(Span::styled(
+                format!("  +{} more pending", self.pending_approvals.len() - 1),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
+        let popup_area = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 3,
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup_area);
+        let title = if self.pending_approvals.len() > 1 {
+            format!(" approval required (1/{}) ", self.pending_approvals.len())
+        } else {
+            " approval required ".to_string()
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title, Style::default().fg(Color::Yellow)));
+        let para = Paragraph::new(lines).block(block);
+        f.render_widget(para, popup_area);
     }
 
     fn draw_status(&self, f: &mut Frame<'_>, area: Rect) {

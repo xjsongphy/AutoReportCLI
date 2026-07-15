@@ -682,20 +682,64 @@ impl AgentLoop {
     }
 
     async fn execute_tool_call(&self, call: &ProviderToolCall) {
-        // Approval gate. `self.defaults.approval_policy` is consulted here before
-        // a tool runs — the natural injection point for an interactive approval
-        // prompt (codex's untrusted / on-request / granular). Only `Never` is
-        // currently supported (the loader clamps everything else to `Never`),
-        // so today this branch always proceeds directly. When approval modes are
-        // wired up, a non-`Never` policy returns/records an approval request
-        // here instead of calling `self.tools.call` unconditionally.
-        debug_assert!(
-            matches!(
-                self.defaults.approval_policy,
-                autoreport_core::policy::AskForApproval::Never
-            ),
-            "non-never approval policy reached the dispatch site; loader should have clamped it"
-        );
+        // Approval gate (codex's `ExecApprovalRequest` analogue). Under any
+        // non-`Never` policy, the `exec` tool must ask the user before running.
+        // We publish `BusMessage::ApprovalRequest` on the shared bus — the TUI
+        // surfaces it regardless of which agent is focused (single channel, no
+        // background stall) — and park here on the broker's oneshot until the
+        // user decides. `Denied` short-circuits: the command never runs and the
+        // denial is returned to the model as the tool output. Other tools
+        // (read-only listing, patching the agent's own write dir, coordination)
+        // proceed directly, matching codex's exec-only approval scope.
+        use autoreport_core::policy::{AskForApproval, ReviewDecision, summarize_command};
+        let needs_approval = !matches!(
+            self.defaults.approval_policy,
+            AskForApproval::Never
+        ) && call.name == "exec";
+        if needs_approval {
+            let command = call
+                .arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+            let summary = summarize_command(&argv);
+            let rx = self.bus.register_approval(&call.id).await;
+            self.bus.publish(BusMessage::ApprovalRequest {
+                agent_type: self.agent,
+                call_id: call.id.clone(),
+                command: command.clone(),
+                cwd: None,
+                summary,
+                reason: None,
+            });
+            match rx.await {
+                Ok(ReviewDecision::Denied) => {
+                    let denial = "command denied by user; try a different approach".to_string();
+                    self.bus.publish(BusMessage::ToolResult {
+                        agent_type: self.agent,
+                        tool_name: call.name.clone(),
+                        result: Value::String(denial.clone()),
+                        error: Some(denial.clone()),
+                    });
+                    self.record(ResponseItem::function_call_output(&call.id, denial))
+                        .await;
+                    return;
+                }
+                Ok(ReviewDecision::Approved | ReviewDecision::ApprovedForSession) => {
+                    // fall through and run the command
+                }
+                // Resolved without a decision (e.g. process tearing down):
+                // treat as denied so we never run an unapproved command.
+                Err(_) => {
+                    let denial = "approval request cancelled".to_string();
+                    self.record(ResponseItem::function_call_output(&call.id, denial))
+                        .await;
+                    return;
+                }
+            }
+        }
         self.bus.publish(BusMessage::ToolCall {
             agent_type: self.agent,
             tool_name: call.name.clone(),

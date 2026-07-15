@@ -125,19 +125,12 @@ fn apply_env_overrides(settings: &mut Settings) {
     }
 }
 
-/// Post-parse normalization. Today this only clamps the approval policy: only
-/// `AskForApproval::Never` is wired into the agent loop, so any other codex
-/// variant the user set is logged and forced to `Never` (rather than silently
-/// behaving as if honored). Once interactive approval is implemented, this
-/// clamp moves aside.
+/// Post-parse normalization. The approval policy is honored as-written: `Never`
+/// (the default) runs everything without asking; the other codex variants route
+/// the `exec` tool through the interactive approval flow in `execute_tool_call`.
+/// We only mirror `context_window` into the per-agent defaults here.
 fn normalize(settings: &mut Settings) {
-    if settings.agents.approval_policy != AskForApproval::Never {
-        log::warn!(
-            "approval_policy: only 'never' is currently supported (got '{}'); treating as 'never'",
-            settings.agents.approval_policy
-        );
-        settings.agents.approval_policy = AskForApproval::Never;
-    }
+    let _ = AskForApproval::Never; // keep the import meaningful for future validation
     // Mirror the top-level user-facing `context_window` into the per-agent
     // defaults that runtime code (auto-compaction) actually reads.
     settings.agents.context_window = settings.context_window;
@@ -389,9 +382,10 @@ mod tests {
     }
 
     #[test]
-    fn loader_clamps_non_never_approval_to_never() {
+    fn loader_preserves_non_never_approval() {
         let dir = tempdir().unwrap();
-        // Valid codex value, but unsupported here — loader must warn + clamp.
+        // Non-`Never` policies are now honored: they route `exec` through the
+        // interactive approval flow. The loader must NOT rewrite them.
         std::fs::write(
             dir.path().join("autoreport.config.yaml"),
             "agents:\n  approval_policy: on-request\n",
@@ -400,7 +394,7 @@ mod tests {
         let settings = load_settings(dir.path()).unwrap();
         assert_eq!(
             settings.agents.approval_policy,
-            crate::policy::AskForApproval::Never
+            crate::policy::AskForApproval::OnRequest
         );
     }
 
