@@ -67,9 +67,17 @@ impl PrefixRule {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecApprovalRequirement {
-    Skip,
-    NeedsApproval { reason: Option<String> },
-    Forbidden { reason: String },
+    Skip {
+        /// An explicit allow rule or cached approval authorizes the requested
+        /// sandbox override for this command.
+        allow_escalated_exec: bool,
+    },
+    NeedsApproval {
+        reason: Option<String>,
+    },
+    Forbidden {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -123,7 +131,9 @@ impl ExecPolicyManager {
                 .iter()
                 .any(|prefix| command.starts_with(prefix))
         }) {
-            return ExecApprovalRequirement::Skip;
+            return ExecApprovalRequirement::Skip {
+                allow_escalated_exec: requests_escalation,
+            };
         }
 
         let mut decision = Decision::Allow;
@@ -146,7 +156,9 @@ impl ExecPolicyManager {
         drop(state);
 
         match decision {
-            Decision::Allow => ExecApprovalRequirement::Skip,
+            Decision::Allow => ExecApprovalRequirement::Skip {
+                allow_escalated_exec: requests_escalation,
+            },
             Decision::Prompt => match approval_rejects_prompt(approval_policy, reason.is_some()) {
                 Some(reason) => ExecApprovalRequirement::Forbidden { reason },
                 None => ExecApprovalRequirement::NeedsApproval { reason },
@@ -272,28 +284,25 @@ fn known_safe(command: &[String]) -> bool {
 }
 
 fn command_might_be_dangerous(command: &[String]) -> bool {
+    let Some(program) = command.first().map(String::as_str) else {
+        return false;
+    };
+    if matches!(
+        program,
+        "rm" | "mv" | "cp" | "chmod" | "chown" | "sudo" | "dd" | "mkfs"
+    ) {
+        return true;
+    }
+    // A normal report script remains sandboxed and is safe to run under the
+    // `never` default. Inline/eval interpreter modes can conceal arbitrary
+    // filesystem or process operations, so they follow Codex's prompt path.
     matches!(
-        command.first().map(String::as_str),
-        Some(
-            "rm" | "mv"
-                | "cp"
-                | "chmod"
-                | "chown"
-                | "sudo"
-                | "dd"
-                | "mkfs"
-                | "curl"
-                | "wget"
-                | "python"
-                | "python3"
-                | "bash"
-                | "sh"
-                | "zsh"
-                | "node"
-                | "perl"
-                | "ruby"
-        )
-    )
+        program,
+        "python" | "python3" | "bash" | "sh" | "zsh" | "node" | "perl" | "ruby"
+    ) && command
+        .iter()
+        .skip(1)
+        .any(|argument| matches!(argument.as_str(), "-c" | "-e" | "-"))
 }
 
 fn is_interpreter_prefix(command: &[String]) -> bool {
@@ -543,10 +552,10 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
                 session_allow_prefixes: HashSet::new(),
             })),
         };
-        assert_eq!(
+        assert!(matches!(
             manager.evaluate("git log", AskForApproval::Never, false),
-            ExecApprovalRequirement::Skip
-        );
+            ExecApprovalRequirement::Skip { .. }
+        ));
         assert!(matches!(
             manager.evaluate("git status --porcelain", AskForApproval::OnRequest, false),
             ExecApprovalRequirement::NeedsApproval { .. }
@@ -566,6 +575,22 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
     }
 
     #[test]
+    fn never_allows_sandboxed_report_scripts_but_rejects_inline_interpreters() {
+        let manager = ExecPolicyManager {
+            workspace: PathBuf::from("/tmp"),
+            state: Arc::new(Mutex::new(PolicyState::default())),
+        };
+        assert!(matches!(
+            manager.evaluate("python3 fit.py", AskForApproval::Never, false),
+            ExecApprovalRequirement::Skip { .. }
+        ));
+        assert!(matches!(
+            manager.evaluate("python3 -c 'print(1)'", AskForApproval::Never, false),
+            ExecApprovalRequirement::Forbidden { .. }
+        ));
+    }
+
+    #[test]
     fn session_approval_skips_subsequent_prompt() {
         let manager = ExecPolicyManager {
             workspace: PathBuf::from("/tmp"),
@@ -576,9 +601,37 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
             ExecApprovalRequirement::NeedsApproval { .. }
         ));
         manager.approve_for_session("python3 task.py");
-        assert_eq!(
+        assert!(matches!(
             manager.evaluate("python3 task.py", AskForApproval::OnRequest, true),
-            ExecApprovalRequirement::Skip
+            ExecApprovalRequirement::Skip { .. }
+        ));
+    }
+
+    #[test]
+    fn persisted_approval_reloads_from_workspace_rules() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = ExecPolicyManager::empty(workspace.path());
+        manager
+            .persist_allow_prefix("git status")
+            .expect("persist rule");
+        let reloaded = ExecPolicyManager::load(workspace.path()).expect("reload rule");
+        assert!(matches!(
+            reloaded.evaluate("git status --short", AskForApproval::Never, false),
+            ExecApprovalRequirement::Skip { .. }
+        ));
+        assert!(
+            workspace
+                .path()
+                .join(RULES_DIR)
+                .join(DEFAULT_RULES_FILE)
+                .is_file()
         );
+    }
+
+    #[test]
+    fn interpreter_prefix_cannot_be_persisted() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = ExecPolicyManager::empty(workspace.path());
+        assert!(manager.persist_allow_prefix("python3 -c x").is_err());
     }
 }

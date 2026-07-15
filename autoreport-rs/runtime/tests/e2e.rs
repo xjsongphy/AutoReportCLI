@@ -147,6 +147,9 @@ async fn interrupt_cancels_active_turn() {
         bus.clone(),
         task_board,
         AgentDefaults::default(),
+        Arc::new(autoreport_core::exec_policy::ExecPolicyManager::empty(
+            &workspace,
+        )),
     ));
     loop_.clone().start();
     let mut rx = bus.subscribe();
@@ -256,6 +259,9 @@ async fn agent_loop_writes_file_then_replies() {
         bus.clone(),
         task_board,
         defaults,
+        Arc::new(autoreport_core::exec_policy::ExecPolicyManager::empty(
+            &workspace,
+        )),
     ));
     loop_.clone().start();
 

@@ -143,11 +143,10 @@ pub struct AgentDefaults {
     pub max_tokens: u32,
     #[serde(default = "default_exec_timeout_secs")]
     pub exec_timeout_secs: u64,
-    /// When the agent must consult the user before running a command. Only
-    /// [`AskForApproval::Never`] is wired up today (least-intervention mode);
-    /// the loader clamps other variants to `Never` with a warning. AutoReport's
-    /// enum default is `OnRequest`, so the config default is pinned via a
-    /// serde default fn rather than the enum's `Default`.
+    /// When execpolicy and sandbox escalation may consult the user. The product
+    /// default is `never`; `on-request`, `untrusted`, and `granular` are
+    /// handled by the shared TUI approval queue. AutoReport's enum default is
+    /// `OnRequest`, so the config default is pinned via a serde default fn.
     #[serde(default = "default_approval_policy")]
     pub approval_policy: AskForApproval,
 }

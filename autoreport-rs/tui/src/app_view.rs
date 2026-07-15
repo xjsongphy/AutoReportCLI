@@ -106,6 +106,8 @@ impl Tui {
             Span::raw(" approve   "),
             Span::styled("[a]", Style::default().fg(Color::Green)),
             Span::raw(" this session   "),
+            Span::styled("[p]", Style::default().fg(Color::Yellow)),
+            Span::raw(" save rule   "),
             Span::styled("[n]/Esc", Style::default().fg(Color::Red)),
             Span::raw(" deny"),
         ]));

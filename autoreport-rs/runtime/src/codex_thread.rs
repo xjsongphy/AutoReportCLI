@@ -714,44 +714,66 @@ impl AgentLoop {
                 self.defaults.approval_policy,
                 requests_escalation,
             );
-            if let ExecApprovalRequirement::Forbidden { reason } = requirement {
-                self.publish_tool_denial(call, reason).await;
-                return;
-            }
-            if let ExecApprovalRequirement::NeedsApproval { reason } = requirement {
-                let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
-                let summary = summarize_command(&argv);
-                let rx = self.bus.register_approval(&call.id).await;
-                self.bus.publish(BusMessage::ApprovalRequest {
-                    agent_type: self.agent,
-                    call_id: call.id.clone(),
-                    command: command.clone(),
-                    cwd: None,
-                    summary,
-                    reason,
-                });
-                match rx.await {
-                    Ok(ReviewDecision::Denied) => {
-                        self.publish_tool_denial(
-                            call,
-                            "command denied by user; try a different approach".to_string(),
-                        )
-                        .await;
-                        return;
-                    }
-                    Ok(ReviewDecision::ApprovedForSession) => {
-                        self.exec_policy.approve_for_session(&command);
-                        execution_context.allow_escalated_exec = requests_escalation;
-                    }
-                    Ok(ReviewDecision::Approved) => {
-                        execution_context.allow_escalated_exec = requests_escalation;
-                    }
-                    // Resolved without a decision (e.g. process tearing down):
-                    // treat as denied so we never run an unapproved command.
-                    Err(_) => {
-                        self.publish_tool_denial(call, "approval request cancelled".to_string())
+            match requirement {
+                ExecApprovalRequirement::Forbidden { reason } => {
+                    self.publish_tool_denial(call, reason).await;
+                    return;
+                }
+                ExecApprovalRequirement::Skip {
+                    allow_escalated_exec,
+                } => {
+                    execution_context.allow_escalated_exec = allow_escalated_exec;
+                }
+                ExecApprovalRequirement::NeedsApproval { reason } => {
+                    let argv: Vec<String> =
+                        command.split_whitespace().map(str::to_string).collect();
+                    let summary = summarize_command(&argv);
+                    let rx = self.bus.register_approval(&call.id).await;
+                    self.bus.publish(BusMessage::ApprovalRequest {
+                        agent_type: self.agent,
+                        call_id: call.id.clone(),
+                        command: command.clone(),
+                        cwd: None,
+                        summary,
+                        reason,
+                    });
+                    match rx.await {
+                        Ok(ReviewDecision::Denied) => {
+                            self.publish_tool_denial(
+                                call,
+                                "command denied by user; try a different approach".to_string(),
+                            )
                             .await;
-                        return;
+                            return;
+                        }
+                        Ok(ReviewDecision::ApprovedForSession) => {
+                            self.exec_policy.approve_for_session(&command);
+                            execution_context.allow_escalated_exec = requests_escalation;
+                        }
+                        Ok(ReviewDecision::ApprovedAndPersisted) => {
+                            if let Err(err) = self.exec_policy.persist_allow_prefix(&command) {
+                                self.publish_tool_denial(
+                                    call,
+                                    format!("could not persist execpolicy approval: {err}"),
+                                )
+                                .await;
+                                return;
+                            }
+                            execution_context.allow_escalated_exec = requests_escalation;
+                        }
+                        Ok(ReviewDecision::Approved) => {
+                            execution_context.allow_escalated_exec = requests_escalation;
+                        }
+                        // Resolved without a decision (e.g. process tearing down):
+                        // treat as denied so we never run an unapproved command.
+                        Err(_) => {
+                            self.publish_tool_denial(
+                                call,
+                                "approval request cancelled".to_string(),
+                            )
+                            .await;
+                            return;
+                        }
                     }
                 }
             }

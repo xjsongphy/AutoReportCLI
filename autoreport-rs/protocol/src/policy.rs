@@ -185,11 +185,7 @@ mod tests {
 }
 
 /// User's decision in response to an approval request. Verbatim subset of
-/// codex's `ReviewDecision` (`codex-rs/protocol/src/protocol.rs:4025`): we keep
-/// the three decisions the TUI popup offers. The amendment-bearing variants
-/// (`ApprovedExecpolicyAmendment`, `NetworkPolicyAmendment`) are deferred —
-/// they carry execpolicy/network payloads owned by the sandbox backend and
-/// aren't needed until that layer is wired.
+/// codex's `ReviewDecision` (`codex-rs/protocol/src/protocol.rs:4025`).
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, JsonSchema, TS,
 )]
@@ -200,6 +196,8 @@ pub enum ReviewDecision {
     Approved,
     /// User approved and wants matching prompts auto-approved for the session.
     ApprovedForSession,
+    /// User approved and wants a narrow allow-prefix persisted in execpolicy.
+    ApprovedAndPersisted,
     /// User denied; the agent should not execute and should try something else.
     #[default]
     Denied,

@@ -16,6 +16,9 @@ impl Tui {
             crossterm::event::KeyCode::Char('a') | crossterm::event::KeyCode::Char('A') => {
                 autoreport_core::policy::ReviewDecision::ApprovedForSession
             }
+            crossterm::event::KeyCode::Char('p') | crossterm::event::KeyCode::Char('P') => {
+                autoreport_core::policy::ReviewDecision::ApprovedAndPersisted
+            }
             crossterm::event::KeyCode::Esc
             | crossterm::event::KeyCode::Char('n')
             | crossterm::event::KeyCode::Char('N') => {
@@ -29,6 +32,9 @@ impl Tui {
         let label = match decision {
             autoreport_core::policy::ReviewDecision::Approved => "approved",
             autoreport_core::policy::ReviewDecision::ApprovedForSession => "approved for session",
+            autoreport_core::policy::ReviewDecision::ApprovedAndPersisted => {
+                "approved and saved as a rule"
+            }
             autoreport_core::policy::ReviewDecision::Denied => "denied",
         };
         let bus = self.bus.clone();
