@@ -74,8 +74,14 @@ async fn exec_respects_write_dir() {
         .call(&json!({"command": "touch Theory/nope.txt"}))
         .await;
     assert!(
-        blocked.error.is_some(),
-        "exec write outside write_dir must be rejected"
+        blocked.error.is_none(),
+        "the sandboxed command should launch: {:?}",
+        blocked.error
+    );
+    assert_ne!(blocked.result["returncode"].as_i64(), Some(0));
+    assert!(
+        !ws.join("Theory").join("nope.txt").exists(),
+        "the OS sandbox must prevent writes outside the agent directory"
     );
 
     std::fs::remove_dir_all(&ws).ok();
