@@ -74,7 +74,7 @@ impl PromptLoader {
              images, custom templates/skills), `Theory/`, `Plots/` (`Plots/Fig/` figures + \
              `Plots/Scripts/` code), `Tex/` (LaTeX sources + compiled PDF), `Outline/` (Main's \
              report outline). {} \
-             Read files with `exec` (`cat`, `sed -n`, `rg`) and directory trees with `list_dir`. \
+             Read files and directory trees with `exec` (`cat`, `sed -n`, `rg`, `find`). \
              Edit files with `apply_patch`. Use `exec` for running programs, but any writes inside \
              the workspace must stay within your write directory.",
             workspace.display(),

@@ -1,7 +1,7 @@
-//! Shared filesystem guards used by shell/list_dir/apply_patch.
+//! Shared filesystem guards used by shell/apply_patch.
 //!
 //! The model no longer receives first-class read/write/edit/delete tools.
-//! Instead, file access flows through `exec`, `list_dir`, and `apply_patch`,
+//! Instead, file access flows through `exec` and `apply_patch`,
 //! all of which rely on this module for workspace scoping and per-agent write
 //! isolation.
 

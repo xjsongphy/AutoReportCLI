@@ -207,7 +207,6 @@ fn registry_for(workspace: &std::path::Path, agent: AgentType) -> ToolRegistry {
     };
     let ctx = FsCtx::new(workspace.to_path_buf(), Some(write_dir));
     let mut reg = ToolRegistry::new();
-    reg.register(autoreport_tools::list_dir::ListDirTool::make(ctx.clone()));
     reg.register(autoreport_tools::apply_patch::make(ctx.clone()));
     reg.register(autoreport_tools::exec_tool::make(
         ctx,

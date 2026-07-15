@@ -156,9 +156,6 @@ impl LoopManager {
         let mut registry = ToolRegistry::new();
         let ctx = FsCtx::new(self.workspace.clone(), Some(self.write_dir(agent)));
 
-        // codex-ported paginated directory listing (read-only, workspace-scoped).
-        registry.register(autoreport_tools::list_dir::ListDirTool::make(ctx.clone()));
-
         // codex-compatible multi-edit patch tool (same write isolation).
         registry.register(autoreport_tools::apply_patch::make(ctx.clone()));
 
