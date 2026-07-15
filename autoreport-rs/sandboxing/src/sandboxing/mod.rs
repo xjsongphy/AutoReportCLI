@@ -56,7 +56,7 @@ impl From<SandboxTransformError> for CodexErr {
             }
             #[cfg(target_os = "linux")]
             SandboxTransformError::Wsl1UnsupportedForBubblewrap => {
-                CodexErr::UnsupportedOperation(super::bwrap::WSL1_BWRAP_WARNING.to_string())
+                CodexErr::UnsupportedOperation(bwrap::WSL1_BWRAP_WARNING.to_string())
             }
             #[cfg(not(target_os = "macos"))]
             SandboxTransformError::SeatbeltUnavailable => CodexErr::UnsupportedOperation(
