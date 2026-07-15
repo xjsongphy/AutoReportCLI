@@ -73,10 +73,16 @@ impl Tool for ExecTool {
             Ok(c) => c,
             Err(e) => return ToolOutput::err(e),
         };
-        let requested_escalation = args
-            .get("sandbox_permissions")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value == "require_escalated");
+        let requested_escalation = match args.get("sandbox_permissions") {
+            None => false,
+            Some(Value::String(value)) if value == "use_default" => false,
+            Some(Value::String(value)) if value == "require_escalated" => true,
+            Some(_) => {
+                return ToolOutput::err(
+                    "sandbox_permissions must be use_default or require_escalated",
+                );
+            }
+        };
         if requested_escalation && !context.allow_escalated_exec {
             return ToolOutput::err(
                 "require_escalated was not approved; request approval through the runtime first",
@@ -90,7 +96,7 @@ impl Tool for ExecTool {
         {
             return ToolOutput::err("require_escalated requires a non-empty justification");
         }
-        let sandbox = if context.allow_escalated_exec {
+        let sandbox = if requested_escalation && context.allow_escalated_exec {
             autoreport_sandboxing::SandboxSpec::new(
                 autoreport_sandboxing::SandboxMode::DangerFullAccess,
                 true,

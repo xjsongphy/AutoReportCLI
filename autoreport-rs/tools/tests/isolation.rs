@@ -3,7 +3,7 @@
 use autoreport_tools::apply_patch::ApplyPatchTool;
 use autoreport_tools::exec_tool::ExecTool;
 use autoreport_tools::file_tools::{FsCtx, resolve_within};
-use autoreport_tools::registry::Tool;
+use autoreport_tools::registry::{Tool, ToolExecutionContext};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -83,6 +83,45 @@ async fn exec_respects_write_dir() {
         !ws.join("Theory").join("nope.txt").exists(),
         "the OS sandbox must prevent writes outside the agent directory"
     );
+
+    std::fs::remove_dir_all(&ws).ok();
+}
+
+#[tokio::test]
+async fn escalation_requires_runtime_only_execution_context() {
+    let ws = workspace();
+    let ctx = FsCtx::new(ws.clone(), Some(ws.join("Data").join("Processed")));
+    let exec = ExecTool::new(ctx, 10);
+    let args = json!({
+        "command": "touch Theory/escalated.txt",
+        "sandbox_permissions": "require_escalated",
+        "justification": "write a shared report artifact"
+    });
+
+    let forged = exec.call(&args).await;
+    assert!(
+        forged.error.is_some(),
+        "model arguments cannot self-escalate"
+    );
+    assert!(!ws.join("Theory").join("escalated.txt").exists());
+
+    let approved = exec
+        .call_with_context(
+            &args,
+            ToolExecutionContext {
+                allow_escalated_exec: true,
+            },
+        )
+        .await;
+    assert!(
+        approved.error.is_none(),
+        "approved escalation: {approved:?}"
+    );
+    assert_eq!(
+        approved.result["sandbox"].as_str(),
+        Some("danger-full-access")
+    );
+    assert!(ws.join("Theory").join("escalated.txt").is_file());
 
     std::fs::remove_dir_all(&ws).ok();
 }
