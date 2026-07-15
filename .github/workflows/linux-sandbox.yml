@@ -26,6 +26,9 @@ jobs:
           # Debian keeps Linux UAPI's architecture-specific `asm` headers
           # outside /usr/include; use them only after musl's own headers.
           CFLAGS_x86_64_unknown_linux_musl: -idirafter/usr/include/x86_64-linux-gnu
+          # pkg-config reports /usr/lib64 for libcap, while Ubuntu installs the
+          # static archive under its multiarch library directory.
+          LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
