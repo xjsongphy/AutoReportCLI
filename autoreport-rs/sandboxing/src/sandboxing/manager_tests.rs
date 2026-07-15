@@ -499,7 +499,7 @@ fn transform_for_direct_spawn_windows_routes_wrapper_through_current_executable(
     let workspace_roots = vec![cwd, other_workspace_root];
     let manager = SandboxManager::new();
     let exec_request = manager
-        .transform_for_direct_spawn_with_codex_home(
+        .transform_for_direct_spawn_with_autoreport_home(
             SandboxDirectSpawnTransformRequest {
                 workspace_roots: workspace_roots.as_slice(),
                 windows_sandbox_proxy_settings_mode:
