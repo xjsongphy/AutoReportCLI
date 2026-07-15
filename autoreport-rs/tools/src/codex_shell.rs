@@ -222,16 +222,8 @@ impl CodexShell {
     }
 }
 
-fn shell_args(shell_type: ShellType, command: &str) -> Vec<&str> {
-    match shell_type {
-        ShellType::Zsh | ShellType::Bash | ShellType::Sh => vec!["-lc", command],
-        ShellType::PowerShell => vec!["-NoProfile", "-Command", command],
-        ShellType::Cmd => vec!["/C", command],
-    }
-}
-
-/// Owned-`String` variant of [`shell_args`] for the sandboxed path, where the
-/// shell invocation is threaded through `sandbox-exec` as `Vec<String>`.
+/// Shell arguments are owned because the sandbox launcher builds a complete
+/// `Vec<String>` command line before spawning the process.
 fn shell_args_owned(shell_type: ShellType, command: &str) -> Vec<String> {
     match shell_type {
         ShellType::Zsh | ShellType::Bash | ShellType::Sh => {

@@ -1,4 +1,5 @@
 //! Syntax highlighting engine for the TUI.
+#![allow(dead_code)] // Retained theme-management and rendering APIs await TUI settings integration.
 //!
 //! Wraps [syntect] with the [two_face] grammar and theme bundles to provide
 //! ~250-language syntax highlighting and 32 bundled color themes.  The module

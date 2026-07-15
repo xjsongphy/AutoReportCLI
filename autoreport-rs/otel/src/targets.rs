@@ -1,5 +1,4 @@
 pub(crate) const OTEL_TARGET_PREFIX: &str = "autoreport_otel";
-pub(crate) const OTEL_LOG_ONLY_TARGET: &str = "autoreport_otel.log_only";
 pub(crate) const OTEL_TRACE_SAFE_TARGET: &str = "autoreport_otel.trace_safe";
 
 pub(crate) fn is_log_export_target(target: &str) -> bool {

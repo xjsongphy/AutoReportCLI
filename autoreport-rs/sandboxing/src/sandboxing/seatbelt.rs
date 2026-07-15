@@ -582,7 +582,9 @@ fn seatbelt_regex_for_unreadable_glob(pattern: &str) -> Option<String> {
     Some(regex)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+// Compatibility adapter retained for callers that still construct the legacy
+// policy shape. The active runtime uses `CreateSeatbeltCommandArgsParams`.
+#[allow(dead_code)]
 fn create_seatbelt_command_args_for_legacy_policy(
     command: Vec<String>,
     sandbox_policy: &SandboxPolicy,

@@ -1,4 +1,5 @@
 //! Word-wrapping with URL-aware heuristics.
+#![allow(dead_code)] // Retained generic wrappers are available for upcoming TUI surfaces.
 //!
 //! The TUI renders text that frequently contains URLs — command output,
 //! markdown, agent messages, tool-call results. Standard `textwrap`

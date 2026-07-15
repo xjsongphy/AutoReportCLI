@@ -23,18 +23,6 @@ pub enum Hunk {
     },
 }
 
-impl Hunk {
-    pub fn path(&self) -> &Path {
-        match self {
-            Hunk::AddFile { path, .. } | Hunk::DeleteFile { path } => path,
-            Hunk::UpdateFile {
-                move_path: Some(p), ..
-            } => p,
-            Hunk::UpdateFile { path, .. } => path,
-        }
-    }
-}
-
 #[derive(Debug, PartialEq, Clone)]
 pub struct UpdateFileChunk {
     pub change_context: Option<String>,
@@ -626,11 +614,11 @@ mod tests {
         FsCtx::new(ws.to_path_buf(), Some(ws.to_path_buf()))
     }
 
-        fn stamp() -> String {
-            // Unit tests run in parallel; timestamp resolution is not enough
-            // to keep their temporary workspaces distinct on every platform.
-            uuid::Uuid::new_v4().to_string()
-        }
+    fn stamp() -> String {
+        // Unit tests run in parallel; timestamp resolution is not enough
+        // to keep their temporary workspaces distinct on every platform.
+        uuid::Uuid::new_v4().to_string()
+    }
 
     #[test]
     fn update_replace_and_add_and_delete() {

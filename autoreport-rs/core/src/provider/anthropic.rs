@@ -297,7 +297,6 @@ struct ThinkingAcc {
 }
 
 struct BlockState {
-    text: Option<String>,
     tool: Option<(String, String, String)>, // (id, name, accumulated input json)
     thinking: Option<ThinkingAcc>,
 }
@@ -336,7 +335,6 @@ async fn run_stream(
                         match block.get("type").and_then(|t| t.as_str()) {
                             Some("text") => {
                                 current = Some(BlockState {
-                                    text: Some(String::new()),
                                     tool: None,
                                     thinking: None,
                                 })
@@ -353,7 +351,6 @@ async fn run_stream(
                                     .unwrap_or("")
                                     .to_string();
                                 current = Some(BlockState {
-                                    text: None,
                                     tool: Some((id, name, String::new())),
                                     thinking: None,
                                 });
@@ -363,7 +360,6 @@ async fn run_stream(
                                 // `thinking_delta`, signature via `signature_delta`.
                                 // Both must be echoed back to continue the turn.
                                 current = Some(BlockState {
-                                    text: None,
                                     tool: None,
                                     thinking: Some(ThinkingAcc {
                                         text: String::new(),
