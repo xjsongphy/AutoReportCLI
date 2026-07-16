@@ -11,32 +11,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Bubblewrap build dependencies
+        # Host glibc libcap is used only by the native cargo test below.
         run: |
           sudo apt-get update && sudo apt-get install --yes \
-            bubblewrap libcap-dev musl-tools pkg-config ca-certificates curl xz-utils
+            bubblewrap libcap-dev pkg-config
       - name: Install the Linux npm package target
         run: rustup target add x86_64-unknown-linux-musl
       - name: Test the native helper and manager
         # Runs against the host glibc toolchain + apt libcap, before any musl
         # cross env vars are exported, so the native bwrap build is unaffected.
         run: cargo test -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
-      - name: Build a musl-compatible libcap
-        # The apt libcap is built against glibc and pulls in fortified symbols
-        # (__sprintf_chk, __isoc23_strtoul, ...) that musl does not provide, so
-        # it cannot be linked into a musl binary. Following openai/codex's
-        # install-musl-build-tools.sh, compile libcap 2.75 from source with the
-        # musl toolchain and expose it via a pkg-config file that shadows the
-        # host glibc libcap. Runs after the native test so the generic CC/CFLAGS
-        # it exports only affect the musl cross build below.
+      - name: Install Zig
+        # zig cc provides a self-contained musl sysroot (with linux UAPI
+        # headers) used as the C/C++ compiler for the musl payload, mirroring
+        # openai/codex's rust-release workflow.
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install musl build tools
+        # Vendored from openai/codex's install-musl-build-tools.sh: builds libcap
+        # 2.75 from source with the musl toolchain (the apt libcap is glibc and
+        # cannot link into musl) and exports CC/CFLAGS/PKG_CONFIG via GITHUB_ENV.
+        # Runs after the native test so its generic CC/CFLAGS only affect the
+        # musl cross build below.
         env:
           TARGET: x86_64-unknown-linux-musl
-        run: bash .github/scripts/install-musl-libcap.sh
+        run: bash .github/scripts/install-musl-build-tools.sh
       - name: Build native sandbox payload inputs
-        # CC / linker / PKG_CONFIG_* are exported to GITHUB_ENV by
-        # install-musl-libcap.sh. Keep the Debian UAPI headers available after
-        # musl's own for bubblewrap's <linux/...> includes.
-        env:
-          CFLAGS_x86_64_unknown_linux_musl: -pthread -idirafter/usr/include/x86_64-linux-gnu
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
