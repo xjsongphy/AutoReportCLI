@@ -12,26 +12,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Bubblewrap build dependencies
         run: |
-          sudo apt-get update && sudo apt-get install --yes bubblewrap libcap-dev musl-tools pkg-config
-          # libcap's pkg-config data reports /usr/lib64, but Ubuntu uses a
-          # multiarch directory. Keep the linker search order musl-first by
-          # exposing only libcap at the reported location.
-          sudo mkdir -p /usr/lib64
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libcap.a /usr/lib64/libcap.a
+          sudo apt-get update && sudo apt-get install --yes \
+            bubblewrap musl-tools pkg-config ca-certificates curl xz-utils
       - name: Install the Linux npm package target
         run: rustup target add x86_64-unknown-linux-musl
+      - name: Build a musl-compatible libcap
+        # The apt libcap is built against glibc and pulls in fortified symbols
+        # (__sprintf_chk, __isoc23_strtoul, ...) that musl does not provide, so
+        # it cannot be linked into a musl binary. Following openai/codex's
+        # install-musl-build-tools.sh, compile libcap 2.75 from source with the
+        # musl toolchain and expose it via a pkg-config file that shadows the
+        # host glibc libcap.
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        run: bash .github/scripts/install-musl-libcap.sh
       - name: Test the native helper and manager
         run: cargo test -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
       - name: Build native sandbox payload inputs
+        # CC / linker / PKG_CONFIG_* are exported to GITHUB_ENV by
+        # install-musl-libcap.sh. Keep the Debian UAPI headers available after
+        # musl's own for bubblewrap's <linux/...> includes.
         env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          # The bundled bubblewrap sources use libcap. This build intentionally
-          # uses the runner's libcap headers and static archive with musl-gcc.
-          PKG_CONFIG_ALLOW_CROSS: "1"
-          # Debian keeps Linux UAPI's architecture-specific `asm` headers
-          # outside /usr/include; use them only after musl's own headers.
-          CFLAGS_x86_64_unknown_linux_musl: -idirafter/usr/include/x86_64-linux-gnu
+          CFLAGS_x86_64_unknown_linux_musl: -pthread -idirafter/usr/include/x86_64-linux-gnu
         run: |
           cargo build --release --target x86_64-unknown-linux-musl \
             -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
