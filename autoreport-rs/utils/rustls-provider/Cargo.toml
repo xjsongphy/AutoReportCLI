@@ -1,0 +1,14 @@
+[package]
+name = "autoreport-utils-rustls-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_rustls_provider"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+rustls.workspace = true

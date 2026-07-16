@@ -1,0 +1,37 @@
+[package]
+name = "autoreport-linux-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "autoreport-linux-sandbox"
+path = "src/main.rs"
+
+[lib]
+name = "autoreport_linux_sandbox"
+path = "src/lib.rs"
+doctest = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+clap = { workspace = true, features = ["derive"] }
+globset.workspace = true
+landlock.workspace = true
+libc.workspace = true
+seccompiler.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+url.workspace = true
+autoreport-install-context = { path = "../install-context" }
+autoreport-network-proxy = { path = "../network-proxy" }
+autoreport-process-hardening = { path = "../process-hardening" }
+autoreport-protocol = { path = "../protocol" }
+autoreport-sandboxing = { path = "../sandboxing" }
+autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pretty_assertions = "1.4.1"
+tempfile = "3.23.0"
+tokio = { workspace = true, features = ["io-std", "macros", "process", "rt-multi-thread", "signal"] }

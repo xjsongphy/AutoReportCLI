@@ -51,7 +51,7 @@ single codex-style TUI.
 - **Codex-Style Interface** — full-screen terminal UI with agent panes, streaming output, markdown rendering, and keyboard-first navigation
 - **Persistent Agent Sessions** — each agent keeps its own conversation history and resumes on the next launch
 - **`@` File Mentions** — fuzzy-search workspace files and inject them into prompts directly from the input box
-- **Slash Commands** — `/agents`, `/switch`, `/config`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
+- **Slash Commands** — `/agents`, `/switch`, `/config`, `/models`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
 
 ## Quick Start
 
@@ -67,7 +67,14 @@ cargo build --release
 Install globally if you want `autoreport` available from any directory:
 
 ```bash
-cargo install --path .
+cargo install --path autoreport-rs/cli
+```
+
+On Linux, install the companion sandbox launcher into the same Cargo bin
+directory as well. Restricted `exec` commands fail closed if it is absent:
+
+```bash
+cargo install --path autoreport-rs/linux-sandbox
 ```
 
 Or run the built binary directly:
@@ -98,12 +105,12 @@ Configure a provider in any of these ways:
 
 - Set an API key environment variable such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`
 - Create `autoreport.config.yaml` from `autoreport.config.example.yaml`
+- Use `/config` to configure APIs, then `/models` to bind separate main and sub-agent model names to an API. First launch opens these pages in that order when needed.
 - Let the first-run full-screen setup page guide you through provider selection and saving
 
 Useful CLI flags:
 
 - `--workspace <dir>` to run on a different project folder
-- `--provider <key>` to override the active provider
 - `--no-sync` to skip startup sync and use cache only
 - `--sync-presets` to force a refresh and exit
 - `-v` for verbose logs
@@ -123,10 +130,33 @@ Useful CLI flags:
 
 ## Development
 
+The Rust source follows Codex's workspace layout rather than a monolithic
+`src/` tree:
+
+```text
+autoreport-rs/
+├── cli/          executable entry point
+├── core/         configuration, providers, agents, skills, and domain types
+├── protocol/     shared policy and sandbox protocol types
+├── rollout/      Codex-compatible session persistence
+├── runtime/      persistent agent loops and orchestration
+├── sandboxing/   cross-platform execution policy
+├── tools/        tool definitions and local handlers
+├── tui/          terminal UI, rendering, and IDE context
+└── utils/        absolute-path and path-URI crates
+```
+
 Run tests with:
 
 ```bash
 cargo test
+```
+
+Build an npm package with a native binary for the current Rust target:
+
+```bash
+npm run build:npm
+(cd autoreport-cli && npm pack --dry-run)
 ```
 
 For implementation status and parity notes, see

@@ -1,0 +1,36 @@
+[package]
+name = "autoreport-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+globset.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+autoreport-utils-path-uri = { path = "../utils/path-uri" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+seccompiler.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+serde_yaml.workspace = true
+tempfile = "3"

@@ -1,0 +1,52 @@
+[package]
+name = "autoreport-network-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_network_proxy"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap = { workspace = true, features = ["derive"] }
+chrono.workspace = true
+globset.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+url.workspace = true
+rand = "0.9"
+time = "0.3"
+rustls-native-certs = "0.8"
+rama-core = "=0.3.0-alpha.4"
+rama-error = "=0.3.0-alpha.4"
+rama-http = "=0.3.0-alpha.4"
+rama-http-backend = { version = "=0.3.0-alpha.4", features = ["tls"] }
+rama-net = { version = "=0.3.0-alpha.4", features = ["http", "tls"] }
+rama-socks5 = "=0.3.0-alpha.4"
+rama-tcp = { version = "=0.3.0-alpha.4", features = ["http"] }
+rama-tls-rustls = { version = "=0.3.0-alpha.4", features = ["http"] }
+autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+autoreport-utils-home-dir = { path = "../utils/home-dir" }
+autoreport-utils-rustls-provider = { path = "../utils/rustls-provider" }
+
+[target.'cfg(target_family = "unix")'.dependencies]
+rama-unix = "=0.3.0-alpha.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(windows)'.dependencies]
+schannel = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"

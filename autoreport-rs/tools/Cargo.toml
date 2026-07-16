@@ -1,0 +1,31 @@
+[package]
+name = "autoreport-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool definitions and local tool handlers"
+
+[lib]
+name = "autoreport_tools"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+diffy.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+uuid.workspace = true
+which.workspace = true
+autoreport-core = { path = "../core" }
+autoreport-sandboxing = { path = "../sandboxing" }
+
+[dev-dependencies]
+futures.workspace = true
+tempfile = "3"

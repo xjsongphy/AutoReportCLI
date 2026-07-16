@@ -49,7 +49,7 @@ codex 风格的 TUI 协调五个智能体完成整份报告。
 - **Codex 风格界面** — 全屏终端 UI，支持流式输出、Markdown 渲染和键盘优先操作
 - **持久化会话** — 每个智能体各自维护上下文，下次启动可继续之前的对话
 - **`@` 文件提及** — 在输入框中模糊搜索工作区文件并直接注入上下文
-- **斜杠命令** — `/agents`、`/switch`、`/config`、`/clear`、`/compact`、`/new`、`/manifest`、`/index`、`/help`
+- **斜杠命令** — `/agents`、`/switch`、`/config`、`/models`、`/clear`、`/compact`、`/new`、`/manifest`、`/index`、`/help`
 
 ## 快速开始
 
@@ -65,7 +65,14 @@ cargo build --release
 如果你希望在任意目录直接运行 `autoreport`，需要额外安装到 `PATH`：
 
 ```bash
-cargo install --path .
+cargo install --path autoreport-rs/cli
+```
+
+Linux 还需要安装同目录的沙箱辅助程序；缺少它时，受限的 `exec` 会失败关闭，
+不会降级为未隔离执行：
+
+```bash
+cargo install --path autoreport-rs/linux-sandbox
 ```
 
 或者直接运行构建产物：
@@ -97,11 +104,11 @@ Provider 可以通过以下任一方式配置：
 - 设置环境变量，例如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`
 - 参考 `autoreport.config.example.yaml` 创建 `autoreport.config.yaml`
 - 在首次启动时使用全屏配置页交互式完成设置
+- `/config` 只配置 API；再用 `/models` 先选择 API、后填写模型名，分别绑定主 agent 与四个 sub agent。首次启动会按 API、模型的顺序打开缺失的配置页。
 
 常用 CLI 参数：
 
 - `--workspace <dir>` 指定工作目录
-- `--provider <key>` 临时覆盖当前 provider
 - `--no-sync` 跳过启动同步，仅使用本地缓存
 - `--sync-presets` 强制刷新预设后退出
 - `-v` 输出详细日志
@@ -121,10 +128,32 @@ Provider 可以通过以下任一方式配置：
 
 ## 开发
 
+Rust 源码采用与 Codex 一致的 workspace 组织，而不是单一的 `src/` 目录：
+
+```text
+autoreport-rs/
+├── cli/          可执行程序入口
+├── core/         配置、Provider、Agent、skills 与领域类型
+├── protocol/     共享策略与 sandbox 协议类型
+├── rollout/      兼容 Codex 的会话持久化
+├── runtime/      持久 Agent loop 与编排
+├── sandboxing/   跨平台执行策略
+├── tools/        工具定义与本地 handler
+├── tui/          终端 UI、渲染与 IDE 上下文
+└── utils/        absolute-path 与 path-URI crate
+```
+
 运行测试：
 
 ```bash
 cargo test
+```
+
+为当前 Rust target 构建包含原生二进制的 npm 包：
+
+```bash
+npm run build:npm
+(cd autoreport-cli && npm pack --dry-run)
 ```
 
 实现状态和对等清单见 **[docs/PARITY.md](docs/PARITY.md)**。
