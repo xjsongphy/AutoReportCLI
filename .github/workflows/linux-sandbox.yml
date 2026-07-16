@@ -13,21 +13,24 @@ jobs:
       - name: Install Bubblewrap build dependencies
         run: |
           sudo apt-get update && sudo apt-get install --yes \
-            bubblewrap musl-tools pkg-config ca-certificates curl xz-utils
+            bubblewrap libcap-dev musl-tools pkg-config ca-certificates curl xz-utils
       - name: Install the Linux npm package target
         run: rustup target add x86_64-unknown-linux-musl
+      - name: Test the native helper and manager
+        # Runs against the host glibc toolchain + apt libcap, before any musl
+        # cross env vars are exported, so the native bwrap build is unaffected.
+        run: cargo test -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
       - name: Build a musl-compatible libcap
         # The apt libcap is built against glibc and pulls in fortified symbols
         # (__sprintf_chk, __isoc23_strtoul, ...) that musl does not provide, so
         # it cannot be linked into a musl binary. Following openai/codex's
         # install-musl-build-tools.sh, compile libcap 2.75 from source with the
         # musl toolchain and expose it via a pkg-config file that shadows the
-        # host glibc libcap.
+        # host glibc libcap. Runs after the native test so the generic CC/CFLAGS
+        # it exports only affect the musl cross build below.
         env:
           TARGET: x86_64-unknown-linux-musl
         run: bash .github/scripts/install-musl-libcap.sh
-      - name: Test the native helper and manager
-        run: cargo test -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
       - name: Build native sandbox payload inputs
         # CC / linker / PKG_CONFIG_* are exported to GITHUB_ENV by
         # install-musl-libcap.sh. Keep the Debian UAPI headers available after
