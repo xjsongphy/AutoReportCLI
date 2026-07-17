@@ -7,10 +7,10 @@
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
@@ -45,32 +45,26 @@ impl WorkspaceScreen {
         let area = f.area();
         f.render_widget(Clear, area);
 
-        let dialog = centered_rect(area, 84, 68);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(Span::styled(
-                " AutoReportCLI · workspace access ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        let inner = block.inner(dialog);
-        f.render_widget(block, dialog);
-
+        // Codex renders this onboarding step as a left-aligned full-screen
+        // column. Keeping the directory and choices in the normal transcript
+        // flow makes the confirmation feel like a gate, not a modal dialog.
+        let content = ratatui::layout::Rect {
+            x: area.x.saturating_add(2),
+            y: area.y,
+            width: area.width.saturating_sub(4),
+            height: area.height,
+        };
         let columns = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
-                Constraint::Length(4),
                 Constraint::Length(1),
                 Constraint::Length(2),
                 Constraint::Length(1),
-                Constraint::Length(3),
+                Constraint::Length(2),
                 Constraint::Min(1),
                 Constraint::Length(1),
             ])
-            .split(inner);
+            .split(content);
 
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -85,18 +79,9 @@ impl WorkspaceScreen {
         );
 
         f.render_widget(
-            Paragraph::new(
-                "Do you want AutoReportCLI to use this workspace? After you continue, it will create the standard report folders and project-scoped session state."
-                    .to_string(),
-            )
-            .wrap(Wrap { trim: true }),
+            Paragraph::new("Do you want AutoReportCLI to use this workspace?".to_string())
+                .wrap(Wrap { trim: true }),
             columns[1],
-        );
-
-        f.render_widget(
-            Paragraph::new("Choose an option:".to_string())
-                .style(Style::default().fg(Color::DarkGray)),
-            columns[3],
         );
 
         let options = [
@@ -105,31 +90,27 @@ impl WorkspaceScreen {
         ];
         let option_lines = options
             .iter()
-            .enumerate()
-            .map(|(index, (label, selection))| {
+            .map(|(label, selection)| {
                 let selected = self.highlighted == *selection;
                 let marker = if selected { ">" } else { " " };
                 let style = if selected {
                     Style::default()
-                        .bg(Color::DarkGray)
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::Gray)
                 };
                 Line::from(vec![
-                    Span::styled(format!(" {marker} "), style),
-                    Span::styled(format!("{}  {label}", index + 1), style),
+                    Span::styled(format!("{marker} "), style),
+                    Span::styled(*label, style),
                 ])
             })
             .collect::<Vec<_>>();
-        f.render_widget(Paragraph::new(option_lines), columns[5]);
+        f.render_widget(Paragraph::new(option_lines), columns[3]);
 
         f.render_widget(
-            Paragraph::new("↑/↓ or j/k: select   Enter: confirm   Esc: quit")
-                .style(Style::default().fg(Color::DarkGray))
-                .alignment(Alignment::Left),
-            columns[7],
+            Paragraph::new("Press Enter to continue").style(Style::default().fg(Color::DarkGray)),
+            columns[5],
         );
     }
 
@@ -170,25 +151,6 @@ impl WorkspaceScreen {
             }
         }
     }
-}
-
-fn centered_rect(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 #[cfg(test)]
