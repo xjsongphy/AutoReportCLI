@@ -155,13 +155,14 @@ impl RolloutRecorder {
     }
 }
 
-/// Validate every emitted line with the actual Codex wire type. We keep the
-/// internal item adapter because AutoReport providers are not Responses API
-/// clients, but Codex's protocol crate remains the format authority.
+/// Validate every emitted line with the same local envelope used by the
+/// reader. The envelope mirrors Codex's `RolloutLine`/`RolloutItem` serde
+/// layout, while keeping this crate buildable when the standalone AutoReport
+/// repository is checked out without the sibling Codex repository.
 fn encode_line(line: &RolloutLine) -> Result<String> {
     let value = serde_json::to_value(line).context("serializing rollout line")?;
-    let _: codex_protocol::protocol::RolloutLine =
-        serde_json::from_value(value.clone()).context("validating Codex rollout line")?;
+    let _: RolloutLine =
+        serde_json::from_value(value.clone()).context("validating rollout line")?;
     serde_json::to_string(&value).context("encoding rollout line")
 }
 
@@ -308,12 +309,11 @@ mod tests {
         assert!(raw.contains("\"type\":\"function_call\""));
         assert!(raw.contains("\"conversation_id\""));
 
-        // The actual Codex protocol crate is the compatibility oracle. This
-        // catches subtle drift such as reasoning content being emitted as
-        // strings instead of `{type,text}` objects.
+        // Reparse every emitted line through the local Codex-shaped envelope;
+        // this catches malformed tags and nested payloads without requiring
+        // a sibling checkout of Codex in CI.
         for line in raw.lines() {
-            let _: codex_protocol::protocol::RolloutLine =
-                serde_json::from_str(line).expect("Codex must deserialize every rollout line");
+            let _: RolloutLine = serde_json::from_str(line).expect("rollout line must deserialize");
         }
         std::fs::remove_dir_all(&dir).ok();
     }
