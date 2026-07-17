@@ -106,7 +106,7 @@ Provider 可以通过以下任一方式配置：
   `~/.autoreport/config.toml`（也可通过 `AUTOREPORT_HOME` 修改位置），或直接使用
   `/config` 配置。
 - 在首次启动时使用全屏配置页交互式完成设置
-- `/config` 只配置 API；再用 `/models` 先选择 API、后填写模型名，分别绑定主 agent 与四个 sub agent。首次启动会按 API、模型的顺序打开缺失的配置页。
+- `/config` 只配置 API：预设是可重复添加的模板，同一种 Provider 可以添加多条 API 配置；每条配置默认使用预设名，也可以覆盖 alias 以便区分。再用 `/models` 先选择已经填好 API Key 的配置、后填写模型名，分别绑定主 agent 与四个 sub agent。
 
 常用 CLI 参数：
 

@@ -108,7 +108,7 @@ Configure a provider in any of these ways:
 - Copy `autoreport.config.example.toml` to `$AUTOREPORT_HOME/config.toml` (default:
   `~/.autoreport/config.toml`), or use `/config`. `AUTOREPORT_HOME` can point to
   another global AutoReport home.
-- Use `/config` to configure APIs, then `/models` to bind separate main and sub-agent model names to an API. First launch opens these pages in that order when needed.
+- Use `/config` to add API entries from presets (presets are additive, so one provider kind can have multiple API keys) and optionally override each entry's alias, then use `/models` to bind main and sub-agent model names only to configured API entries. First launch opens these pages in that order when needed.
 - Let the first-run full-screen setup page guide you through provider selection and saving
 
 Useful CLI flags:
