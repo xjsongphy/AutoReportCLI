@@ -122,33 +122,6 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Always register providers from the (now possibly refreshed) preset cache.
-    // cc-switch's real shape: each entry's `settingsConfig.env` block carries
-    // the base URL, auth-token env var, and default model.
-    let cfg_dir = autoreport_core::sync::external_dir(&autoreport_home)
-        .join("cc-switch")
-        .join("src")
-        .join("config");
-    for file in [
-        "claudeProviderPresets.ts",
-        "codexProviderPresets.ts",
-        "geminiProviderPresets.ts",
-        "openaiProviderPresets.ts",
-        "opencodeProviderPresets.ts",
-        "openclawProviderPresets.ts",
-        "hermesProviderPresets.ts",
-        "universalProviderPresets.ts",
-    ] {
-        let path = cfg_dir.join(file);
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            let kind = autoreport_core::sync::file_kind(file)
-                .map(|(k, _)| k)
-                .unwrap_or("openai");
-            let presets = autoreport_core::sync::parse_presets(&body, kind);
-            autoreport_core::sync::register_providers(&mut settings, &presets);
-        }
-    }
-
     // API setup is always first: an existing config file with expired/missing
     // credentials must re-open this page just like a first launch does.
     if config::needs_api_config(&settings) {
@@ -255,7 +228,8 @@ fn run_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
             return Outcome::Cancelled;
         }
     };
-    let mut screen = ConfigScreen::new(settings, home.to_path_buf());
+    let presets = autoreport_core::sync::load_presets(home);
+    let mut screen = ConfigScreen::new_with_presets(settings, home.to_path_buf(), presets);
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);

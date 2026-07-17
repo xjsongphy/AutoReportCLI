@@ -147,6 +147,7 @@ fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_b
             key.to_string(),
             crate::config::schema::ProviderConfig {
                 kind: kind.to_string(),
+                alias: Some(key.to_string()),
                 api_key: None,
                 api_base: api_base.map(String::from),
                 api_key_env: None,
@@ -341,6 +342,7 @@ mod tests {
             "anthropic".into(),
             ProviderConfig {
                 kind: "anthropic".into(),
+                alias: None,
                 api_key: Some("sk-test".into()),
                 api_base: None,
                 api_key_env: None,

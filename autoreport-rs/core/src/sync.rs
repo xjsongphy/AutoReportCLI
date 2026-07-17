@@ -14,9 +14,9 @@
 //! providers, and best-effort behaviour (offline → keep existing cache, never
 //! block startup beyond the timeout).
 
-use crate::config::schema::{ProviderConfig, Settings};
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 // Keep startup inputs immutable between releases. Refresh these revisions
@@ -35,6 +35,36 @@ const PRESET_FILES: &[&str] = &[
     "openaiProviderPresets.ts",
     "universalProviderPresets.ts",
 ];
+
+/// Read the cached cc-switch templates without adding any of them to the
+/// user's configured providers. A template becomes a provider only after the
+/// user explicitly adds it in `/config`.
+pub fn load_presets(home: &Path) -> Vec<PresetProvider> {
+    let cfg_dir = external_dir(home)
+        .join("cc-switch")
+        .join("src")
+        .join("config");
+    let mut seen = BTreeSet::new();
+    let mut presets = Vec::new();
+    for file in PRESET_FILES {
+        let Ok(body) = std::fs::read_to_string(cfg_dir.join(file)) else {
+            continue;
+        };
+        let kind = file_kind(file).map(|(kind, _)| kind).unwrap_or("openai");
+        for preset in parse_presets(&body, kind) {
+            let identity = (
+                preset.kind.clone(),
+                preset.name.clone(),
+                preset.base_url.clone(),
+                preset.env_key.clone(),
+            );
+            if seen.insert(identity) {
+                presets.push(preset);
+            }
+        }
+    }
+    presets
+}
 
 /// Skills to pull from the skills repo (name → path within repo).
 ///
@@ -573,31 +603,6 @@ fn config_call_arg(obj: &str, field: &str, arg_index: usize) -> Option<String> {
     args.get(arg_index).cloned()
 }
 
-/// Register parsed preset providers into `settings` (without overwriting
-/// existing keys). Each becomes a selectable provider entry.
-pub fn register_providers(settings: &mut Settings, presets: &[PresetProvider]) {
-    for p in presets {
-        if settings.providers.contains_key(&p.name) {
-            continue;
-        }
-        settings.providers.insert(
-            p.name.clone(),
-            ProviderConfig {
-                kind: p.kind.clone(),
-                api_key: None,
-                api_base: if p.base_url.is_empty() {
-                    None
-                } else {
-                    Some(p.base_url.clone())
-                },
-                api_key_env: p.env_key.clone(),
-                temperature: 0.1,
-                max_tokens: 8192,
-            },
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,31 +702,6 @@ mod tests {
         let sheng = presets.iter().find(|p| p.name == "Shengsuanyun").unwrap();
         assert_eq!(sheng.base_url, "https://router.shengsuanyun.com/api");
         assert_eq!(sheng.env_key.as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
-    }
-
-    #[test]
-    fn register_providers_skips_existing() {
-        let mut settings = Settings::default();
-        settings.providers.insert(
-            "anthropic".into(),
-            ProviderConfig {
-                kind: "anthropic".into(),
-                api_key: None,
-                api_base: None,
-                api_key_env: None,
-                temperature: 0.0,
-                max_tokens: 0,
-            },
-        );
-        let presets = vec![PresetProvider {
-            name: "anthropic".into(),
-            kind: "anthropic".into(),
-            base_url: "u".into(),
-            models: vec!["m".into()],
-            env_key: None,
-        }];
-        register_providers(&mut settings, &presets);
-        assert!(settings.providers.contains_key("anthropic"));
     }
 
     #[test]

@@ -55,6 +55,11 @@ pub struct ProviderConfig {
     /// "anthropic" | "openai" | "deepseek" | "openrouter" | "google" | "custom"
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Optional user-facing name. When omitted, the provider map key (usually
+    /// the preset name) is used. Multiple entries may therefore share a kind
+    /// while remaining distinguishable in the UI.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// Optional, falls back to env var or provider default.
     #[serde(default)]
     pub api_key: Option<String>,

@@ -119,9 +119,11 @@ impl Tui {
             if self.want_config {
                 self.want_config = false;
                 let settings = load_settings(&self.autoreport_home).unwrap_or_default();
-                self.overlay = Some(Overlay::Api(ConfigScreen::new(
+                let presets = autoreport_core::sync::load_presets(&self.autoreport_home);
+                self.overlay = Some(Overlay::Api(ConfigScreen::new_with_presets(
                     settings,
                     self.autoreport_home.clone(),
+                    presets,
                 )));
             }
             if self.want_models {

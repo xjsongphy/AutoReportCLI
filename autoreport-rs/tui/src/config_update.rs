@@ -6,6 +6,7 @@
 
 use autoreport_core::config::schema::{ProviderConfig, Settings};
 use autoreport_core::config::{resolve_api_key, save_settings};
+use autoreport_core::sync::PresetProvider;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -29,6 +30,7 @@ pub enum Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Select,
+    Add,
     Edit,
     Preview,
 }
@@ -36,6 +38,7 @@ pub enum Step {
 /// Editable form field. `Save`/`Cancel` are pseudo-fields rendered as actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    Alias,
     ApiBase,
     ApiKey,
     Save,
@@ -43,9 +46,16 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Field; 4] = [Field::ApiBase, Field::ApiKey, Field::Save, Field::Cancel];
+    pub const ALL: [Field; 5] = [
+        Field::Alias,
+        Field::ApiBase,
+        Field::ApiKey,
+        Field::Save,
+        Field::Cancel,
+    ];
     pub fn label(self) -> &'static str {
         match self {
+            Field::Alias => "alias",
             Field::ApiBase => "api_base",
             Field::ApiKey => "api_key",
             Field::Save => "► Save",
@@ -57,6 +67,7 @@ impl Field {
     pub fn validate(self, value: &str) -> Result<(), String> {
         let trimmed = value.trim();
         match self {
+            Field::Alias => Ok(()),
             Field::ApiBase => {
                 if trimmed.is_empty() {
                     Ok(())
@@ -129,9 +140,11 @@ fn provider_groups(settings: &Settings) -> Vec<ProviderGroup> {
 
 pub struct ConfigScreen {
     pub settings: Settings,
+    presets: Vec<PresetProvider>,
     groups: Vec<ProviderGroup>,
     pub group_selected: usize,
     pub selected_in_group: usize,
+    pub preset_selected: usize,
     pub step: Step,
     pub field: Field,
     /// True while typing into `field` (the input buffer is live).
@@ -144,6 +157,14 @@ pub struct ConfigScreen {
 
 impl ConfigScreen {
     pub fn new(settings: Settings, home: PathBuf) -> Self {
+        Self::new_with_presets(settings, home, Vec::new())
+    }
+
+    pub fn new_with_presets(
+        settings: Settings,
+        home: PathBuf,
+        presets: Vec<PresetProvider>,
+    ) -> Self {
         let groups = provider_groups(&settings);
         let active = groups.first().and_then(|g| g.keys.first().cloned());
         let (group_selected, selected_in_group) = active
@@ -160,9 +181,11 @@ impl ConfigScreen {
             .unwrap_or((0, 0));
         Self {
             settings,
+            presets,
             groups,
             group_selected,
             selected_in_group,
+            preset_selected: 0,
             step: Step::Select,
             field: Field::ApiBase,
             editing: false,
@@ -188,6 +211,16 @@ impl ConfigScreen {
     pub fn selected_provider_mut(&mut self) -> Option<&mut ProviderConfig> {
         let key = self.selected_key().map(String::from)?;
         self.settings.providers.get_mut(&key)
+    }
+
+    fn provider_label(&self, key: &str) -> String {
+        self.settings
+            .providers
+            .get(key)
+            .and_then(|provider| provider.alias.as_deref())
+            .filter(|alias| !alias.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| key.to_string())
     }
 
     /// Whether a real API key resolves for the selected provider.
@@ -249,6 +282,7 @@ impl ConfigScreen {
             key.clone(),
             ProviderConfig {
                 kind: "openai".to_string(),
+                alias: Some(key.clone()),
                 api_key: None,
                 api_base: None,
                 api_key_env: None,
@@ -258,7 +292,48 @@ impl ConfigScreen {
         );
         self.select_provider_key(Some(&key));
         self.step = Step::Edit;
-        self.field = Field::ApiBase;
+        self.field = Field::Alias;
+        self.error = None;
+    }
+
+    fn add_selected_preset(&mut self) {
+        let Some(preset) = self.presets.get(self.preset_selected).cloned() else {
+            self.error = Some("no preset selected".into());
+            return;
+        };
+        let base_key = preset.name.trim();
+        let base_key = if base_key.is_empty() {
+            "custom"
+        } else {
+            base_key
+        };
+        let mut suffix = 1usize;
+        let key = loop {
+            let candidate = if suffix == 1 {
+                base_key.to_string()
+            } else {
+                format!("{base_key}-{suffix}")
+            };
+            if !self.settings.providers.contains_key(&candidate) {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        self.settings.providers.insert(
+            key.clone(),
+            ProviderConfig {
+                kind: preset.kind,
+                alias: Some(preset.name),
+                api_key: None,
+                api_base: (!preset.base_url.is_empty()).then_some(preset.base_url),
+                api_key_env: preset.env_key,
+                temperature: 0.1,
+                max_tokens: 8192,
+            },
+        );
+        self.select_provider_key(Some(&key));
+        self.step = Step::Edit;
+        self.field = Field::Alias;
         self.error = None;
     }
 
@@ -279,6 +354,7 @@ impl ConfigScreen {
             }
         };
         match field {
+            Field::Alias => provider.alias = (!value.is_empty()).then_some(value),
             Field::ApiBase => provider.api_base = if value.is_empty() { None } else { Some(value) },
             Field::ApiKey => provider.api_key = if value.is_empty() { None } else { Some(value) },
             _ => {}
@@ -323,6 +399,7 @@ impl ConfigScreen {
 
         match self.step {
             Step::Select => self.draw_select(f, body),
+            Step::Add => self.draw_add(f, body),
             Step::Edit => self.draw_edit(f, body),
             Step::Preview => self.draw_preview(f, body),
         }
@@ -336,7 +413,13 @@ impl ConfigScreen {
             kv_value(&self.group_summary(), Color::Cyan),
             Span::raw("   "),
             kv_label("API"),
-            kv_value(self.selected_key().unwrap_or("-"), Color::Yellow),
+            kv_value(
+                &self
+                    .selected_key()
+                    .map(|key| self.provider_label(key))
+                    .unwrap_or_else(|| "-".to_string()),
+                Color::Yellow,
+            ),
         ]);
         let para = Paragraph::new(line).block(Block::default().borders(Borders::BOTTOM));
         f.render_widget(para, area);
@@ -375,7 +458,10 @@ impl ConfigScreen {
                     Style::default().fg(Color::Yellow)
                 };
                 let name_style = Style::default().add_modifier(Modifier::BOLD);
-                let mut spans = vec![Span::styled(format!("{k:<20}"), name_style)];
+                let mut spans = vec![Span::styled(
+                    format!("{:<20}", self.provider_label(k)),
+                    name_style,
+                )];
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(format!("{key_icon:>8}"), key_style));
                 let line = Line::from(spans);
@@ -398,6 +484,57 @@ impl ConfigScreen {
         f.render_stateful_widget(list, columns[0], &mut state);
 
         self.draw_provider_details(f, columns[1]);
+    }
+
+    fn draw_add(&self, f: &mut Frame<'_>, area: Rect) {
+        let items = if self.presets.is_empty() {
+            vec![ListItem::new(Line::styled(
+                "No preset templates available; press Esc",
+                Style::default().fg(Color::Yellow),
+            ))]
+        } else {
+            self.presets
+                .iter()
+                .map(|preset| {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<24}", preset.name),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{:<12}", preset.kind),
+                            Style::default().fg(Color::Gray),
+                        ),
+                        Span::styled(
+                            if preset.base_url.is_empty() {
+                                "default endpoint"
+                            } else {
+                                preset.base_url.as_str()
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]))
+                })
+                .collect()
+        };
+        let mut state = ListState::default();
+        state.select((!self.presets.is_empty()).then_some(self.preset_selected));
+        f.render_stateful_widget(
+            List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Add provider from preset template "),
+                ),
+            area,
+            &mut state,
+        );
     }
 
     fn draw_group_tabs(&self, f: &mut Frame<'_>, area: Rect) {
@@ -443,6 +580,8 @@ impl ConfigScreen {
             return;
         };
         let key_name = self.selected_key().unwrap_or("-");
+        let display_name = self.provider_label(key_name);
+        let alias = display_name.clone();
         let api_key_env = provider
             .api_key_env
             .clone()
@@ -458,13 +597,14 @@ impl ConfigScreen {
         };
         let lines = vec![
             Line::from(Span::styled(
-                key_name,
+                display_name,
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             detail_line("kind", &provider.kind),
+            detail_line("alias", &alias),
             detail_line("api_base", api_base),
             detail_line("api_key_env", &api_key_env),
             detail_line("key", key_state),
@@ -472,6 +612,13 @@ impl ConfigScreen {
             Line::from(vec![
                 Span::styled("Enter", Style::default().fg(Color::White)),
                 Span::styled(" to edit selected API", Style::default().fg(Color::Gray)),
+            ]),
+            Line::from(vec![
+                Span::styled("a", Style::default().fg(Color::White)),
+                Span::styled(
+                    " to add a provider from a preset template",
+                    Style::default().fg(Color::Gray),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("n", Style::default().fg(Color::White)),
@@ -498,7 +645,10 @@ impl ConfigScreen {
         };
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
-            format!("Editing API: {}", self.selected_key().unwrap_or("?")),
+            format!(
+                "Editing API: {}",
+                self.provider_label(self.selected_key().unwrap_or("?"))
+            ),
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Yellow),
@@ -509,8 +659,12 @@ impl ConfigScreen {
         )));
         lines.push(Line::raw(""));
 
-        for field in [Field::ApiBase, Field::ApiKey] {
+        for field in [Field::Alias, Field::ApiBase, Field::ApiKey] {
             let value: String = match field {
+                Field::Alias => self
+                    .selected_key()
+                    .map(|key| self.provider_label(key))
+                    .unwrap_or_default(),
                 Field::ApiBase => provider.api_base.clone().unwrap_or_default(),
                 Field::ApiKey => provider
                     .api_key
@@ -628,6 +782,7 @@ impl ConfigScreen {
             .as_deref()
             .or_else(|| provider.env_key())
             .unwrap_or("-");
+        let provider_label = self.provider_label(self.selected_key().unwrap_or("-"));
         let lines = vec![
             Line::from(Span::styled(
                 "Review this API before saving",
@@ -636,7 +791,7 @@ impl ConfigScreen {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
-            detail_line("provider", self.selected_key().unwrap_or("-")),
+            detail_line("provider", &provider_label),
             detail_line("kind", &provider.kind),
             detail_line("api_base", api_base),
             detail_line("api_key", key_status),
@@ -660,7 +815,8 @@ impl ConfigScreen {
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
         let hint = match (self.step, self.editing) {
             (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
-            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: API   n: add custom API   Enter: edit   Esc: cancel".to_string(),
+            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: API   a: add preset   n: custom API   Enter: edit   Esc: cancel".to_string(),
+            (Step::Add, _) => " ↑/↓: template   Enter: add & edit   Esc: back".to_string(),
             (Step::Edit, _) => " ↑/↓: field   Enter: edit/action   Esc: back".to_string(),
             (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
         };
@@ -689,6 +845,7 @@ impl ConfigScreen {
 
         match self.step {
             Step::Select => self.handle_select_key(key),
+            Step::Add => self.handle_add_key(key),
             Step::Edit => self.handle_edit_key(key),
             Step::Preview => self.handle_preview_key(key),
         }
@@ -696,6 +853,16 @@ impl ConfigScreen {
 
     fn handle_select_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
+            KeyCode::Char('a') => {
+                if self.presets.is_empty() {
+                    self.error = Some("no preset templates available".into());
+                } else {
+                    self.preset_selected = 0;
+                    self.step = Step::Add;
+                    self.error = None;
+                }
+                None
+            }
             KeyCode::Char('n') => {
                 self.add_custom_api();
                 None
@@ -739,6 +906,22 @@ impl ConfigScreen {
         }
     }
 
+    fn handle_add_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.preset_selected = self.preset_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.preset_selected =
+                    (self.preset_selected + 1).min(self.presets.len().saturating_sub(1));
+            }
+            KeyCode::Enter => self.add_selected_preset(),
+            KeyCode::Esc => self.step = Step::Select,
+            _ => {}
+        }
+        None
+    }
+
     fn handle_edit_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
             KeyCode::Up => {
@@ -758,7 +941,7 @@ impl ConfigScreen {
                 None
             }
             KeyCode::Enter => match self.field {
-                Field::ApiBase | Field::ApiKey => {
+                Field::Alias | Field::ApiBase | Field::ApiKey => {
                     self.begin_edit();
                     None
                 }
@@ -797,6 +980,7 @@ impl ConfigScreen {
 
     fn begin_edit(&mut self) {
         let cur = match self.field {
+            Field::Alias => self.selected_key().map(|key| self.provider_label(key)),
             Field::ApiBase => self.selected_provider().and_then(|p| p.api_base.clone()),
             Field::ApiKey => self.selected_provider().and_then(|p| p.api_key.clone()),
             _ => None,
@@ -935,6 +1119,7 @@ mod tests {
     fn provider() -> ProviderConfig {
         ProviderConfig {
             kind: "anthropic".into(),
+            alias: None,
             api_key: Some("sk-test".into()),
             api_base: None,
             api_key_env: None,
@@ -1013,6 +1198,52 @@ mod tests {
         assert_eq!(screen.selected_key(), Some("custom"));
         assert_eq!(screen.settings.providers["custom"].kind, "openai");
         assert_eq!(screen.step, Step::Edit);
+    }
+
+    #[test]
+    fn presets_are_additive_and_alias_can_be_overridden() {
+        let preset = PresetProvider {
+            name: "OpenAI Gateway".into(),
+            kind: "openai".into(),
+            base_url: "https://example.test/v1".into(),
+            models: vec!["gpt-test".into()],
+            env_key: Some("OPENAI_API_KEY".into()),
+        };
+        let mut screen = ConfigScreen::new_with_presets(
+            Settings::default(),
+            PathBuf::from("/tmp/ws"),
+            vec![preset.clone()],
+        );
+        screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(screen.step, Step::Edit);
+        assert_eq!(screen.settings.providers.len(), 1);
+        assert_eq!(screen.selected_key(), Some("OpenAI Gateway"));
+        assert_eq!(
+            screen.settings.providers["OpenAI Gateway"].alias.as_deref(),
+            Some("OpenAI Gateway")
+        );
+
+        screen.commit(Field::Alias, "work-openai".into()).unwrap();
+        assert_eq!(screen.provider_label("OpenAI Gateway"), "work-openai");
+
+        screen.step = Step::Select;
+        screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(screen.settings.providers.len(), 2);
+        assert!(
+            screen
+                .settings
+                .providers
+                .values()
+                .all(|p| p.kind == "openai")
+        );
+        assert_eq!(
+            screen.settings.providers["OpenAI Gateway-2"]
+                .alias
+                .as_deref(),
+            Some("OpenAI Gateway")
+        );
     }
 
     #[test]
