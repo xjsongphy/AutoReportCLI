@@ -55,7 +55,12 @@ def package_version() -> str:
 
 
 def host_platform() -> PlatformPackage:
-    key = (platform.system().lower(), platform.machine().lower())
+    system = platform.system().lower()
+    # npm uses win32 as the platform identifier, while Python reports
+    # Windows as "Windows" from platform.system().
+    if system == "windows":
+        system = "win32"
+    key = (system, platform.machine().lower())
     slug = HOST_TARGETS.get(key)
     if slug is None:
         raise SystemExit(f"unsupported host: {platform.system()} {platform.machine()}")
