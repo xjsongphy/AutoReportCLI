@@ -7,7 +7,7 @@
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
@@ -48,12 +48,6 @@ impl WorkspaceScreen {
         // Codex renders this onboarding step as a left-aligned full-screen
         // column. Keeping the directory and choices in the normal transcript
         // flow makes the confirmation feel like a gate, not a modal dialog.
-        let content = ratatui::layout::Rect {
-            x: area.x.saturating_add(2),
-            y: area.y,
-            width: area.width.saturating_sub(4),
-            height: area.height,
-        };
         let columns = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -64,7 +58,7 @@ impl WorkspaceScreen {
                 Constraint::Min(1),
                 Constraint::Length(1),
             ])
-            .split(content);
+            .split(area);
 
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -81,7 +75,7 @@ impl WorkspaceScreen {
         f.render_widget(
             Paragraph::new("Do you want AutoReportCLI to use this workspace?".to_string())
                 .wrap(Wrap { trim: true }),
-            columns[1],
+            inset_left(columns[1], 2),
         );
 
         let options = [
@@ -90,18 +84,17 @@ impl WorkspaceScreen {
         ];
         let option_lines = options
             .iter()
-            .map(|(label, selection)| {
+            .enumerate()
+            .map(|(index, (label, selection))| {
                 let selected = self.highlighted == *selection;
-                let marker = if selected { ">" } else { " " };
+                let marker = if selected { "›" } else { " " };
                 let style = if selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(Color::Cyan)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default()
                 };
                 Line::from(vec![
-                    Span::styled(format!("{marker} "), style),
+                    Span::styled(format!("{marker} {}. ", index + 1), style),
                     Span::styled(*label, style),
                 ])
             })
@@ -109,8 +102,8 @@ impl WorkspaceScreen {
         f.render_widget(Paragraph::new(option_lines), columns[3]);
 
         f.render_widget(
-            Paragraph::new("Press Enter to continue").style(Style::default().fg(Color::DarkGray)),
-            columns[5],
+            Paragraph::new("Press enter to continue").style(Style::default().fg(Color::DarkGray)),
+            inset_left(columns[5], 2),
         );
     }
 
@@ -150,6 +143,14 @@ impl WorkspaceScreen {
                 return Ok(outcome);
             }
         }
+    }
+}
+
+fn inset_left(area: Rect, amount: u16) -> Rect {
+    Rect {
+        x: area.x.saturating_add(amount),
+        width: area.width.saturating_sub(amount),
+        ..area
     }
 }
 
@@ -208,9 +209,9 @@ mod tests {
             .join("\n");
 
         assert!(rendered.contains("> You are in /tmp/project"));
-        assert!(rendered.contains("> Yes, continue"));
-        assert!(rendered.contains("  No, quit"));
-        assert!(rendered.contains("Press Enter to continue"));
+        assert!(rendered.contains("› 1. Yes, continue"));
+        assert!(rendered.contains("  2. No, quit"));
+        assert!(rendered.contains("Press enter to continue"));
         assert!(!rendered.contains("After you continue"));
     }
 }

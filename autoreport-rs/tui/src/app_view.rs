@@ -147,11 +147,13 @@ impl Tui {
             .constraints([Constraint::Length(1), Constraint::Length(2)])
             .split(inner);
 
-        let workspace = truncate(
-            &self.workspace_display,
-            inner.width.saturating_sub(32) as usize,
-        );
-        let provider = truncate(&self.provider_id, 24);
+        let ide_width = if self.ide_enabled { 6 } else { 0 };
+        let fixed_width = 13usize + 2 + 2 + ide_width;
+        let available_width = (inner.width as usize).saturating_sub(fixed_width);
+        let provider_width = available_width.min(24).max(1);
+        let workspace_width = available_width.saturating_sub(provider_width);
+        let workspace = truncate(&self.workspace_display, workspace_width.saturating_sub(1));
+        let provider = truncate(&self.provider_id, provider_width.saturating_sub(1));
         let mut identity = vec![
             Span::styled(
                 "AutoReportCLI",
@@ -183,7 +185,7 @@ impl Tui {
             let status = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
             let selected = a == self.focused;
             let label_width = agent_area.width.saturating_sub(2).max(1) as usize;
-            let label = truncate(a.label(), label_width);
+            let label = truncate(a.label(), label_width.saturating_sub(1));
             let marker = if selected { "▸" } else { " " };
             let label_style = Style::default()
                 .fg(agent_color(a))
