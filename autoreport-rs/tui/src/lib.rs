@@ -20,6 +20,7 @@ pub mod model_migration;
 pub mod slash_command;
 pub mod terminal_palette;
 pub mod utils_string;
+pub mod workspace_confirm;
 pub mod wrapping;
 
 pub use app::Tui;

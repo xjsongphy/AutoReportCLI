@@ -94,15 +94,17 @@ autoreport
 /path/to/AutoReportCLI/target/release/autoreport
 ```
 
-首次启动时，AutoReportCLI 会自动创建项目目录结构、写入内置模板、同步外部预设与
-skills，并打开 TUI。
+首次启动时，AutoReportCLI 会先完成 API 和模型配置并确认工作区；确认后才创建项目目录结构并打开
+TUI。内置模板和同步的预设/skills 保存在全局 AutoReport home 中。
 
 ## 配置
 
 Provider 可以通过以下任一方式配置：
 
 - 设置环境变量，例如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`
-- 参考 `autoreport.config.example.yaml` 创建 `autoreport.config.yaml`
+- 将 `autoreport.config.example.toml` 复制为全局
+  `~/.autoreport/config.toml`（也可通过 `AUTOREPORT_HOME` 修改位置），或直接使用
+  `/config` 配置。
 - 在首次启动时使用全屏配置页交互式完成设置
 - `/config` 只配置 API；再用 `/models` 先选择 API、后填写模型名，分别绑定主 agent 与四个 sub agent。首次启动会按 API、模型的顺序打开缺失的配置页。
 
@@ -123,7 +125,21 @@ Provider 可以通过以下任一方式配置：
 ├── Plots/           绘图图表（Plots/Fig）与脚本（Plots/Scripts）
 ├── Tex/             LaTeX 源文件与编译后的 PDF
 ├── Outline/         Main 智能体的大纲与规划
-└── .autoreport/     会话、同步资源、内部元数据
+└── （不再写入 AutoReport 隐藏目录；程序状态统一保存在 ~/.autoreport/）
+```
+
+全局程序状态目录与 Codex 的 home 模型对齐：
+
+```text
+~/.autoreport/
+├── config.toml                         配置
+├── auth.json                           Provider 凭据（支持的平台上权限为 0600）
+├── history.jsonl                       追加式对话历史
+├── skills/                             全局/同步 skills
+├── external/                           同步的 Provider 预设
+├── templates/                          内置报告模板
+├── agents/                             全局提示词覆盖
+└── workspaces/<id>/                    项目 manifest、规则等状态
 ```
 
 ## 开发

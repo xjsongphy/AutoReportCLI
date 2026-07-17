@@ -31,7 +31,7 @@ const TARGETS: [(&str, &str); 2] = [("main", "Main"), ("sub", "Sub agents (all 4
 /// A two-stage model binding editor: select API, then enter model name.
 pub struct ModelScreen {
     pub settings: Settings,
-    pub workspace: PathBuf,
+    pub home: PathBuf,
     step: Step,
     target_selected: usize,
     api_selected: usize,
@@ -41,10 +41,10 @@ pub struct ModelScreen {
 }
 
 impl ModelScreen {
-    pub fn new(settings: Settings, workspace: PathBuf) -> Self {
+    pub fn new(settings: Settings, home: PathBuf) -> Self {
         let mut screen = Self {
             settings,
-            workspace,
+            home,
             step: Step::Target,
             target_selected: 0,
             api_selected: 0,
@@ -444,7 +444,7 @@ impl ModelScreen {
 
     fn handle_preview(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Enter => match save_settings(&self.workspace, &self.settings) {
+            KeyCode::Enter => match save_settings(&self.home, &self.settings) {
                 Ok(()) => Some(Outcome::Saved),
                 Err(error) => {
                     self.error = Some(format!("save failed: {error}"));
@@ -501,7 +501,6 @@ mod tests {
     fn api() -> ProviderConfig {
         ProviderConfig {
             kind: "openai".into(),
-            legacy_model: None,
             api_key: Some("test".into()),
             api_base: None,
             api_key_env: None,

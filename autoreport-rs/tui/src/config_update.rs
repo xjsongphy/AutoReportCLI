@@ -139,11 +139,11 @@ pub struct ConfigScreen {
     pub input: String,
     pub cursor: usize,
     pub error: Option<String>,
-    pub workspace: PathBuf,
+    pub home: PathBuf,
 }
 
 impl ConfigScreen {
-    pub fn new(settings: Settings, workspace: PathBuf) -> Self {
+    pub fn new(settings: Settings, home: PathBuf) -> Self {
         let groups = provider_groups(&settings);
         let active = groups.first().and_then(|g| g.keys.first().cloned());
         let (group_selected, selected_in_group) = active
@@ -169,7 +169,7 @@ impl ConfigScreen {
             input: String::new(),
             cursor: 0,
             error: None,
-            workspace,
+            home,
         }
     }
 
@@ -249,7 +249,6 @@ impl ConfigScreen {
             key.clone(),
             ProviderConfig {
                 kind: "openai".to_string(),
-                legacy_model: None,
                 api_key: None,
                 api_base: None,
                 api_key_env: None,
@@ -693,7 +692,7 @@ impl ConfigScreen {
 
     fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Enter => match save_settings(&self.workspace, &self.settings) {
+            KeyCode::Enter => match save_settings(&self.home, &self.settings) {
                 Ok(()) => Some(Outcome::Saved),
                 Err(e) => {
                     self.error = Some(format!("save failed: {e}"));
@@ -839,7 +838,7 @@ impl ConfigScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autoreport_core::config::{needs_config, save_settings};
+    use autoreport_core::config::{needs_api_config, save_settings};
 
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();
@@ -850,7 +849,6 @@ mod tests {
     fn provider() -> ProviderConfig {
         ProviderConfig {
             kind: "anthropic".into(),
-            legacy_model: None,
             api_key: Some("sk-test".into()),
             api_base: None,
             api_key_env: None,
@@ -912,11 +910,11 @@ mod tests {
         let mut screen = ConfigScreen::new(s, dir.path().to_path_buf());
         // Simulate cancel: no save_settings call happens, only in-memory edits.
         screen.commit(Field::ApiKey, "ignored".into()).ok();
-        assert!(needs_config(dir.path(), &screen.settings));
+        assert!(needs_api_config(&screen.settings));
         // save_settings was never invoked, so the file is absent:
-        assert!(!dir.path().join("autoreport.config.yaml").exists());
+        assert!(!dir.path().join("config.toml").exists());
         // (sanity: an explicit save would flip it)
         save_settings(dir.path(), &screen.settings).unwrap();
-        assert!(dir.path().join("autoreport.config.yaml").exists());
+        assert!(dir.path().join("config.toml").exists());
     }
 }

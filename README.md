@@ -96,15 +96,18 @@ If `autoreport` is not in your `PATH`, use the binary path instead:
 /path/to/AutoReportCLI/target/release/autoreport
 ```
 
-On first launch, AutoReportCLI creates the workspace folders, materializes the
-built-in template, syncs external presets and skills, and opens the TUI.
+On first launch, AutoReportCLI configures the API and models, asks you to
+confirm the workspace, then creates the workspace folders and opens the TUI.
+Built-in templates and synced presets/skills live in the global AutoReport home.
 
 ## Configuration
 
 Configure a provider in any of these ways:
 
 - Set an API key environment variable such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`
-- Create `autoreport.config.yaml` from `autoreport.config.example.yaml`
+- Copy `autoreport.config.example.toml` to `$AUTOREPORT_HOME/config.toml` (default:
+  `~/.autoreport/config.toml`), or use `/config`. `AUTOREPORT_HOME` can point to
+  another global AutoReport home.
 - Use `/config` to configure APIs, then `/models` to bind separate main and sub-agent model names to an API. First launch opens these pages in that order when needed.
 - Let the first-run full-screen setup page guide you through provider selection and saving
 
@@ -125,7 +128,21 @@ Useful CLI flags:
 ├── Plots/           plotting figures (Plots/Fig) and scripts (Plots/Scripts)
 ├── Tex/             LaTeX sources and compiled PDF
 ├── Outline/         main agent planning output
-└── .autoreport/     sessions, synced assets, internal metadata
+└── (no AutoReport metadata files; program state lives in ~/.autoreport/)
+```
+
+Global program state follows Codex's home-directory model:
+
+```text
+~/.autoreport/
+├── config.toml
+├── auth.json         provider credentials (mode 0600 where supported)
+├── history.jsonl                       append-only conversation history
+├── skills/          global skills and synced skills
+├── external/        synced provider presets
+├── templates/       bundled report templates
+├── agents/          global prompt overrides
+└── workspaces/<id>/                    manifests, rules, and workspace metadata
 ```
 
 ## Development

@@ -1,8 +1,6 @@
-//! Compile-time-embedded *report template* so the binary can seed a new
-//! project's LaTeX without any network access. Skills are intentionally NOT
-//! bundled here: like AutoReport, they are pulled from the `xjsongphy/skills`
-//! repository at startup (see `sync.rs`), and the cc-switch provider presets
-//! from the `farion1231/cc-switch` repository.
+//! Compile-time-embedded program templates. They live in AutoReport's global
+//! home, matching Codex's global skills/config resources; report/data output
+//! remains in the selected workspace.
 
 use std::path::Path;
 
@@ -13,19 +11,19 @@ struct Bundled {
 
 const BUNDLED: &[Bundled] = &[
     Bundled {
-        rel: "References/templates/template_mpl.tex",
+        rel: "templates/template_mpl.tex",
         content: include_str!("../../../templates/reports/template_mpl.tex"),
     },
     Bundled {
-        rel: "References/templates/mpltx.cls",
+        rel: "templates/mpltx.cls",
         content: include_str!("../../../templates/reports/mpltx.cls"),
     },
 ];
 
 /// Write every bundled default that is missing on disk. Never overwrites.
-pub fn materialize(workspace: &Path) {
+pub fn materialize(home: &Path) {
     for item in BUNDLED {
-        let target = workspace.join(item.rel);
+        let target = home.join(item.rel);
         if target.exists() {
             continue;
         }

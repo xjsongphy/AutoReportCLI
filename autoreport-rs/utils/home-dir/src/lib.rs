@@ -1,5 +1,6 @@
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use dirs::home_dir;
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 /// Returns the path to the AutoReport configuration directory, which can be
@@ -15,6 +16,29 @@ pub fn find_autoreport_home() -> std::io::Result<AbsolutePathBuf> {
         .ok()
         .filter(|val| !val.is_empty());
     find_autoreport_home_from_env(autoreport_home_env.as_deref())
+}
+
+/// Return a stable, filesystem-safe identifier for a workspace.
+///
+/// Codex keeps process state under one global home and keys workspace-specific
+/// state from the workspace path. AutoReport uses the same arrangement for
+/// manifests and exec-policy amendments.
+pub fn workspace_id(workspace: &std::path::Path) -> String {
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    // Keep the complete digest. A shortened hash makes an already unlikely
+    // collision needlessly easier, and a collision here would mix two
+    // projects' persistent conversations and policy state.
+    format!("{digest:x}")
+}
+
+/// Global directory for state associated with one workspace.
+pub fn workspace_state_dir(home: &std::path::Path, workspace: &std::path::Path) -> PathBuf {
+    home.join("workspaces").join(workspace_id(workspace))
 }
 
 fn find_autoreport_home_from_env(
@@ -66,7 +90,7 @@ fn find_autoreport_home_from_env(
 
 #[cfg(test)]
 mod tests {
-    use super::find_autoreport_home_from_env;
+    use super::{find_autoreport_home_from_env, workspace_id, workspace_state_dir};
     use autoreport_utils_absolute_path::AbsolutePathBuf;
     use dirs::home_dir;
     use pretty_assertions::assert_eq;
@@ -134,5 +158,25 @@ mod tests {
         expected.push(".autoreport");
         let expected = AbsolutePathBuf::from_absolute_path(expected).expect("absolute home");
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn workspace_state_is_stable_and_isolated() {
+        let root = TempDir::new().expect("workspace root");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let home = root.path().join("home");
+
+        assert_ne!(workspace_id(&first), workspace_id(&second));
+        assert_eq!(
+            workspace_state_dir(&home, &first),
+            workspace_state_dir(&home, &first)
+        );
+        assert_ne!(
+            workspace_state_dir(&home, &first),
+            workspace_state_dir(&home, &second)
+        );
     }
 }
