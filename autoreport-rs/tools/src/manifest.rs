@@ -1,5 +1,5 @@
 //! Manifest store: agent-local file visibility plus editable descriptions and
-//! notes. Stored as JSON under `.autoreport/manifests/`.
+//! notes. Stored as JSON under the global workspace state directory.
 
 use crate::registry::{Tool, ToolOutput, arg_opt_str};
 use async_trait::async_trait;
@@ -39,8 +39,8 @@ pub struct ManifestStore {
 }
 
 impl ManifestStore {
-    pub fn new(workspace: &Path) -> Self {
-        let dir = workspace.join(".autoreport").join("manifests");
+    pub fn new(workspace: &Path, state_dir: &Path) -> Self {
+        let dir = state_dir.join("manifests");
         let _ = std::fs::create_dir_all(&dir);
         Self {
             workspace: workspace.to_path_buf(),
@@ -126,10 +126,12 @@ impl ManifestStore {
         let mut out = Vec::new();
         for rel_dir in Self::manifest_dirs(agent) {
             let dir = self.workspace.join(rel_dir);
-            if !dir.exists() {
+            let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
                 continue;
+            };
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                self.walk_dir(&dir, &mut out);
             }
-            self.walk_dir(&dir, &mut out);
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
         out
@@ -145,7 +147,16 @@ impl ManifestStore {
             let path = entry.path();
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
-            if path.is_dir() {
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            // Manifests describe files produced inside the workspace. Do not
+            // follow symlinks: a linked directory can create cycles and a
+            // linked file can expose content outside the project boundary.
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
                 if Self::should_ignore_dir(&file_name) {
                     continue;
                 }
@@ -582,7 +593,7 @@ mod tests {
         )
         .unwrap();
 
-        let store = ManifestStore::new(workspace.path());
+        let store = ManifestStore::new(workspace.path(), workspace.path());
         let mut manifest = store.load(AgentType::Plotting);
         assert_eq!(manifest.files.len(), 1);
         manifest.files[0].description = "main plotting script".into();
@@ -608,5 +619,25 @@ mod tests {
     fn notes_patch_updates_text() {
         let updated = apply_notes_patch("alpha\nbeta\n", "@@\n alpha\n-beta\n+gamma\n").unwrap();
         assert_eq!(updated, "alpha\ngamma\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_scan_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = temp_workspace();
+        std::fs::create_dir_all(workspace.path().join("Plots")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "outside\n").unwrap();
+        symlink(
+            outside.path().join("secret.txt"),
+            workspace.path().join("Plots/linked.txt"),
+        )
+        .unwrap();
+
+        let store = ManifestStore::new(workspace.path(), workspace.path());
+        let manifest = store.load(AgentType::Plotting);
+        assert!(manifest.files.is_empty());
     }
 }

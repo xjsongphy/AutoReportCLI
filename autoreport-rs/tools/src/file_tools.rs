@@ -26,20 +26,69 @@ impl FsCtx {
     }
 
     pub fn assert_write_allowed(&self, target: &Path) -> Result<(), String> {
-        let metadata = self.workspace.join(".autoreport");
-        if path_eq(target, &metadata) || path_starts_with(target, &metadata) {
+        let canonical_workspace = canonicalize_with_missing_tail(&self.workspace)?;
+        let canonical_target = canonicalize_with_missing_tail(target)?;
+        let metadata = canonicalize_with_missing_tail(&self.workspace.join(".autoreport"))?;
+        if path_eq(&canonical_target, &metadata) || path_starts_with(&canonical_target, &metadata) {
             return Err("writing inside .autoreport is not permitted".to_string());
         }
         match &self.write_dir {
-            Some(dir) if path_starts_with(target, dir) => Ok(()),
-            Some(dir) => Err(format!(
-                "this agent may only write under {}; '{}' is outside it",
-                dir.display(),
-                target.display()
-            )),
+            Some(dir) => {
+                let canonical_dir = canonicalize_with_missing_tail(dir)?;
+                if !path_starts_with(&canonical_dir, &canonical_workspace) {
+                    return Err(format!(
+                        "agent write directory '{}' is outside the workspace",
+                        dir.display()
+                    ));
+                }
+                if path_starts_with(&canonical_target, &canonical_dir) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "this agent may only write under {}; '{}' is outside it",
+                        dir.display(),
+                        target.display()
+                    ))
+                }
+            }
             None => Err("this agent has no write access".to_string()),
         }
     }
+}
+
+/// Canonicalize every existing component while preserving a missing tail.
+/// This makes write checks reject symlinked ancestors without requiring the
+/// target file to exist yet.
+fn canonicalize_with_missing_tail(path: &Path) -> Result<PathBuf, String> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name() else {
+                    return Err(format!("cannot resolve write path '{}'", path.display()));
+                };
+                missing.push(name.to_os_string());
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| format!("cannot resolve write path '{}'", path.display()))?;
+            }
+            Err(err) => {
+                return Err(format!(
+                    "cannot resolve write path '{}': {err}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    let mut canonical = std::fs::canonicalize(existing)
+        .map_err(|err| format!("resolving write path '{}': {err}", path.display()))?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
 }
 
 /// Resolve a possibly-relative path against the workspace and verify the
@@ -140,6 +189,22 @@ mod tests {
         );
         assert!(
             ctx.assert_write_allowed(&workspace.join("Theory").join("x.md"))
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_cannot_escape_write_dir() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let write_dir = root.path().join("Plots");
+        std::fs::create_dir_all(&write_dir).unwrap();
+        symlink("/tmp/does-not-exist-autoreport", write_dir.join("link")).unwrap();
+        let ctx = FsCtx::new(root.path().to_path_buf(), Some(write_dir.clone()));
+        assert!(
+            ctx.assert_write_allowed(&write_dir.join("link/new.txt"))
                 .is_err()
         );
     }

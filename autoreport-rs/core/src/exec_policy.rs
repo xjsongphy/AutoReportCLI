@@ -1,6 +1,6 @@
 //! Codex-compatible command-prefix policy for `exec`.
 //!
-//! Rules live in `.autoreport/rules/*.rules` and use Codex's
+//! Rules live in the global workspace state `rules/*.rules` and use Codex's
 //! `prefix_rule(pattern = [...], decision = "...")` shape. This module owns
 //! loading, evaluation, session approval caching, and safe persistence of the
 //! narrow allow-prefix amendments created by the approval UI.
@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const RULES_DIR: &str = ".autoreport/rules";
+const RULES_DIR: &str = "rules";
 const DEFAULT_RULES_FILE: &str = "default.rules";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,14 +89,14 @@ struct PolicyState {
 /// Shared policy manager, inherited by every agent loop in a workspace.
 #[derive(Debug, Clone)]
 pub struct ExecPolicyManager {
-    workspace: PathBuf,
+    state_dir: PathBuf,
     state: Arc<Mutex<PolicyState>>,
 }
 
 impl ExecPolicyManager {
     pub fn empty(workspace: &Path) -> Self {
         Self {
-            workspace: workspace.to_path_buf(),
+            state_dir: workspace.to_path_buf(),
             state: Arc::new(Mutex::new(PolicyState::default())),
         }
     }
@@ -104,7 +104,7 @@ impl ExecPolicyManager {
     pub fn load(workspace: &Path) -> Result<Self, String> {
         let rules = load_rules(workspace)?;
         Ok(Self {
-            workspace: workspace.to_path_buf(),
+            state_dir: workspace.to_path_buf(),
             state: Arc::new(Mutex::new(PolicyState {
                 rules,
                 session_allow_prefixes: HashSet::new(),
@@ -125,12 +125,13 @@ impl ExecPolicyManager {
             };
         }
         let state = self.state.lock().expect("execpolicy lock poisoned");
-        if commands.iter().all(|command| {
+        let session_allows = commands.iter().all(|command| {
             state
                 .session_allow_prefixes
                 .iter()
                 .any(|prefix| command.starts_with(prefix))
-        }) {
+        });
+        if session_allows && !(requests_escalation && contains_untrusted_shell_syntax(command)) {
             return ExecApprovalRequirement::Skip {
                 allow_escalated_exec: requests_escalation,
             };
@@ -154,6 +155,17 @@ impl ExecPolicyManager {
             }
         }
         drop(state);
+
+        // Prefix rules intentionally allow additional ordinary arguments, but
+        // shell syntax can execute a second command before the approved
+        // program runs. Never let a rule or session approval turn such a
+        // command into an unrestricted escalation.
+        if requests_escalation
+            && contains_untrusted_shell_syntax(command)
+            && decision == Decision::Allow
+        {
+            decision = Decision::Prompt;
+        }
 
         match decision {
             Decision::Allow => ExecApprovalRequirement::Skip {
@@ -191,7 +203,7 @@ impl ExecPolicyManager {
         if is_interpreter_prefix(command) {
             return Err("refusing to persist an interpreter or shell prefix rule".into());
         }
-        let rules_dir = self.workspace.join(RULES_DIR);
+        let rules_dir = self.state_dir.join(RULES_DIR);
         fs::create_dir_all(&rules_dir)
             .map_err(|err| format!("failed to create execpolicy rules directory: {err}"))?;
         let path = rules_dir.join(DEFAULT_RULES_FILE);
@@ -537,6 +549,48 @@ fn push_command(commands: &mut Vec<Vec<String>>, current: &mut String) {
     current.clear();
 }
 
+/// Return true for shell constructs that are not represented by the simple
+/// command-prefix tokenizer. These constructs are safe to run under the
+/// normal OS sandbox, but must require a fresh approval before escalation.
+fn contains_untrusted_shell_syntax(script: &str) -> bool {
+    let chars: Vec<char> = script.chars().collect();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        match quote {
+            Some('\'') => {
+                if character == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    quote = None;
+                } else if character == '`'
+                    || (character == '$' && chars.get(index + 1) == Some(&'('))
+                {
+                    return true;
+                }
+            }
+            None => match character {
+                '\'' | '"' => quote = Some(character),
+                '`' | '<' | '>' => return true,
+                '$' if chars.get(index + 1) == Some(&'(') => return true,
+                _ => {}
+            },
+            _ => unreachable!(),
+        }
+        index += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,7 +600,7 @@ mod tests {
         let rules = parse_rules(r#"prefix_rule(pattern = ["git", ["status", "log"]], decision = "allow")
 prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", justification = "review status")"#).unwrap();
         let manager = ExecPolicyManager {
-            workspace: PathBuf::from("/tmp"),
+            state_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(PolicyState {
                 rules,
                 session_allow_prefixes: HashSet::new(),
@@ -565,7 +619,7 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
     #[test]
     fn never_rejects_rule_prompts_and_escalation() {
         let manager = ExecPolicyManager {
-            workspace: PathBuf::from("/tmp"),
+            state_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(PolicyState::default())),
         };
         assert!(matches!(
@@ -577,7 +631,7 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
     #[test]
     fn never_allows_sandboxed_report_scripts_but_rejects_inline_interpreters() {
         let manager = ExecPolicyManager {
-            workspace: PathBuf::from("/tmp"),
+            state_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(PolicyState::default())),
         };
         assert!(matches!(
@@ -593,7 +647,7 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
     #[test]
     fn session_approval_skips_subsequent_prompt() {
         let manager = ExecPolicyManager {
-            workspace: PathBuf::from("/tmp"),
+            state_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(PolicyState::default())),
         };
         assert!(matches!(
@@ -608,7 +662,7 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
     }
 
     #[test]
-    fn persisted_approval_reloads_from_workspace_rules() {
+    fn persisted_approval_reloads_from_global_rules() {
         let workspace = tempfile::tempdir().expect("workspace");
         let manager = ExecPolicyManager::empty(workspace.path());
         manager
@@ -633,5 +687,27 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
         let workspace = tempfile::tempdir().expect("workspace");
         let manager = ExecPolicyManager::empty(workspace.path());
         assert!(manager.persist_allow_prefix("python3 -c x").is_err());
+    }
+
+    #[test]
+    fn approved_prefix_cannot_escalate_shell_syntax() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = ExecPolicyManager::empty(workspace.path());
+        manager
+            .persist_allow_prefix("git status")
+            .expect("persist rule");
+
+        assert!(matches!(
+            manager.evaluate(
+                "git status $(touch outside.txt)",
+                AskForApproval::OnRequest,
+                true
+            ),
+            ExecApprovalRequirement::NeedsApproval { .. }
+        ));
+        assert!(matches!(
+            manager.evaluate("git status > outside.txt", AskForApproval::Never, true),
+            ExecApprovalRequirement::Forbidden { .. }
+        ));
     }
 }

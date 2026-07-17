@@ -3,6 +3,7 @@
 use super::FsCtx;
 use crate::file_tools::resolve_within;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ---- codex data structures (verbatim semantics) ----
@@ -524,37 +525,70 @@ fn apply_replacements(
 
 // ---- application (std::fs + write isolation) ----
 
+enum PreparedChange {
+    Add {
+        path: PathBuf,
+        contents: String,
+    },
+    Delete {
+        path: PathBuf,
+    },
+    Update {
+        path: PathBuf,
+        contents: String,
+    },
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+        contents: String,
+    },
+}
+
 pub fn apply(patch: &str, ctx: &FsCtx) -> Result<Vec<serde_json::Value>, String> {
     let hunks = parse(patch)?;
     if hunks.is_empty() {
         return Err("No files were modified.".into());
     }
-    let mut report = Vec::new();
+
+    // Resolve and validate every hunk, including all context matches, before
+    // touching the filesystem. A later bad hunk must not leave earlier hunks
+    // applied.
+    let mut changes = Vec::with_capacity(hunks.len());
     for hunk in &hunks {
         match hunk {
             Hunk::AddFile { path, contents } => {
                 let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
                 ctx.assert_write_allowed(&resolved)?;
-                write_with_parents(&resolved, contents)?;
-                report.push(json!({"add": resolved.display().to_string()}));
+                if std::fs::symlink_metadata(&resolved)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err(format!("{} is a directory", resolved.display()));
+                }
+                changes.push(PreparedChange::Add {
+                    path: resolved,
+                    contents: contents.clone(),
+                });
             }
             Hunk::DeleteFile { path } => {
                 let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
                 ctx.assert_write_allowed(&resolved)?;
-                if resolved.is_dir() {
+                if std::fs::symlink_metadata(&resolved)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                {
                     return Err(format!("{} is a directory", resolved.display()));
                 }
                 // A delete targeting a missing file is an error, not a
                 // silent success — the model should learn the path was
                 // wrong (codex aborts the patch on NotFound).
-                if !resolved.exists() {
+                if std::fs::symlink_metadata(&resolved).is_err() {
                     return Err(format!(
                         "Failed to delete file {}: not found",
                         resolved.display()
                     ));
                 }
-                std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
-                report.push(json!({"delete": resolved.display().to_string()}));
+                changes.push(PreparedChange::Delete { path: resolved });
             }
             Hunk::UpdateFile {
                 path,
@@ -579,20 +613,121 @@ pub fn apply(patch: &str, ctx: &FsCtx) -> Result<Vec<serde_json::Value>, String>
                 if let Some(dest) = move_path {
                     let dest_abs = resolve_within(&dest.to_string_lossy(), &ctx.workspace)?;
                     ctx.assert_write_allowed(&dest_abs)?;
-                    write_with_parents(&dest_abs, &new_contents)?;
-                    std::fs::remove_file(&resolved).map_err(|e| e.to_string())?;
-                    report.push(json!({"move": resolved.display().to_string(), "to": dest_abs.display().to_string()}));
+                    if resolved == dest_abs {
+                        return Err(format!("cannot move {} onto itself", resolved.display()));
+                    }
+                    if std::fs::symlink_metadata(&dest_abs)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false)
+                    {
+                        return Err(format!("{} is a directory", dest_abs.display()));
+                    }
+                    changes.push(PreparedChange::Move {
+                        from: resolved,
+                        to: dest_abs,
+                        contents: new_contents,
+                    });
                 } else {
-                    std::fs::write(&resolved, new_contents).map_err(|e| e.to_string())?;
-                    report.push(json!({"update": resolved.display().to_string()}));
+                    changes.push(PreparedChange::Update {
+                        path: resolved,
+                        contents: new_contents,
+                    });
                 }
             }
         }
     }
+
+    let mut backups = HashMap::<PathBuf, Option<Vec<u8>>>::new();
+    for path in changes.iter().flat_map(PreparedChange::paths) {
+        if !backups.contains_key(path) {
+            let contents = match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.is_file() => Some(
+                    std::fs::read(path)
+                        .map_err(|e| format!("reading backup {}: {e}", path.display()))?,
+                ),
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(format!("refusing to modify symlink {}", path.display()));
+                }
+                Ok(_) => return Err(format!("{} is not a regular file", path.display())),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => return Err(format!("reading {}: {err}", path.display())),
+            };
+            backups.insert(path.clone(), contents);
+        }
+    }
+
+    let mut report = Vec::new();
+    let result = (|| {
+        for change in &changes {
+            match change {
+                PreparedChange::Add { path, contents } => {
+                    write_with_parents(path, contents)?;
+                    report.push(json!({"add": path.display().to_string()}));
+                }
+                PreparedChange::Delete { path } => {
+                    std::fs::remove_file(path).map_err(|e| e.to_string())?;
+                    report.push(json!({"delete": path.display().to_string()}));
+                }
+                PreparedChange::Update { path, contents } => {
+                    std::fs::write(path, contents).map_err(|e| e.to_string())?;
+                    report.push(json!({"update": path.display().to_string()}));
+                }
+                PreparedChange::Move { from, to, contents } => {
+                    write_with_parents(to, contents)?;
+                    std::fs::remove_file(from).map_err(|e| e.to_string())?;
+                    report.push(
+                        json!({"move": from.display().to_string(), "to": to.display().to_string()}),
+                    );
+                }
+            }
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(err) = result {
+        if let Err(restore_err) = restore_backups(&backups) {
+            return Err(format!("{err}; rollback failed: {restore_err}"));
+        }
+        return Err(err);
+    }
     Ok(report)
 }
 
+impl PreparedChange {
+    fn paths(&self) -> Vec<&PathBuf> {
+        match self {
+            Self::Add { path, .. } | Self::Delete { path } | Self::Update { path, .. } => {
+                vec![path]
+            }
+            Self::Move { from, to, .. } => vec![from, to],
+        }
+    }
+}
+
+fn restore_backups(backups: &HashMap<PathBuf, Option<Vec<u8>>>) -> Result<(), String> {
+    for (path, contents) in backups {
+        match contents {
+            Some(contents) => write_bytes_with_parents(path, contents),
+            None => match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.is_file() => {
+                    std::fs::remove_file(path).map_err(|e| e.to_string())
+                }
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    std::fs::remove_file(path).map_err(|e| e.to_string())
+                }
+                Ok(_) => Err(format!("cannot remove non-file {}", path.display())),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err.to_string()),
+            },
+        }?;
+    }
+    Ok(())
+}
+
 fn write_with_parents(path: &Path, contents: &str) -> Result<(), String> {
+    write_bytes_with_parents(path, contents.as_bytes())
+}
+
+fn write_bytes_with_parents(path: &Path, contents: &[u8]) -> Result<(), String> {
     match std::fs::write(path, contents) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -710,6 +845,33 @@ mod tests {
         assert!(
             err.contains("not found"),
             "expected not-found error, got: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn later_hunk_failure_does_not_partially_apply_earlier_hunks() {
+        let dir = std::env::temp_dir().join(format!("ap-rollback-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "old\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "keep\n").unwrap();
+        let patch = "*** Begin Patch
+*** Update File: a.txt
+@@
+-old
++new
+*** Update File: b.txt
+@@
+-missing
++changed
+*** End Patch";
+
+        let err = apply(patch, &ctx(&dir)).unwrap_err();
+        assert!(err.contains("Failed to find expected lines"));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "old\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "keep\n"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
