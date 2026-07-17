@@ -309,7 +309,7 @@ impl ConfigScreen {
         let inner = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
+                Constraint::Length(2),
                 Constraint::Min(3),
                 Constraint::Length(2),
             ])
@@ -331,37 +331,27 @@ impl ConfigScreen {
     }
 
     fn draw_header(&self, f: &mut Frame<'_>, area: Rect) {
-        let meta_line = Line::from(vec![
+        let line = Line::from(vec![
             kv_label("group"),
             kv_value(&self.group_summary(), Color::Cyan),
-            Span::raw("    "),
+            Span::raw("   "),
             kv_label("API"),
             kv_value(self.selected_key().unwrap_or("-"), Color::Yellow),
-            Span::raw("    "),
         ]);
-        let groups_line = Line::from(vec![
-            kv_label("groups"),
-            Span::styled(
-                format!("[{}]", self.group_summary()),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]);
-        let para = Paragraph::new(vec![meta_line, Line::raw(""), groups_line]);
+        let para = Paragraph::new(line).block(Block::default().borders(Borders::BOTTOM));
         f.render_widget(para, area);
     }
 
     fn draw_select(&mut self, f: &mut Frame<'_>, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(3)])
+            .constraints([Constraint::Length(2), Constraint::Min(3)])
             .split(area);
         self.draw_group_tabs(f, chunks[0]);
 
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(chunks[1]);
 
         let group_keys = self
@@ -401,7 +391,7 @@ impl ConfigScreen {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             )
-            .block(Block::default().borders(Borders::TOP).title(Span::styled(
+            .block(Block::default().borders(Borders::ALL).title(Span::styled(
                 format!(" {} ", self.group_summary()),
                 Style::default().fg(Color::Cyan),
             )));
@@ -440,8 +430,11 @@ impl ConfigScreen {
             }
             spans.push(Span::raw(" "));
         }
-        let para =
-            Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM));
+        let para = Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .title(Span::styled(" Groups ", Style::default().fg(Color::Cyan))),
+        );
         f.render_widget(para, area);
     }
 
@@ -491,7 +484,7 @@ impl ConfigScreen {
         let para = Paragraph::new(lines)
             .block(
                 Block::default()
-                    .borders(Borders::TOP)
+                    .borders(Borders::ALL)
                     .title(Span::styled(" Details ", Style::default().fg(Color::Cyan))),
             )
             .wrap(Wrap { trim: false });
@@ -510,16 +503,27 @@ impl ConfigScreen {
                 .add_modifier(Modifier::BOLD)
                 .fg(Color::Yellow),
         )));
+        lines.push(Line::from(Span::styled(
+            "Enter a value, then move to Save",
+            Style::default().fg(Color::DarkGray),
+        )));
         lines.push(Line::raw(""));
 
-        for field in Field::ALL {
+        for field in [Field::ApiBase, Field::ApiKey] {
             let value: String = match field {
                 Field::ApiBase => provider.api_base.clone().unwrap_or_default(),
                 Field::ApiKey => provider
                     .api_key
                     .clone()
-                    .map(|k| format!("{}••••", &k[..k.len().min(4)]))
-                    .unwrap_or_else(|| "(env)".into()),
+                    .map(|_| "•••••••• (stored securely)".into())
+                    .unwrap_or_else(|| {
+                        provider
+                            .api_key_env
+                            .as_deref()
+                            .or_else(|| provider.env_key())
+                            .map(|env| format!("(from {env})"))
+                            .unwrap_or_else(|| "(not set)".into())
+                    }),
                 Field::Save | Field::Cancel => String::new(),
             };
 
@@ -535,12 +539,27 @@ impl ConfigScreen {
                 let before: String = self.input[..self.cursor].chars().collect();
                 let cur: String = self.input[self.cursor..].chars().take(1).collect();
                 let after: String = self.input[self.cursor + cur.len()..].chars().collect();
-                spans.push(Span::raw(before));
+                let mask = field == Field::ApiKey;
+                spans.push(Span::raw(if mask {
+                    "•".repeat(before.chars().count())
+                } else {
+                    before
+                }));
                 spans.push(Span::styled(
-                    if cur.is_empty() { " ".into() } else { cur },
+                    if cur.is_empty() {
+                        " ".into()
+                    } else if mask {
+                        "•".into()
+                    } else {
+                        cur
+                    },
                     Style::default().bg(Color::DarkGray),
                 ));
-                spans.push(Span::raw(after));
+                spans.push(Span::raw(if mask {
+                    "•".repeat(after.chars().count())
+                } else {
+                    after
+                }));
             } else {
                 spans.push(Span::raw(value));
             }
@@ -556,18 +575,85 @@ impl ConfigScreen {
             lines.push(line);
         }
 
-        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+        for action in [Field::Save, Field::Cancel] {
+            let focused = self.field == action;
+            let mut line = Line::from(Span::styled(
+                action.label(),
+                Style::default()
+                    .fg(if action == Field::Save {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if focused {
+                line = line.style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+            lines.push(line);
+        }
+
+        let para = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(Span::styled(
+                " Edit provider ",
+                Style::default().fg(Color::Cyan),
+            )))
+            .wrap(Wrap { trim: false });
         f.render_widget(para, area);
     }
 
     fn draw_preview(&self, f: &mut Frame<'_>, area: Rect) {
-        let yaml = serde_yaml::to_string(&self.settings).unwrap_or_default();
-        let para = Paragraph::new(yaml)
+        let Some(provider) = self.selected_provider() else {
+            return;
+        };
+        let key_status = if provider
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+        {
+            "configured · stored securely in auth.json"
+        } else if self.key_resolvable() {
+            "resolved from environment"
+        } else {
+            "not configured"
+        };
+        let api_base = provider.api_base.as_deref().unwrap_or("(default)");
+        let api_key_env = provider
+            .api_key_env
+            .as_deref()
+            .or_else(|| provider.env_key())
+            .unwrap_or("-");
+        let lines = vec![
+            Line::from(Span::styled(
+                "Review this API before saving",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::raw(""),
+            detail_line("provider", self.selected_key().unwrap_or("-")),
+            detail_line("kind", &provider.kind),
+            detail_line("api_base", api_base),
+            detail_line("api_key", key_status),
+            detail_line("env var", api_key_env),
+            Line::raw(""),
+            Line::from(Span::styled(
+                "The public config omits the key; auth.json stores it with restricted permissions.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+        let para = Paragraph::new(lines)
             .style(Style::default().fg(Color::Gray))
-            .block(Block::default().borders(Borders::TOP).title(Span::styled(
-                " Preview (Enter=save) ",
+            .block(Block::default().borders(Borders::ALL).title(Span::styled(
+                " Review & Save ",
                 Style::default().fg(Color::Cyan),
-            )));
+            )))
+            .wrap(Wrap { trim: true });
         f.render_widget(para, area);
     }
 
@@ -892,6 +978,32 @@ mod tests {
             screen.settings.providers["a"].api_base.as_deref(),
             Some("https://api.example.com/v1")
         );
+    }
+
+    #[test]
+    fn save_flow_persists_api_key_to_private_auth_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut screen = ConfigScreen::new(
+            settings_with(
+                "a",
+                ProviderConfig {
+                    api_key: None,
+                    ..provider()
+                },
+            ),
+            dir.path().to_path_buf(),
+        );
+        screen.commit(Field::ApiKey, "sk-saved".into()).unwrap();
+        screen.step = Step::Preview;
+
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Outcome::Saved)
+        );
+        let auth = std::fs::read_to_string(dir.path().join("auth.json")).unwrap();
+        assert!(auth.contains("\"a\": \"sk-saved\""));
+        let public_config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(!public_config.contains("sk-saved"));
     }
 
     #[test]
