@@ -301,7 +301,8 @@ fn extract_env_block(obj: &str) -> std::collections::HashMap<String, String> {
             if c.is_whitespace() {
                 break;
             }
-            key_end = chars.next().unwrap().0 + 1;
+            let (key_index, key_char) = chars.next().unwrap();
+            key_end = key_index + key_char.len_utf8();
         }
         let key = body[key_start..key_end]
             .trim()
@@ -651,6 +652,23 @@ mod tests {
         let presets = parse_presets(body, "openai");
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "Quoted");
+        assert_eq!(presets[0].base_url, "https://example.test/v1");
+        assert_eq!(presets[0].env_key.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn parses_env_keys_with_unicode_punctuation() {
+        let body = r#"export const providerPresets = [{
+  name: "Unicode",
+  settingsConfig: { env: {
+    "备注，说明": "ignored",
+    "OPENAI_BASE_URL": "https://example.test/v1",
+    "OPENAI_API_KEY": ""
+  }}
+}];"#;
+        let presets = parse_presets(body, "openai");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "Unicode");
         assert_eq!(presets[0].base_url, "https://example.test/v1");
         assert_eq!(presets[0].env_key.as_deref(), Some("OPENAI_API_KEY"));
     }
