@@ -35,6 +35,7 @@ pub struct ModelScreen {
     step: Step,
     target_selected: usize,
     api_selected: usize,
+    api_scroll_offset: usize,
     input: String,
     cursor: usize,
     error: Option<String>,
@@ -48,6 +49,7 @@ impl ModelScreen {
             step: Step::Target,
             target_selected: 0,
             api_selected: 0,
+            api_scroll_offset: 0,
             input: String::new(),
             cursor: 0,
             error: None,
@@ -98,6 +100,7 @@ impl ModelScreen {
             .position(|key| key == &self.target().provider)
             .unwrap_or(0)
             .min(keys.len().saturating_sub(1));
+        self.api_scroll_offset = 0;
     }
 
     fn selected_api(&self) -> Option<String> {
@@ -244,7 +247,7 @@ impl ModelScreen {
         );
     }
 
-    fn draw_apis(&self, f: &mut Frame<'_>, area: Rect) {
+    fn draw_apis(&mut self, f: &mut Frame<'_>, area: Rect) {
         let keys = self.api_keys();
         let mut items = keys
             .iter()
@@ -266,7 +269,7 @@ impl ModelScreen {
                 Style::default().fg(Color::Yellow),
             )));
         }
-        let mut state = ListState::default();
+        let mut state = ListState::default().with_offset(self.api_scroll_offset);
         state.select((!keys.is_empty()).then_some(self.api_selected));
         f.render_stateful_widget(
             List::new(items)
@@ -283,6 +286,7 @@ impl ModelScreen {
             area,
             &mut state,
         );
+        self.api_scroll_offset = state.offset();
     }
 
     fn draw_model(&self, f: &mut Frame<'_>, area: Rect) {

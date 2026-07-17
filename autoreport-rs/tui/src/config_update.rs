@@ -152,6 +152,8 @@ pub struct ConfigScreen {
     pub group_selected: usize,
     pub selected_in_group: usize,
     pub preset_selected: usize,
+    provider_scroll_offset: usize,
+    preset_scroll_offset: usize,
     pub step: Step,
     pub field: Field,
     /// True while typing into `field` (the input buffer is live).
@@ -193,6 +195,8 @@ impl ConfigScreen {
             group_selected,
             selected_in_group,
             preset_selected: 0,
+            provider_scroll_offset: 0,
+            preset_scroll_offset: 0,
             step: Step::Select,
             field: Field::ApiBase,
             editing: false,
@@ -268,6 +272,7 @@ impl ConfigScreen {
             .unwrap_or((0, 0));
         self.group_selected = group_selected;
         self.selected_in_group = selected_in_group;
+        self.provider_scroll_offset = 0;
     }
 
     /// Add an OpenAI-compatible API entry so first-run setup remains usable
@@ -475,7 +480,7 @@ impl ConfigScreen {
                 ListItem::new(line)
             })
             .collect();
-        let mut state = ListState::default();
+        let mut state = ListState::default().with_offset(self.provider_scroll_offset);
         state.select(Some(self.selected_in_group));
         let list = List::new(items)
             .highlight_style(
@@ -489,11 +494,12 @@ impl ConfigScreen {
                 Style::default().fg(Color::Cyan),
             )));
         f.render_stateful_widget(list, columns[0], &mut state);
+        self.provider_scroll_offset = state.offset();
 
         self.draw_provider_details(f, columns[1]);
     }
 
-    fn draw_add(&self, f: &mut Frame<'_>, area: Rect) {
+    fn draw_add(&mut self, f: &mut Frame<'_>, area: Rect) {
         let items = if self.presets.is_empty() {
             vec![ListItem::new(Line::styled(
                 "No preset templates available; press Esc",
@@ -524,7 +530,7 @@ impl ConfigScreen {
                 })
                 .collect()
         };
-        let mut state = ListState::default();
+        let mut state = ListState::default().with_offset(self.preset_scroll_offset);
         state.select((!self.presets.is_empty()).then_some(self.preset_selected));
         f.render_stateful_widget(
             List::new(items)
@@ -542,6 +548,7 @@ impl ConfigScreen {
             area,
             &mut state,
         );
+        self.preset_scroll_offset = state.offset();
     }
 
     fn draw_group_tabs(&self, f: &mut Frame<'_>, area: Rect) {
@@ -865,6 +872,7 @@ impl ConfigScreen {
                     self.error = Some("no preset templates available".into());
                 } else {
                     self.preset_selected = 0;
+                    self.preset_scroll_offset = 0;
                     self.step = Step::Add;
                     self.error = None;
                 }
@@ -877,6 +885,7 @@ impl ConfigScreen {
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.group_selected > 0 {
                     self.group_selected -= 1;
+                    self.provider_scroll_offset = 0;
                     let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
                     self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
                 }
@@ -885,6 +894,7 @@ impl ConfigScreen {
             KeyCode::Right | KeyCode::Char('l') => {
                 if self.group_selected + 1 < self.groups.len() {
                     self.group_selected += 1;
+                    self.provider_scroll_offset = 0;
                     let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
                     self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
                 }
@@ -1116,6 +1126,8 @@ impl ConfigScreen {
 mod tests {
     use super::*;
     use autoreport_core::config::{needs_api_config, save_settings};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();
@@ -1182,6 +1194,32 @@ mod tests {
         assert!(visible.contains(&"ready"));
         assert!(visible.contains(&"added"));
         assert!(!visible.contains(&"stale-preset"));
+    }
+
+    #[test]
+    fn provider_list_keeps_scroll_offset_when_selection_moves() {
+        let mut settings = Settings::default();
+        for index in 0..30 {
+            settings
+                .providers
+                .insert(format!("provider-{index:02}"), provider());
+        }
+        let mut screen = ConfigScreen::new(settings, PathBuf::from("/tmp/ws"));
+        screen.selected_in_group = 20;
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| screen.draw(frame)).unwrap();
+        assert!(screen.provider_scroll_offset > 0);
+        let offset_after_first_draw = screen.provider_scroll_offset;
+
+        screen.selected_in_group = 21;
+        terminal.draw(|frame| screen.draw(frame)).unwrap();
+        assert!(screen.provider_scroll_offset >= offset_after_first_draw);
+
+        screen.selected_in_group = 0;
+        terminal.draw(|frame| screen.draw(frame)).unwrap();
+        assert_eq!(screen.provider_scroll_offset, 0);
     }
 
     #[test]
