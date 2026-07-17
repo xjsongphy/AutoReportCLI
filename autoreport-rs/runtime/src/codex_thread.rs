@@ -8,9 +8,9 @@
 //! - **Message queue** is codex's session discipline: an `Op` channel consumed
 //!   by a single processor task (one turn at a time); a new user input
 //!   interrupts the active turn and is then processed.
-//! - **Persistence**: every produced item is appended to a codex-format rollout
-//!   file (`.autoreport/sessions/rollout-<ts>-<id>.jsonl`); on startup the
-//!   latest rollout for the agent is resumed.
+//! - **Persistence**: every produced item is appended to a project-scoped
+//!   codex-format rollout file (`$AUTOREPORT_HOME/workspaces/<workspace-id>/sessions/YYYY/MM/DD/...`);
+//!   on startup the latest matching rollout for the agent is resumed.
 
 use crate::codex_thread::internal::AgentStatusLock;
 use crate::history::{
@@ -59,6 +59,9 @@ enum Op {
 pub struct AgentLoop {
     pub agent: AgentType,
     workspace: PathBuf,
+    /// Project-scoped state directory used for Codex-compatible conversation
+    /// persistence, history JSONL, and session discovery.
+    project_home: PathBuf,
     tools: ToolRegistry,
     provider: Arc<dyn LLMProvider>,
     prompts: PromptLoader,
@@ -93,6 +96,7 @@ impl AgentLoop {
     pub fn new(
         agent: AgentType,
         workspace: PathBuf,
+        project_home: PathBuf,
         tools: ToolRegistry,
         provider: Arc<dyn LLMProvider>,
         prompts: PromptLoader,
@@ -109,6 +113,7 @@ impl AgentLoop {
         Self {
             agent,
             workspace,
+            project_home,
             tools,
             provider,
             prompts,
@@ -132,14 +137,23 @@ impl AgentLoop {
 
     /// Spawn the bus listener and the single-threaded session processor, and
     /// resume the most recent rollout for this agent if one exists.
-    pub fn start(self: Arc<Self>) {
+    pub async fn start(self: Arc<Self>) {
+        // Complete discovery before the UI is built. This mirrors Codex's
+        // InitialHistory contract: callers see either New or Resumed history,
+        // never an empty transcript that is populated later by a race.
+        self.resume_from_rollout().await;
         self.spawn_listener();
         self.clone().spawn_processor();
     }
 
     async fn resume_from_rollout(&self) {
-        let sid = self.session_uuid.lock().await.clone();
-        let Some(path) = rollout::latest_for(&self.workspace, &sid) else {
+        let cwd = self
+            .workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone());
+        let Some((path, meta)) =
+            rollout::latest_for_agent(&self.project_home, self.agent.as_str(), &cwd)
+        else {
             return;
         };
         match rollout::read(&path) {
@@ -153,6 +167,8 @@ impl AgentLoop {
                         path.display()
                     );
                     *self.history.lock().await = items;
+                    *self.session_uuid.lock().await = meta.session_id.clone();
+                    *self.conversation_id.lock().await = meta.conversation_id.clone();
                     // Reopen the same file so subsequent appends CONTINUE it
                     // (otherwise the first new record would fork into a fresh
                     // file and fragment the on-disk history across restarts).
@@ -185,8 +201,6 @@ impl AgentLoop {
 
     fn spawn_processor(self: Arc<Self>) {
         tokio::spawn(async move {
-            // Resume the most recent rollout before processing new input.
-            self.resume_from_rollout().await;
             loop {
                 let op = {
                     let mut g = self.op_rx.lock().await;
@@ -202,6 +216,7 @@ impl AgentLoop {
                             // remains (otherwise is_busy() lies and the invariant
                             // "set token ⇔ live turn" breaks).
                             self.cancel_current_turn().await;
+                            self.clear_turn_token().await;
                             self.bus.publish(BusMessage::Error {
                                 agent_type: Some(self.agent),
                                 message: format!("{e:?}"),
@@ -221,7 +236,7 @@ impl AgentLoop {
         let cancel = self.current_turn.clone();
         tokio::spawn(async move {
             // New user input interrupts the active turn (codex semantics).
-            if let Some(token) = cancel.lock().await.take() {
+            if let Some(token) = cancel.lock().await.as_ref() {
                 token.cancel();
             }
             let _ = op_tx.send(Op::UserInput { content, source }).await;
@@ -234,8 +249,29 @@ impl AgentLoop {
     }
 
     async fn cancel_current_turn(&self) {
-        if let Some(token) = self.current_turn.lock().await.take() {
+        if let Some(token) = self.current_turn.lock().await.as_ref() {
             token.cancel();
+        }
+    }
+
+    async fn clear_turn_token(&self) {
+        self.current_turn.lock().await.take();
+    }
+
+    /// Wait until the processor has observed cancellation and cleared the
+    /// turn token. Context mutations must not race an in-flight turn: a late
+    /// response/tool result would otherwise be appended to the newly-cleared
+    /// conversation.
+    async fn wait_until_idle(&self) -> bool {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !self.is_busy().await {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
 
@@ -243,10 +279,31 @@ impl AgentLoop {
         self.current_turn.lock().await.is_some()
     }
 
+    pub async fn flush_rollout(&self) {
+        if let Some(recorder) = self.recorder.lock().await.as_ref()
+            && let Err(e) = recorder.flush().await
+        {
+            log::warn!("{}: flushing rollout failed: {e}", self.agent);
+        }
+    }
+
     /// Clear context and start a fresh conversation (new rollout file), keeping
     /// the agent running.
     pub async fn clear_context(&self) {
+        self.cancel_current_turn().await;
+        if !self.wait_until_idle().await {
+            log::warn!(
+                "{}: clear context timed out while turn is still active",
+                self.agent
+            );
+            return;
+        }
         self.history.lock().await.clear();
+        if let Some(recorder) = self.recorder.lock().await.as_ref() {
+            if let Err(e) = recorder.flush().await {
+                log::warn!("{}: flushing rollout before clear failed: {e}", self.agent);
+            }
+        }
         *self.recorder.lock().await = None;
         let new_uuid = uuid::Uuid::new_v4().to_string();
         *self.session_uuid.lock().await = new_uuid.clone();
@@ -259,6 +316,11 @@ impl AgentLoop {
 
     pub async fn status(&self) -> AgentStatus {
         self.status.get()
+    }
+
+    /// Return a stable snapshot for transcript consumers such as the TUI.
+    pub async fn history_snapshot(&self) -> Vec<ResponseItem> {
+        self.history.lock().await.clone()
     }
 
     fn set_status(&self, s: AgentStatus) {
@@ -276,6 +338,19 @@ impl AgentLoop {
         if let Err(e) = self.append_to_rollout(&item).await {
             log::warn!("rollout append: {e}");
         }
+        if let ResponseItem::Message { role, content, .. } = &item
+            && role == "user"
+        {
+            let text = content
+                .iter()
+                .map(|part| part.text())
+                .collect::<Vec<_>>()
+                .join("");
+            let sid = self.session_uuid.lock().await.clone();
+            if let Err(e) = rollout::history::append(&self.project_home, &sid, &text).await {
+                log::warn!("history append: {e}");
+            }
+        }
         self.history.lock().await.push(item);
     }
 
@@ -290,12 +365,25 @@ impl AgentLoop {
             let cid = self.conversation_id.lock().await.clone();
             let sid = self.session_uuid.lock().await.clone();
             let ts = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-            *rec = Some(RolloutRecorder::create(&self.workspace, &cid, &sid, &ts)?);
+            *rec = Some(RolloutRecorder::create(
+                &self.project_home,
+                &cid,
+                &sid,
+                &ts,
+                &self.workspace,
+                self.agent.as_str(),
+            )?);
         }
         rec.as_ref().unwrap().append(item)
     }
 
     async fn process_turn(&self, content: &str, source: MessageSource) -> anyhow::Result<()> {
+        // Install the cancellation handle before publishing Thinking. The
+        // UI/test may interrupt immediately after observing that status.
+        let turn_token = tokio_util::sync::CancellationToken::new();
+        *self.current_turn.lock().await = Some(turn_token.clone());
+        self.turn_reported.store(false, Ordering::Relaxed);
+
         self.set_status(AgentStatus::Thinking);
         self.record(ResponseItem::user_message(content)).await;
 
@@ -305,10 +393,6 @@ impl AgentLoop {
         let skill_injection = self
             .skills
             .render_injections(&autoreport_core::skills::extract_skill_mentions(content));
-
-        let turn_token = tokio_util::sync::CancellationToken::new();
-        *self.current_turn.lock().await = Some(turn_token.clone());
-        self.turn_reported.store(false, Ordering::Relaxed);
 
         const MAX_GUARD_RETRIES: u32 = 2;
         let mut guard_retries: u32 = 0;
@@ -442,15 +526,14 @@ impl AgentLoop {
                 }
                 return Ok(true);
             }
-            // Dispatch concurrently (codex `FuturesOrdered`). Each
-            // `execute_tool_call` publishes its own ToolCall/ToolResult events
-            // and records its output keyed by `call_id`, so concurrent
-            // execution is safe — shared state uses interior locking, the bus
-            // is a broadcast, and outputs match calls by id, not history
-            // position. `join_all` polls them concurrently without spawning
-            // detached tasks; dropping the future would cancel the rest.
-            let futs = tool_calls.iter().map(|call| self.execute_tool_call(call));
-            futures::future::join_all(futs).await;
+            // File edits, manifests, approvals, and task-board tools all have
+            // externally visible side effects. Run the batch in model order;
+            // this matches codex's default for tools that do not explicitly
+            // advertise parallel safety and avoids races between calls such as
+            // apply_patch followed by exec/read.
+            for call in &tool_calls {
+                self.execute_tool_call(call, &turn_token).await;
+            }
             self.set_status(AgentStatus::Thinking);
 
             iterations += 1;
@@ -689,7 +772,11 @@ impl AgentLoop {
         ))
     }
 
-    async fn execute_tool_call(&self, call: &ProviderToolCall) {
+    async fn execute_tool_call(
+        &self,
+        call: &ProviderToolCall,
+        turn_token: &tokio_util::sync::CancellationToken,
+    ) {
         // Execpolicy determines whether this exact command is allowed,
         // forbidden, or needs an approval. The model-visible escalation flag
         // is only a request: `ToolExecutionContext` below is the unforgeable
@@ -737,7 +824,11 @@ impl AgentLoop {
                         summary,
                         reason,
                     });
-                    match rx.await {
+                    match tokio::select! {
+                        biased;
+                        _ = turn_token.cancelled() => Err(()),
+                        decision = rx => decision.map_err(|_| ()),
+                    } {
                         Ok(ReviewDecision::Denied) => {
                             self.publish_tool_denial(
                                 call,
@@ -751,13 +842,16 @@ impl AgentLoop {
                             execution_context.allow_escalated_exec = requests_escalation;
                         }
                         Ok(ReviewDecision::ApprovedAndPersisted) => {
+                            // A compound command may be safe to run once but
+                            // too broad to persist as a prefix rule. Preserve
+                            // the user's explicit one-shot approval and only
+                            // downgrade persistence, rather than denying the
+                            // already-approved command.
                             if let Err(err) = self.exec_policy.persist_allow_prefix(&command) {
-                                self.publish_tool_denial(
-                                    call,
-                                    format!("could not persist execpolicy approval: {err}"),
-                                )
-                                .await;
-                                return;
+                                self.bus.publish(BusMessage::SystemNotice {
+                                    agent_type: Some(self.agent),
+                                    content: format!("execpolicy rule not persisted: {err}"),
+                                });
                             }
                             execution_context.allow_escalated_exec = requests_escalation;
                         }
@@ -783,10 +877,14 @@ impl AgentLoop {
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
         });
-        let out = self
-            .tools
-            .call_with_context(&call.name, &call.arguments, execution_context)
-            .await;
+        let out = tokio::select! {
+            biased;
+            _ = turn_token.cancelled() => {
+                self.publish_tool_denial(call, "[aborted: turn interrupted before this tool completed]".into()).await;
+                return;
+            }
+            out = self.tools.call_with_context(&call.name, &call.arguments, execution_context) => out,
+        };
         let result_value = match (&out.result, &out.error) {
             (_, Some(e)) => Value::String(e.clone()),
             (r, None) => r.clone(),
@@ -932,6 +1030,14 @@ impl AgentLoop {
     }
 
     pub async fn compact(&self) {
+        self.cancel_current_turn().await;
+        if !self.wait_until_idle().await {
+            log::warn!(
+                "{}: compact timed out while turn is still active",
+                self.agent
+            );
+            return;
+        }
         self.compact_internal().await;
         self.set_status(AgentStatus::Idle);
     }
@@ -953,22 +1059,10 @@ async fn forward_message(
             content: content.clone(),
             source: *source,
         },
-        // Task lifecycle notices for Main are surfaced as gentle user-visible
-        // notes (they don't drive a coordination turn — Main's `send_to_agent`
-        // resolves directly via the Report channel).
-        BusMessage::TaskUpdate {
-            action,
-            source_agent,
-            brief,
-            ..
-        } if agent == AgentType::Main => Op::UserInput {
-            content: format!("ℹ️ {source_agent} 任务「{brief}」状态变为 {action}。"),
-            source: MessageSource::Agent(*source_agent),
-        },
         _ => return,
     };
     // New input interrupts the active turn (codex semantics), then queues.
-    if let Some(token) = cancel.lock().await.take() {
+    if let Some(token) = cancel.lock().await.as_ref() {
         token.cancel();
     }
     let _ = op_tx.send(op).await;

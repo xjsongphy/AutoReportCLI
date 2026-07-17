@@ -11,7 +11,7 @@ impl Tui {
         let rest = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /models           assign main/sub APIs and model names\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
+                "Commands:\n  /agents           list agents + statuses\n  /sessions         list this project's persisted sessions\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /models           assign main/sub APIs and model names\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
                 SysKind::Info,
             ),
             "config" => self.want_config = true,
@@ -24,6 +24,18 @@ impl Tui {
                     output.push_str(&format!("  {mark} {} [{status:?}]\n", agent.label()));
                 }
                 self.system(output.trim_end(), SysKind::Info);
+            }
+            "sessions" => {
+                let sessions = self.manager.session_summaries();
+                if sessions.is_empty() {
+                    self.system("No persisted sessions for this project.", SysKind::Info);
+                } else {
+                    let mut output = String::from("Project sessions:\n");
+                    for (agent, conversation_id, timestamp) in sessions {
+                        output.push_str(&format!("  {agent}: {conversation_id} [{timestamp}]\n"));
+                    }
+                    self.system(output.trim_end(), SysKind::Info);
+                }
             }
             "switch" => match rest.parse::<AgentType>() {
                 Ok(agent) => {
@@ -59,7 +71,7 @@ impl Tui {
                     SysKind::Info,
                 );
             }
-            "quit" | "exit" => std::process::exit(0),
+            "quit" | "exit" => self.exit_requested = true,
             "" => {}
             other => self.system(&format!("unknown command: /{other}"), SysKind::Error),
         }

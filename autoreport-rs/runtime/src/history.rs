@@ -86,7 +86,16 @@ pub(crate) fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
             } => {
                 // Stash for the next assistant message. Only carry the
                 // signature when present — providers reject unsigned thinking.
-                let text = content.clone().unwrap_or_default().join("\n");
+                let text = content
+                    .as_ref()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(|item| item.text())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
                 let sig = encrypted_content.clone();
                 flush(&mut pending, &mut out);
                 if !text.is_empty() {

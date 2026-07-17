@@ -3,7 +3,7 @@
 //! Vendored data model + on-disk format from codex (`codex-protocol::ResponseItem`
 //! and `codex-rollout`): every conversation item is a `ResponseItem` tagged
 //! `{"type": ...}` (snake_case), serialized one-per-line as append-only JSONL
-//! under `.autoreport/sessions/rollout-<timestamp>-<id>.jsonl`, preceded by a
+//! under `$AUTOREPORT_HOME/sessions/YYYY/MM/DD/rollout-<timestamp>-<id>.jsonl`, preceded by a
 //! `SessionMeta` header line — the same shape codex writes, so files are
 //! inspectable/replayable with the same tools (e.g. `jq`).
 //!
@@ -22,6 +22,37 @@ pub enum ContentItem {
     InputText { text: String },
     OutputText { text: String },
     Text { text: String },
+}
+
+/// Reasoning content uses structured objects on Codex's wire, unlike the
+/// plain strings used by the provider adapter internally.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningContent {
+    ReasoningText { text: String },
+    Text { text: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningSummary {
+    SummaryText { text: String },
+}
+
+impl ReasoningSummary {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::SummaryText { text } => text,
+        }
+    }
+}
+
+impl ReasoningContent {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::ReasoningText { text } | Self::Text { text } => text,
+        }
+    }
 }
 
 impl ContentItem {
@@ -54,9 +85,9 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing)]
         id: Option<String>,
         #[serde(default)]
-        summary: Vec<String>,
+        summary: Vec<ReasoningSummary>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        content: Option<Vec<String>>,
+        content: Option<Vec<ReasoningContent>>,
         /// Opaque signed reasoning blob to echo back on the next turn (codex
         /// `encrypted_content`; Anthropic thinking `signature`). Absent on
         /// providers that don't sign reasoning.
@@ -126,7 +157,7 @@ impl ResponseItem {
         ResponseItem::Reasoning {
             id: None,
             summary: Vec::new(),
-            content: Some(vec![text.into()]),
+            content: Some(vec![ReasoningContent::ReasoningText { text: text.into() }]),
             encrypted_content: None,
         }
     }
@@ -138,7 +169,7 @@ impl ResponseItem {
         ResponseItem::Reasoning {
             id: None,
             summary: Vec::new(),
-            content: Some(vec![text.into()]),
+            content: Some(vec![ReasoningContent::ReasoningText { text: text.into() }]),
             encrypted_content: Some(signature.into()),
         }
     }
@@ -171,12 +202,27 @@ impl ResponseItem {
             ResponseItem::Reasoning {
                 content, summary, ..
             } => {
-                let joined = content.clone().unwrap_or_default().join("\n");
+                let joined = content
+                    .as_ref()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .map(ReasoningContent::text)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
                 let trimmed = joined.trim();
                 if !trimmed.is_empty() {
                     Some(trimmed.to_string())
                 } else {
-                    Some(summary.join(" "))
+                    Some(
+                        summary
+                            .iter()
+                            .map(ReasoningSummary::text)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    )
                 }
             }
             ResponseItem::Compaction { .. } => None,

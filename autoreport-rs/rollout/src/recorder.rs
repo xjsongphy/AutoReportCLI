@@ -1,13 +1,13 @@
-//! Rollout file creation, append-only writing, and tolerant reading.
+//! Rollout file creation, append-only writing, and current-format reading.
 
 use crate::items::ResponseItem;
 use crate::metadata::{RolloutLine, RolloutPayload, SessionMeta};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Where rollout files live for a workspace.
-pub(crate) fn sessions_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".autoreport").join("sessions")
+/// Where rollout files live for one project's state directory.
+pub(crate) fn sessions_dir(home: &Path) -> PathBuf {
+    home.join("sessions")
 }
 
 /// `sessions/YYYY/MM/DD/` for a timestamp like `2026-07-12T13-45-07`
@@ -70,28 +70,40 @@ impl RolloutRecorder {
     /// resume can find it. `timestamp` is the `%Y-%m-%dT%H-%M-%S` creation
     /// stamp used for the filename and the `sessions/YYYY/MM/DD/` directory.
     pub fn create(
-        workspace: &Path,
+        home: &Path,
         conversation_id: &str,
         session_uuid: &str,
         timestamp: &str,
+        workspace: &Path,
+        agent: &str,
     ) -> Result<Self> {
-        let root = sessions_dir(workspace);
+        let root = sessions_dir(home);
         let ts = sanitize_filename_component(timestamp);
         let uuid = sanitize_filename_component(session_uuid);
         let dir = date_dir(&root, &ts);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
         let meta = SessionMeta {
+            session_id: session_uuid.to_string(),
+            id: session_uuid.to_string(),
             conversation_id: conversation_id.to_string(),
             cli_version: env!("CARGO_PKG_VERSION").to_string(),
             timestamp: timestamp.to_string(),
+            cwd: workspace
+                .canonicalize()
+                .unwrap_or_else(|_| workspace.to_path_buf())
+                .display()
+                .to_string(),
+            originator: "autoreport-cli".to_string(),
+            source: "cli".to_string(),
+            model_provider: None,
+            agent_role: Some(agent.to_string()),
         };
         let line = RolloutLine {
             timestamp: now_rfc3339(),
             payload: RolloutPayload::SessionMeta(meta),
         };
-        let first_line =
-            serde_json::to_string(&line).context("encoding session meta")?;
+        let first_line = encode_line(&line).context("encoding session meta")?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WriterMsg>();
         spawn_writer_task(path.clone(), rx, /*create*/ true, Some(first_line));
         Ok(Self { path, tx })
@@ -120,7 +132,7 @@ impl RolloutRecorder {
             timestamp: now_rfc3339(),
             payload: RolloutPayload::ResponseItem(item.clone()),
         };
-        let encoded = serde_json::to_string(&line).context("encoding response item")?;
+        let encoded = encode_line(&line).context("encoding response item")?;
         self.tx
             .send(WriterMsg::Line(encoded))
             .map_err(|_| anyhow::anyhow!("rollout writer task closed"))
@@ -141,6 +153,16 @@ impl RolloutRecorder {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Validate every emitted line with the actual Codex wire type. We keep the
+/// internal item adapter because AutoReport providers are not Responses API
+/// clients, but Codex's protocol crate remains the format authority.
+fn encode_line(line: &RolloutLine) -> Result<String> {
+    let value = serde_json::to_value(line).context("serializing rollout line")?;
+    let _: codex_protocol::protocol::RolloutLine =
+        serde_json::from_value(value.clone()).context("validating Codex rollout line")?;
+    serde_json::to_string(&value).context("encoding rollout line")
 }
 
 /// The dedicated writer task: opens the rollout file once (create+append or
@@ -201,10 +223,9 @@ pub enum RolloutEntry {
     Item(ResponseItem),
 }
 
-/// Read a rollout file back into entries (for resume / inspection). Accepts
-/// both the codex `RolloutLine` envelope and the legacy bare format (lines
-/// without a `payload` wrapper), so files written before the envelope migration
-/// still resume.
+/// Read a current Codex-envelope rollout file back into entries for resume or
+/// inspection. Invalid lines are an error: a rollout is an append-only record,
+/// so silently skipping malformed data would make resumed context incomplete.
 pub fn read(path: &Path) -> Result<Vec<RolloutEntry>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -214,39 +235,12 @@ pub fn read(path: &Path) -> Result<Vec<RolloutEntry>> {
         if line.is_empty() {
             continue;
         }
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("rollout {}:{} skipped: {e}", path.display(), i + 1);
-                continue;
-            }
-        };
-        // Envelope: {"timestamp":..., "type":"session_meta"|"response_item", "payload":{...}}
-        if v.get("payload").is_some()
-            && matches!(
-                v.get("type").and_then(|t| t.as_str()),
-                Some("session_meta" | "response_item")
-            )
-        {
-            match serde_json::from_value::<RolloutLine>(v.clone()) {
-                Ok(line) => match line.payload {
-                    RolloutPayload::SessionMeta(m) => out.push(RolloutEntry::Meta(m)),
-                    RolloutPayload::ResponseItem(item) => out.push(RolloutEntry::Item(item)),
-                },
-                Err(e) => log::warn!("rollout {}:{} bad envelope: {e}", path.display(), i + 1),
-            }
-            continue;
-        }
-        // Legacy bare format.
-        match v.get("conversation_id").and_then(|x| x.as_str()) {
-            Some(_) => match serde_json::from_value::<SessionMeta>(v) {
-                Ok(m) => out.push(RolloutEntry::Meta(m)),
-                Err(e) => log::warn!("rollout {}:{} bad meta: {e}", path.display(), i + 1),
-            },
-            None => match serde_json::from_value::<ResponseItem>(v) {
-                Ok(item) => out.push(RolloutEntry::Item(item)),
-                Err(e) => log::warn!("rollout {}:{} bad item: {e}", path.display(), i + 1),
-            },
+        let line: RolloutLine = serde_json::from_str(line).with_context(|| {
+            format!("parsing current rollout line {}:{}", path.display(), i + 1)
+        })?;
+        match line.payload {
+            RolloutPayload::SessionMeta(m) => out.push(RolloutEntry::Meta(m)),
+            RolloutPayload::ResponseItem(item) => out.push(RolloutEntry::Item(item)),
         }
     }
     Ok(out)
@@ -276,8 +270,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec =
-            RolloutRecorder::create(ws, "conv-1", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
+        let rec = RolloutRecorder::create(
+            ws,
+            "conv-1",
+            &new_uuid(),
+            "2026-06-29T00-00-00Z",
+            ws,
+            "main",
+        )
+        .unwrap();
         rec.append(&ResponseItem::user_message("hello")).unwrap();
         rec.append(&ResponseItem::assistant_message("hi there"))
             .unwrap();
@@ -289,12 +290,13 @@ mod tests {
         .unwrap();
         rec.append(&ResponseItem::function_call_output("c1", "ok"))
             .unwrap();
+        rec.append(&ResponseItem::reasoning("thinking")).unwrap();
         rec.flush().await.unwrap();
 
         let entries = read(rec.path()).unwrap();
         assert!(matches!(entries[0], RolloutEntry::Meta(_)));
         let items = items(&entries);
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
         assert_eq!(items[0].text().unwrap(), "hello");
         assert!(matches!(items[2], ResponseItem::FunctionCall { .. }));
 
@@ -305,6 +307,31 @@ mod tests {
         assert!(raw.contains("\"type\":\"message\""));
         assert!(raw.contains("\"type\":\"function_call\""));
         assert!(raw.contains("\"conversation_id\""));
+
+        // The actual Codex protocol crate is the compatibility oracle. This
+        // catches subtle drift such as reasoning content being emitted as
+        // strings instead of `{type,text}` objects.
+        for line in raw.lines() {
+            let _: codex_protocol::protocol::RolloutLine =
+                serde_json::from_str(line).expect("Codex must deserialize every rollout line");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_rejects_bare_legacy_lines() {
+        let dir = std::env::temp_dir().join(format!("rollout-strict-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"conversation_id":"main-old","cli_version":"old","timestamp":"old"}
+{"type":"message","role":"user","content":[]}
+"#,
+        )
+        .unwrap();
+
+        assert!(read(&path).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -316,8 +343,10 @@ mod tests {
         // Same session uuid, two files with different timestamps (different
         // date dirs); latest_for must walk the tree and pick the newest.
         let sid = new_uuid();
-        let r1 = RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-01T00-00-00Z").unwrap();
-        let r2 = RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-29T00-00-00Z").unwrap();
+        let r1 = RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-01T00-00-00Z", ws, "main")
+            .unwrap();
+        let r2 = RolloutRecorder::create(ws, "conv-X", &sid, "2026-06-29T00-00-00Z", ws, "main")
+            .unwrap();
         r1.flush().await.unwrap();
         r2.flush().await.unwrap();
         let latest = latest_for(ws, &sid).unwrap();
@@ -333,8 +362,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rollout-open-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         let ws: &Path = &dir;
-        let rec =
-            RolloutRecorder::create(ws, "conv-R", &new_uuid(), "2026-06-29T00-00-00Z").unwrap();
+        let rec = RolloutRecorder::create(
+            ws,
+            "conv-R",
+            &new_uuid(),
+            "2026-06-29T00-00-00Z",
+            ws,
+            "main",
+        )
+        .unwrap();
         rec.append(&ResponseItem::user_message("first")).unwrap();
         rec.flush().await.unwrap();
 
@@ -368,8 +404,15 @@ mod tests {
         // regardless of what the caller passes.
         let dir = std::env::temp_dir().join(format!("rollout-sanitize-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
-        let rec =
-            RolloutRecorder::create(&dir, "conv-C", &new_uuid(), "2026-06-29T00:00:00Z").unwrap();
+        let rec = RolloutRecorder::create(
+            &dir,
+            "conv-C",
+            &new_uuid(),
+            "2026-06-29T00:00:00Z",
+            &dir,
+            "main",
+        )
+        .unwrap();
         rec.append(&ResponseItem::user_message("hi")).unwrap();
         rec.flush().await.unwrap();
         let name = rec
@@ -398,8 +441,10 @@ mod tests {
         let ws: &Path = &dir;
         let sid_a = new_uuid();
         let sid_b = new_uuid();
-        let ra = RolloutRecorder::create(ws, "conv-A", &sid_a, "2026-06-29T00-00-00Z").unwrap();
-        let rb = RolloutRecorder::create(ws, "conv-B", &sid_b, "2026-07-01T00-00-00Z").unwrap();
+        let ra = RolloutRecorder::create(ws, "conv-A", &sid_a, "2026-06-29T00-00-00Z", ws, "main")
+            .unwrap();
+        let rb = RolloutRecorder::create(ws, "conv-B", &sid_b, "2026-07-01T00-00-00Z", ws, "main")
+            .unwrap();
         ra.flush().await.unwrap();
         rb.flush().await.unwrap();
         let latest_a = latest_for(ws, &sid_a).unwrap();

@@ -40,6 +40,7 @@ urlencoding.workspace = true
 uuid.workspace = true
 autoreport-core = { path = "../core" }
 autoreport-runtime = { path = "../runtime" }
+autoreport-rollout = { path = "../rollout" }
 
 [dev-dependencies]
 pretty_assertions = "1"

@@ -132,12 +132,13 @@ async fn interrupt_cancels_active_turn() {
     let bus = Bus::new();
     let agent = AgentType::DataAnalysis;
     let tools = registry_for(&workspace, agent);
-    let prompts = PromptLoader::new(&workspace);
-    let skills = SkillLoader::new(&workspace);
-    let manifest = ManifestStore::new(&workspace);
+    let prompts = PromptLoader::new(&workspace, &workspace);
+    let skills = SkillLoader::new(&workspace, &workspace);
+    let manifest = ManifestStore::new(&workspace, &workspace);
     let task_board = TaskBoard::new();
     let loop_ = Arc::new(AgentLoop::new(
         agent,
+        workspace.clone(),
         workspace.clone(),
         tools,
         Arc::new(SlowMock) as Arc<dyn LLMProvider>,
@@ -151,7 +152,7 @@ async fn interrupt_cancels_active_turn() {
             &workspace,
         )),
     ));
-    loop_.clone().start();
+    loop_.clone().start().await;
     let mut rx = bus.subscribe();
 
     loop_.submit("go".into(), MessageSource::User);
@@ -242,14 +243,15 @@ async fn agent_loop_writes_file_then_replies() {
 
     let agent = AgentType::DataAnalysis;
     let tools = registry_for(&workspace, agent);
-    let prompts = PromptLoader::new(&workspace);
-    let skills = SkillLoader::new(&workspace);
-    let manifest = ManifestStore::new(&workspace);
+    let prompts = PromptLoader::new(&workspace, &workspace);
+    let skills = SkillLoader::new(&workspace, &workspace);
+    let manifest = ManifestStore::new(&workspace, &workspace);
     let task_board = TaskBoard::new();
     let defaults = AgentDefaults::default();
 
     let loop_ = Arc::new(AgentLoop::new(
         agent,
+        workspace.clone(),
         workspace.clone(),
         tools,
         mock,
@@ -263,7 +265,7 @@ async fn agent_loop_writes_file_then_replies() {
             &workspace,
         )),
     ));
-    loop_.clone().start();
+    loop_.clone().start().await;
 
     // Collect bus events.
     let mut rx = bus.subscribe();
