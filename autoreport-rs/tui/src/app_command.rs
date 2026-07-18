@@ -20,7 +20,7 @@ impl Tui {
                 let mut output = String::from("Agents:\n");
                 for agent in AgentType::ALL {
                     let status = self.statuses.get(&agent).copied().unwrap_or(AgentStatus::Idle);
-                    let mark = if agent == self.focused { "▶" } else { " " };
+                    let mark = if agent == self.focused { "›" } else { " " };
                     output.push_str(&format!("  {mark} {} [{status:?}]\n", agent.label()));
                 }
                 self.system(output.trim_end(), SysKind::Info);

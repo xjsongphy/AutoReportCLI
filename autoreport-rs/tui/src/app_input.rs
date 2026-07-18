@@ -27,14 +27,15 @@ impl Tui {
             return;
         };
         let after_at = m.start + 1;
-        let end = m.cursor.min(self.input.len());
+        let input = self.composer.text();
+        let end = m.cursor.min(input.len());
         let mut new_input = String::new();
-        new_input.push_str(&self.input[..after_at]);
+        new_input.push_str(&input[..after_at]);
         new_input.push_str(&path);
-        new_input.push_str(&self.input[end..]);
+        new_input.push_str(&input[end..]);
         new_input.push(' ');
-        self.cursor = after_at + path.len() + 1;
-        self.input = new_input;
+        self.composer
+            .set_text_and_cursor(new_input, after_at + path.len() + 1);
     }
 
     pub(crate) fn move_slash(&mut self, dir: i32) {
@@ -53,16 +54,19 @@ impl Tui {
         let Some(cmd) = s.matches.get(s.selected).copied() else {
             return;
         };
-        self.input = format!("/{} ", cmd.name);
-        self.cursor = self.input.len();
+        let input = format!("/{} ", cmd.name);
+        let cursor = input.len();
+        self.composer.set_text_and_cursor(input, cursor);
     }
 
     pub(crate) fn recompute_slash(&mut self) {
-        if !self.input.starts_with('/') || self.cursor == 0 {
+        let input = self.composer.text();
+        let cursor = self.composer.cursor();
+        if !input.starts_with('/') || cursor == 0 {
             self.slash = None;
             return;
         }
-        let typed = &self.input[1..self.cursor.min(self.input.len())];
+        let typed = &input[1..cursor.min(input.len())];
         if typed.chars().any(char::is_whitespace) {
             self.slash = None;
             return;
@@ -79,18 +83,17 @@ impl Tui {
             self.mention = None;
             return;
         }
-        let bytes = self.input.as_bytes();
-        if self.cursor == 0 || self.cursor > bytes.len() {
+        let input = self.composer.text();
+        let cursor = self.composer.cursor();
+        let bytes = input.as_bytes();
+        if cursor == 0 || cursor > bytes.len() {
             self.mention = None;
             return;
         }
-        let mut i = self.cursor;
+        let mut i = cursor;
         let mut query_len = 0usize;
         while i > 0 {
-            let c = self.input[..i]
-                .chars()
-                .next_back()
-                .expect("non-empty prefix");
+            let c = input[..i].chars().next_back().expect("non-empty prefix");
             if c == '@' {
                 break;
             }
@@ -107,7 +110,7 @@ impl Tui {
         }
         let at_idx = i - 1;
         let prev_ok = at_idx == 0
-            || self.input[..at_idx]
+            || input[..at_idx]
                 .chars()
                 .next_back()
                 .is_none_or(char::is_whitespace);
@@ -115,10 +118,10 @@ impl Tui {
             self.mention = None;
             return;
         }
-        let query = &self.input[at_idx + 1..at_idx + 1 + query_len];
+        let query = &input[at_idx + 1..at_idx + 1 + query_len];
         self.mention = Some(Mention {
             start: at_idx,
-            cursor: self.cursor,
+            cursor,
             matches: self.index.search(query, MENTION_LIMIT),
             selected: 0,
         });
@@ -138,13 +141,13 @@ impl Tui {
             .position(|agent| *agent == self.focused)
             .unwrap_or(0);
         self.focused = order[(index as i32 + direction).rem_euclid(order.len() as i32) as usize];
+        self.composer.set_focused_agent(self.focused.label());
     }
 
     pub(crate) fn submit(&mut self) {
         self.mention = None;
         self.slash = None;
-        let text = std::mem::take(&mut self.input).trim().to_string();
-        self.cursor = 0;
+        let text = self.composer.take_text().trim().to_string();
         if text.is_empty() {
             return;
         }
@@ -153,7 +156,7 @@ impl Tui {
             return;
         }
         self.history.push(Cell::User {
-            agent: self.focused,
+            _agent: self.focused,
             text: text.clone(),
         });
         let mut expanded = self.expand_mentions(&text);

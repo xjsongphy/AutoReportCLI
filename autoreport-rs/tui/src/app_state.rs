@@ -6,9 +6,10 @@ use autoreport_core::types::AgentType;
 use ratatui::Frame;
 use serde_json::Value;
 
+#[derive(Debug)]
 pub(crate) enum Cell {
     User {
-        agent: AgentType,
+        _agent: AgentType,
         text: String,
     },
     Assistant {
@@ -31,6 +32,7 @@ pub(crate) enum Cell {
     },
 }
 
+#[derive(Debug)]
 pub(crate) struct ToolEntry {
     pub(crate) name: String,
     pub(crate) args: Value,
@@ -38,7 +40,7 @@ pub(crate) struct ToolEntry {
     pub(crate) error: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum SysKind {
     Info,
     Error,

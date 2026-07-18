@@ -1,11 +1,11 @@
 //! Codex-style terminal UI.
 //!
-//! Layout: top status bar, scrolling markdown-rendered history, bottom input
-//! box, and an `@` file-mention popup. Built on ratatui + crossterm. Agent loops
-//! run in background tasks; the TUI subscribes to the bus to render their
-//! streamed output.
+//! Layout: Codex-style scrolling transcript, bottom-pane composer, and an `@` file-mention popup.
+//! Built on ratatui + crossterm. Agent loops run in background tasks; the TUI subscribes to the
+//! bus to render their streamed output.
 
 use crate::app_state::{Cell, Mention, Overlay, PendingApproval, SysKind, ToolEntry};
+use crate::bottom_pane::ChatComposer;
 use crate::config_update::ConfigScreen;
 use crate::file_search::FileIndex;
 use crate::model_migration::ModelScreen;
@@ -33,13 +33,11 @@ pub struct Tui {
     pub(crate) bus: Bus,
     pub(crate) autoreport_home: PathBuf,
     pub(crate) workspace: PathBuf,
-    pub(crate) workspace_display: String,
     pub(crate) provider_id: String,
     pub(crate) history: Vec<Cell>,
     pub(crate) statuses: HashMap<AgentType, AgentStatus>,
     pub(crate) focused: AgentType,
-    pub(crate) input: String,
-    pub(crate) cursor: usize,
+    pub(crate) composer: ChatComposer,
     pub(crate) scroll: usize,
     rx: tokio::sync::broadcast::Receiver<BusMessage>,
     pub(crate) index: FileIndex,
@@ -48,7 +46,6 @@ pub struct Tui {
     pub(crate) overlay: Option<Overlay>,
     pub(crate) want_config: bool,
     pub(crate) want_models: bool,
-    pub(crate) tick: usize,
     // `/ide` toggle state — mirrors codex's IdeContextState. When enabled, each
     // outgoing user turn is prefixed with IDE context fetched over the codex
     // IPC socket (`\\.\pipe\codex-ipc` / `$TMPDIR/codex-ipc/ipc-<uid>.sock`).
@@ -68,7 +65,6 @@ impl Tui {
         workspace: PathBuf,
         provider_id: String,
     ) -> Self {
-        let workspace_display = workspace.display().to_string();
         let index = FileIndex::new(&workspace);
         index.refresh();
         let rx = bus.subscribe();
@@ -78,13 +74,11 @@ impl Tui {
             autoreport_home,
             rx,
             workspace,
-            workspace_display,
             provider_id,
             history: Vec::new(),
             statuses: HashMap::new(),
             focused: AgentType::Main,
-            input: String::new(),
-            cursor: 0,
+            composer: ChatComposer::new(AgentType::Main.label()),
             scroll: 0,
             index,
             mention: None,
@@ -92,7 +86,6 @@ impl Tui {
             overlay: None,
             want_config: false,
             want_models: false,
-            tick: 0,
             ide_enabled: false,
             ide_warned: false,
             pending_approvals: VecDeque::new(),
@@ -113,8 +106,6 @@ impl Tui {
         );
 
         let mut events = EventStream::new();
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             if self.want_config {
                 self.want_config = false;
@@ -148,9 +139,6 @@ impl Tui {
                         Err(_) => break,
                     }
                 }
-                _ = interval.tick() => {
-                    self.tick = self.tick.wrapping_add(1);
-                }
             }
         }
 
@@ -176,7 +164,10 @@ impl Tui {
                             continue;
                         }
                         match role.as_str() {
-                            "user" => self.history.push(Cell::User { agent, text }),
+                            "user" => self.history.push(Cell::User {
+                                _agent: agent,
+                                text,
+                            }),
                             "assistant" => self.history.push(Cell::Assistant {
                                 agent,
                                 text,
@@ -307,10 +298,7 @@ impl Tui {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::chatwidget::{
-        extract_mentions, render_reasoning_lines, render_tool_result_lines, status_mark,
-    };
+    use crate::chatwidget::{extract_mentions, render_tool_result_lines};
     use crate::slash_command;
 
     #[test]
@@ -348,30 +336,9 @@ mod tests {
     }
 
     #[test]
-    fn active_statuses_use_codex_dot_indicator() {
-        assert_eq!(status_mark(AgentStatus::Thinking), "●");
-        assert_eq!(status_mark(AgentStatus::RunningTool), "●");
-        assert_eq!(status_mark(AgentStatus::Idle), "○");
-    }
-
-    #[test]
     fn slash_command_matches_filter_by_prefix_in_presentation_order() {
         let matches = slash_command::matches("co");
         let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
         assert_eq!(names, vec!["config", "compact"]);
-    }
-
-    #[test]
-    fn reasoning_lines_show_thinking_label_and_content() {
-        let lines = render_reasoning_lines(AgentType::Main, "checking context", false);
-        let flattened = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-
-        assert!(flattened.contains("Main thinking"));
-        assert!(flattened.contains("checking context"));
     }
 }

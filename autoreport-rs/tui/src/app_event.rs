@@ -290,26 +290,10 @@ impl Tui {
             KeyCode::BackTab => self.cycle_agent_back(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    // step back one char
-                    let prev = self.input[..self.cursor].chars().last().unwrap();
-                    self.cursor -= prev.len_utf8();
-                    self.input.remove(self.cursor);
-                }
-            }
-            KeyCode::Left => {
-                if self.cursor > 0 {
-                    let prev = self.input[..self.cursor].chars().last().unwrap();
-                    self.cursor -= prev.len_utf8();
-                }
-            }
-            KeyCode::Right => {
-                if self.cursor < self.input.len() {
-                    let next = self.input[self.cursor..].chars().next().unwrap();
-                    self.cursor += next.len_utf8();
-                }
-            }
+            KeyCode::Backspace => self.composer.delete_previous(),
+            KeyCode::Delete => self.composer.delete_next(),
+            KeyCode::Left => self.composer.move_left(),
+            KeyCode::Right => self.composer.move_right(),
             KeyCode::Up => self.scroll = self.scroll.saturating_add(1),
             KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
@@ -326,8 +310,7 @@ impl Tui {
                 }
             }
             KeyCode::Char(c) => {
-                self.input.insert(self.cursor, c);
-                self.cursor += c.len_utf8();
+                self.composer.insert(c);
             }
             _ => {}
         }

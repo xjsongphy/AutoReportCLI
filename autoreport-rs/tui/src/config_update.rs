@@ -117,13 +117,6 @@ fn provider_groups(settings: &Settings) -> Vec<ProviderGroup> {
     let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     for (key, provider) in &settings.providers {
-        // Older releases persisted every synced preset into config.toml. Keep
-        // those stale, unresolved entries out of the normal selector while
-        // retaining providers that have a usable key or were explicitly added
-        // through the current UI (which assigns an alias).
-        if resolve_api_key(provider).is_err() && provider.alias.is_none() {
-            continue;
-        }
         grouped
             .entry(provider.kind.clone())
             .or_default()
@@ -1169,31 +1162,6 @@ mod tests {
         assert_eq!(screen.groups.len(), 2);
         assert_eq!(screen.groups[0].kind, "anthropic");
         assert_eq!(screen.groups[1].kind, "google");
-    }
-
-    #[test]
-    fn hides_legacy_unconfigured_preset_entries() {
-        let mut s = settings_with("ready", provider());
-        let mut stale = provider();
-        stale.kind = "legacy".into();
-        stale.api_key = None;
-        stale.api_base = Some("https://legacy.example".into());
-        stale.alias = None;
-        s.providers.insert("stale-preset".into(), stale);
-
-        let mut added = s.providers["stale-preset"].clone();
-        added.alias = Some("Added provider".into());
-        s.providers.insert("added".into(), added);
-
-        let screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
-        let visible: Vec<&str> = screen
-            .groups
-            .iter()
-            .flat_map(|group| group.keys.iter().map(String::as_str))
-            .collect();
-        assert!(visible.contains(&"ready"));
-        assert!(visible.contains(&"added"));
-        assert!(!visible.contains(&"stale-preset"));
     }
 
     #[test]

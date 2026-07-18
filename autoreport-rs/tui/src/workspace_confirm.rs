@@ -7,13 +7,18 @@
 
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Wrap};
+use ratatui::style::Stylize;
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
+
+use crate::render::Insets;
+use crate::render::renderable::ColumnRenderable;
+use crate::render::renderable::Renderable;
+use crate::render::renderable::RenderableExt as _;
+use crate::selection_list::selection_option_row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceOutcome {
@@ -43,68 +48,39 @@ impl WorkspaceScreen {
 
     pub fn draw(&self, f: &mut Frame<'_>) {
         let area = f.area();
-        f.render_widget(Clear, area);
 
-        // Codex renders this onboarding step as a left-aligned full-screen
-        // column. Keeping the directory and choices in the normal transcript
-        // flow makes the confirmation feel like a gate, not a modal dialog.
-        let columns = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::Cyan)),
-                Span::styled("You are in ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    self.workspace.display().to_string(),
-                    Style::default().fg(Color::Yellow),
-                ),
-            ])),
-            columns[0],
-        );
-
-        f.render_widget(
+        let mut column = ColumnRenderable::new();
+        column.push(Line::from(vec![
+            "> ".into(),
+            "You are in ".bold(),
+            self.workspace.display().to_string().into(),
+        ]));
+        column.push("");
+        column.push(
             Paragraph::new("Do you want AutoReportCLI to use this workspace?".to_string())
-                .wrap(Wrap { trim: true }),
-            inset_left(columns[1], 2),
+                .wrap(Wrap { trim: true })
+                .inset(Insets::tlbr(0, 2, 0, 0)),
         );
+        column.push("");
 
         let options = [
             ("Yes, continue", Selection::Continue),
             ("No, quit", Selection::Quit),
         ];
-        let option_lines = options
-            .iter()
-            .enumerate()
-            .map(|(index, (label, selection))| {
-                let selected = self.highlighted == *selection;
-                let marker = if selected { "›" } else { " " };
-                let style = if selected {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    Style::default()
-                };
-                Line::from(vec![
-                    Span::styled(format!("{marker} {}. ", index + 1), style),
-                    Span::styled(*label, style),
-                ])
-            })
-            .collect::<Vec<_>>();
-        f.render_widget(Paragraph::new(option_lines), columns[3]);
-
-        f.render_widget(
-            Paragraph::new("Press enter to continue").style(Style::default().fg(Color::DarkGray)),
-            inset_left(columns[5], 2),
+        for (idx, (text, selection)) in options.iter().enumerate() {
+            column.push(selection_option_row(
+                idx,
+                text.to_string(),
+                self.highlighted == *selection,
+            ));
+        }
+        column.push("");
+        column.push(
+            Line::from(vec!["Press ".dim(), "Enter".into(), " to continue".dim()])
+                .inset(Insets::tlbr(0, 2, 0, 0)),
         );
+
+        column.render(area, f.buffer_mut());
     }
 
     /// Drive one key event. Returns an outcome once the user has made a choice.
@@ -143,14 +119,6 @@ impl WorkspaceScreen {
                 return Ok(outcome);
             }
         }
-    }
-}
-
-fn inset_left(area: Rect, amount: u16) -> Rect {
-    Rect {
-        x: area.x.saturating_add(amount),
-        width: area.width.saturating_sub(amount),
-        ..area
     }
 }
 
@@ -211,7 +179,7 @@ mod tests {
         assert!(rendered.contains("> You are in /tmp/project"));
         assert!(rendered.contains("› 1. Yes, continue"));
         assert!(rendered.contains("  2. No, quit"));
-        assert!(rendered.contains("Press enter to continue"));
+        assert!(rendered.contains("Press Enter to continue"));
         assert!(!rendered.contains("After you continue"));
     }
 }
