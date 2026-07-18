@@ -1,7 +1,6 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
 use crate::app_state::ToolEntry;
-use autoreport_core::types::{AgentStatus, AgentType};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -41,31 +40,6 @@ pub(crate) fn render_user_text(text: &str) -> Vec<Line<'static>> {
             spans.push(Span::raw(buf));
         }
         out.push(Line::from(spans));
-    }
-    out
-}
-
-pub(crate) fn render_reasoning_lines(
-    agent: AgentType,
-    text: &str,
-    streaming: bool,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    out.push(Line::from(vec![Span::styled(
-        format!("{} thinking", agent.label()),
-        Style::default().fg(Color::DarkGray),
-    )]));
-    for line in text.lines() {
-        out.push(Line::from(Span::styled(
-            format!("  {line}"),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    if streaming {
-        if let Some(last) = out.last_mut() {
-            last.spans
-                .push(Span::styled("▍", Style::default().fg(Color::Yellow)));
-        }
     }
     out
 }
@@ -121,49 +95,6 @@ pub(crate) fn extract_mentions(text: &str) -> Vec<String> {
         }
     }
     out
-}
-
-pub(crate) fn status_mark(s: AgentStatus) -> &'static str {
-    match s {
-        AgentStatus::Idle => "○",
-        AgentStatus::Thinking => "●",
-        AgentStatus::RunningTool => "●",
-        AgentStatus::Queued => "○",
-        AgentStatus::Error => "✗",
-        AgentStatus::DebugMode => "●",
-    }
-}
-
-pub(crate) fn status_text(s: AgentStatus) -> &'static str {
-    match s {
-        AgentStatus::Idle => "idle",
-        AgentStatus::Thinking => "thinking",
-        AgentStatus::RunningTool => "running",
-        AgentStatus::Queued => "queued",
-        AgentStatus::Error => "error",
-        AgentStatus::DebugMode => "debug",
-    }
-}
-
-pub(crate) fn status_color(s: AgentStatus) -> Color {
-    match s {
-        AgentStatus::Idle => Color::DarkGray,
-        AgentStatus::Thinking => Color::Yellow,
-        AgentStatus::RunningTool => Color::Cyan,
-        AgentStatus::Queued => Color::DarkGray,
-        AgentStatus::Error => Color::Red,
-        AgentStatus::DebugMode => Color::Magenta,
-    }
-}
-
-pub(crate) fn agent_color(a: AgentType) -> Color {
-    match a {
-        AgentType::Main => Color::Green,
-        AgentType::DataAnalysis => Color::Cyan,
-        AgentType::Plotting => Color::Magenta,
-        AgentType::Theory => Color::Blue,
-        AgentType::Report => Color::Yellow,
-    }
 }
 
 pub(crate) fn truncate(s: &str, max: usize) -> String {
@@ -334,3 +265,5 @@ pub(crate) fn pretty(v: &serde_json::Value) -> String {
     }
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
 }
+
+mod rendering;
