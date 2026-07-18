@@ -5,18 +5,15 @@
 //! wrapped height to the parent render tree.
 
 use crate::app_state::{Cell, SysKind};
-use crate::chatwidget::{
-    render_tool_result_lines, render_user_text, tool_arg_summary, tool_status_color,
-    tool_status_glyph, truncate,
-};
-use crate::line_utils::prefix_lines;
+use crate::chatwidget::{render_tool_result_lines, render_user_text, tool_arg_summary};
+use crate::line_utils::{prefix_lines, push_owned_lines};
 use crate::markdown_render;
 use crate::render::renderable::Renderable;
 use crate::style::user_message_style;
-use crate::wrapping::{RtOptions, adaptive_wrap_lines};
+use crate::wrapping::{RtOptions, adaptive_wrap_line, adaptive_wrap_lines};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, WidgetRef, Wrap};
 
@@ -96,73 +93,142 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
             if text.is_empty() {
                 return out;
             }
+            // Direct adaptation of Codex's `AgentMarkdownCell`: render the
+            // source at the reserved content width, then let Codex's wrapper
+            // own the bullet and continuation indentation.
             let markdown = markdown_render::render_markdown_text_with_width(
                 text,
                 Some(width.saturating_sub(2).max(1)),
             )
             .lines;
-            out.extend(prefix_lines(
+            out.extend(adaptive_wrap_lines(
                 markdown,
-                Span::from("• ").dim(),
-                Span::from("  "),
+                RtOptions::new(width)
+                    .initial_indent("• ".dim().into())
+                    .subsequent_indent("  ".into()),
             ));
         }
         Cell::Reasoning { text, .. } => {
-            let style = Style::default().dim().italic();
-            let lines = text
-                .lines()
-                .map(|line| Line::from(Span::styled(line.to_string(), style)))
-                .collect::<Vec<_>>();
-            out.extend(prefix_lines(
-                lines,
-                Span::from("• ").dim(),
-                Span::from("  "),
+            // Copied from Codex's `ReasoningSummaryCell::lines`, using the
+            // already-migrated markdown renderer in place of `append_markdown`.
+            let summary_style = Style::default().dim().italic();
+            let summary_lines = markdown_render::render_markdown_text_with_width(
+                text,
+                Some(width.saturating_sub(2).max(1)),
+            )
+            .lines
+            .into_iter()
+            .map(|mut line| {
+                line.spans = line
+                    .spans
+                    .into_iter()
+                    .map(|span| span.patch_style(summary_style))
+                    .collect();
+                line
+            })
+            .collect::<Vec<_>>();
+            out.extend(adaptive_wrap_lines(
+                summary_lines,
+                RtOptions::new(width)
+                    .initial_indent("• ".dim().into())
+                    .subsequent_indent("  ".into()),
             ));
         }
         Cell::ToolGroup { agent, items } => {
-            out.push(Line::from(Span::styled(
-                format!(
-                    "  ⚒ {} · {} tool{}",
-                    agent.label(),
-                    items.len(),
-                    if items.len() == 1 { "" } else { "s" }
-                ),
-                Style::default().fg(Color::Yellow),
-            )));
             for item in items {
-                out.push(Line::from(Span::styled(
-                    format!(
-                        "    {} {}({})",
-                        tool_status_glyph(item),
-                        item.name,
-                        truncate(&tool_arg_summary(&item.name, &item.args), 72)
-                    ),
-                    tool_status_color(item),
-                )));
-                out.extend(render_tool_result_lines(
-                    &item.name,
-                    &item.args,
-                    item.result.as_ref(),
-                    item.error.as_deref(),
-                ));
+                out.extend(render_tool_call_lines(agent.label(), item, width));
             }
-            out.push(Line::from(""));
         }
         Cell::System { text, kind } => {
-            let color = match kind {
-                SysKind::Info => Color::DarkGray,
-                SysKind::Error => Color::Red,
-            };
-            out.extend(text.lines().map(|line| {
-                Line::from(Span::styled(
-                    format!("  {line}"),
-                    Style::default().fg(color),
-                ))
-            }));
-            out.push(Line::from(""));
+            // Direct adaptation of Codex's `new_info_event` and
+            // `new_error_event` in `history_cell/notices.rs`.
+            match kind {
+                SysKind::Info => out.push(vec!["• ".dim(), text.clone().into()].into()),
+                SysKind::Error => out.push(vec![format!("■ {text}").red()].into()),
+            }
         }
     }
     out
+}
+
+/// Direct adaptation of Codex's `McpToolCallCell::display_lines` for
+/// AutoReport's generic tool protocol. The only project-specific part is the
+/// invocation text: Codex has an MCP invocation type, while AutoReport has a
+/// tool name, JSON arguments, and an agent owner.
+fn render_tool_call_lines(
+    agent: &str,
+    item: &crate::app_state::ToolEntry,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let status = match (&item.result, &item.error) {
+        (_, Some(_)) => Some(false),
+        (Some(_), None) => Some(true),
+        (None, None) => None,
+    };
+    let bullet = match status {
+        Some(true) => "•".green().bold(),
+        Some(false) => "•".red().bold(),
+        None => "•".dim(),
+    };
+    let header_text = if status.is_some() {
+        "Called"
+    } else {
+        "Calling"
+    };
+    let invocation_line = Line::from(format!(
+        "{agent} · {}({})",
+        item.name,
+        tool_arg_summary(&item.name, &item.args)
+    ));
+    let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
+    let mut compact_header = Line::from(compact_spans.clone());
+    let reserved = compact_header.width();
+    let inline_invocation = invocation_line.width() <= width.saturating_sub(reserved);
+
+    let mut lines = Vec::new();
+    if inline_invocation {
+        compact_header.extend(invocation_line.spans);
+        lines.push(compact_header);
+    } else {
+        compact_spans.pop();
+        lines.push(Line::from(compact_spans));
+        let wrapped = adaptive_wrap_line(
+            &invocation_line,
+            RtOptions::new(width.saturating_sub(4).max(1))
+                .initial_indent("".into())
+                .subsequent_indent("    ".into()),
+        );
+        let mut body_lines = Vec::new();
+        push_owned_lines(&wrapped, &mut body_lines);
+        lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+    }
+
+    let detail_lines = render_tool_result_lines(
+        &item.name,
+        &item.args,
+        item.result.as_ref(),
+        item.error.as_deref(),
+    );
+    if !detail_lines.is_empty() {
+        let detail_width = width.saturating_sub(4).max(1);
+        let mut wrapped_details = Vec::new();
+        for detail in detail_lines {
+            let wrapped = adaptive_wrap_line(
+                &detail,
+                RtOptions::new(detail_width)
+                    .initial_indent("".into())
+                    .subsequent_indent("    ".into()),
+            );
+            push_owned_lines(&wrapped, &mut wrapped_details);
+        }
+        let initial_prefix = if inline_invocation {
+            "  └ ".dim()
+        } else {
+            "    ".into()
+        };
+        lines.extend(prefix_lines(wrapped_details, initial_prefix, "    ".into()));
+    }
+    lines
 }
 
 #[cfg(test)]

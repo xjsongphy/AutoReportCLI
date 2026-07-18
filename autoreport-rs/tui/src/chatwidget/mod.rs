@@ -1,6 +1,5 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
-use crate::app_state::ToolEntry;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -107,22 +106,6 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-pub(crate) fn tool_status_glyph(item: &ToolEntry) -> &'static str {
-    match (&item.result, &item.error) {
-        (_, Some(_)) => "✕",
-        (Some(_), None) => "✓",
-        (None, None) => "…",
-    }
-}
-
-pub(crate) fn tool_status_color(item: &ToolEntry) -> Color {
-    match (&item.result, &item.error) {
-        (_, Some(_)) => Color::Red,
-        (Some(_), None) => Color::Green,
-        (None, None) => Color::Yellow,
-    }
-}
-
 pub(crate) fn tool_arg_summary(name: &str, args: &Value) -> String {
     match name {
         "send_to_agent" => {
@@ -170,7 +153,7 @@ pub(crate) fn render_tool_result_lines(
             .lines()
             .map(|l| {
                 Line::from(Span::styled(
-                    format!("      error: {l}"),
+                    format!("Error: {l}"),
                     Style::default().fg(Color::Red),
                 ))
             })
@@ -190,7 +173,7 @@ pub(crate) fn render_tool_result_lines(
         .lines()
         .map(|l| {
             Line::from(Span::styled(
-                format!("      {l}"),
+                l.to_string(),
                 Style::default().fg(Color::DarkGray),
             ))
         })
@@ -244,19 +227,7 @@ pub(crate) fn render_file_change_lines(name: &str, args: &Value) -> Option<Vec<L
     if raw.trim().is_empty() {
         return None;
     }
-    Some(
-        crate::diff_render::render(&raw)
-            .into_iter()
-            .map(indent_line)
-            .collect(),
-    )
-}
-
-pub(crate) fn indent_line(mut line: Line<'static>) -> Line<'static> {
-    let mut spans = Vec::with_capacity(line.spans.len() + 1);
-    spans.push(Span::raw("      "));
-    spans.append(&mut line.spans);
-    Line::from(spans)
+    Some(crate::diff_render::render(&raw).into_iter().collect())
 }
 
 pub(crate) fn pretty(v: &serde_json::Value) -> String {
