@@ -33,7 +33,8 @@ pub struct Tui {
     pub(crate) bus: Bus,
     pub(crate) autoreport_home: PathBuf,
     pub(crate) workspace: PathBuf,
-    pub(crate) provider_id: String,
+    pub(crate) main_model: String,
+    pub(crate) sub_model: String,
     pub(crate) history: Vec<Cell>,
     pub(crate) statuses: HashMap<AgentType, AgentStatus>,
     pub(crate) focused: AgentType,
@@ -63,7 +64,8 @@ impl Tui {
         bus: Bus,
         autoreport_home: PathBuf,
         workspace: PathBuf,
-        provider_id: String,
+        main_model: String,
+        sub_model: String,
     ) -> Self {
         let index = FileIndex::new(&workspace);
         index.refresh();
@@ -74,7 +76,8 @@ impl Tui {
             autoreport_home,
             rx,
             workspace,
-            provider_id,
+            main_model,
+            sub_model,
             history: Vec::new(),
             statuses: HashMap::new(),
             focused: AgentType::Main,

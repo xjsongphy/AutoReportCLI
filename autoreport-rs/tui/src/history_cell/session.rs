@@ -1,7 +1,7 @@
 //! Session header history cell migrated from Codex's `history_cell/session.rs`.
 
 use super::HistoryCell;
-use ratatui::style::Stylize;
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
@@ -50,43 +50,36 @@ pub(crate) fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 #[derive(Debug)]
 pub(crate) struct SessionHeaderHistoryCell {
-    provider: String,
+    version: &'static str,
+    model: String,
+    model_style: Style,
     directory: PathBuf,
 }
 
 impl SessionHeaderHistoryCell {
-    pub(crate) fn new(provider: String, directory: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(model: String, directory: impl Into<PathBuf>) -> Self {
         Self {
-            provider,
+            version: env!("CARGO_PKG_VERSION"),
+            model,
+            model_style: Style::default(),
             directory: directory.into(),
         }
     }
 
-    fn format_directory(&self, max_width: usize) -> String {
-        let value = self.directory.display().to_string();
-        if UnicodeWidthStr::width(value.as_str()) <= max_width {
-            value
-        } else {
-            let mut truncated = value
-                .chars()
-                .take(max_width.saturating_sub(1))
-                .collect::<String>();
-            truncated.push('…');
-            truncated
+    // Direct adaptation of Codex's `SessionHeaderHistoryCell::format_directory`.
+    // AutoReport does not have Codex's home-directory utility, so the path is
+    // kept absolute; the width budgeting and rendering remain identical.
+    fn format_directory(&self, max_width: Option<usize>) -> String {
+        let formatted = self.directory.display().to_string();
+        if let Some(max_width) = max_width {
+            if max_width == 0 {
+                return String::new();
+            }
+            if UnicodeWidthStr::width(formatted.as_str()) > max_width {
+                return crate::chatwidget::truncate(&formatted, max_width);
+            }
         }
-    }
-
-    fn format_provider(&self, max_width: usize) -> String {
-        if UnicodeWidthStr::width(self.provider.as_str()) <= max_width {
-            return self.provider.clone();
-        }
-        let mut truncated = self
-            .provider
-            .chars()
-            .take(max_width.saturating_sub(1))
-            .collect::<String>();
-        truncated.push('…');
-        truncated
+        formatted
     }
 }
 
@@ -95,20 +88,33 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let Some(inner_width) = card_inner_width(width, SESSION_HEADER_MAX_INNER_WIDTH) else {
             return Vec::new();
         };
+        // Copied from Codex's `SessionHeaderHistoryCell::display_lines`.
+        let make_row = |spans: Vec<Span<'static>>| Line::from(spans);
+        let title_spans: Vec<Span<'static>> = vec![
+            Span::from(">_ ").dim(),
+            Span::from("AutoReportCLI").bold(),
+            Span::from(" ").dim(),
+            Span::from(format!("(v{})", self.version)).dim(),
+        ];
+        const CHANGE_MODEL_HINT_COMMAND: &str = "/models";
+        const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
+        const DIR_LABEL: &str = "directory:";
+        let model_spans: Vec<Span<'static>> = vec![
+            Span::from("model: ").dim(),
+            Span::styled(self.model.clone(), self.model_style),
+            "   ".dim(),
+            CHANGE_MODEL_HINT_COMMAND.cyan(),
+            CHANGE_MODEL_HINT_EXPLANATION.dim(),
+        ];
+        let dir_prefix = format!("{DIR_LABEL} ");
+        let dir_prefix_width = UnicodeWidthStr::width(dir_prefix.as_str());
+        let dir_max_width = inner_width.saturating_sub(dir_prefix_width);
+        let dir = self.format_directory(Some(dir_max_width));
         let lines = vec![
-            Line::from(vec![
-                Span::from(">_ ").dim(),
-                Span::from("AutoReportCLI").bold(),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::from("provider: ").dim(),
-                Span::from(self.format_provider(inner_width.saturating_sub(10))),
-            ]),
-            Line::from(vec![
-                Span::from("directory: ").dim(),
-                Span::from(self.format_directory(inner_width.saturating_sub(11))),
-            ]),
+            make_row(title_spans),
+            make_row(Vec::new()),
+            make_row(model_spans),
+            make_row(vec![Span::from(dir_prefix).dim(), Span::from(dir)]),
         ];
         with_border(lines)
     }
@@ -129,9 +135,26 @@ mod tests {
             .map(|span| span.content.into_owned())
             .collect::<String>();
         assert!(rendered.contains("AutoReportCLI"));
-        assert!(rendered.contains("provider: openai"));
+        assert!(rendered.contains("model: openai"));
         assert!(rendered.contains("directory: /tmp/project"));
         assert!(rendered.contains("╭"));
         assert!(rendered.contains("╰"));
+    }
+
+    #[test]
+    fn renders_one_active_model_like_codex() {
+        let cell = SessionHeaderHistoryCell::new(
+            "anthropic/deepseek-v4-pro".into(),
+            PathBuf::from("/tmp/project"),
+        );
+        let rendered = cell
+            .display_lines(80)
+            .into_iter()
+            .flat_map(|line| line.spans)
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+
+        assert!(rendered.contains("model: anthropic/deepseek-v4-pro"));
+        assert!(!rendered.contains("sub:"));
     }
 }

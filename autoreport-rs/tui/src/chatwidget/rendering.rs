@@ -45,8 +45,12 @@ impl Tui {
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         use crate::history_cell::{HistoryCell, SessionHeaderHistoryCell};
-        let header =
-            SessionHeaderHistoryCell::new(self.provider_id.clone(), self.workspace.clone());
+        let model = if self.focused == autoreport_core::types::AgentType::Main {
+            self.main_model.clone()
+        } else {
+            self.sub_model.clone()
+        };
+        let header = SessionHeaderHistoryCell::new(model, self.workspace.clone());
         let mut lines = header.display_lines(width);
         lines.extend(crate::history_cell::render_history_lines(
             &self.history,

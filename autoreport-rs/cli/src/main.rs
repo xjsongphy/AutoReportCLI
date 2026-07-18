@@ -165,7 +165,9 @@ async fn run() -> Result<()> {
     let (sub_api, sub_model) = config::resolve_model(&settings, &settings.models.sub, "sub")?;
     let main_provider = build_provider(main_api, main_model)?;
     let sub_provider = build_provider(sub_api, sub_model)?;
-    let provider_id = format!("main: {} · sub: {}", main_provider.id(), sub_provider.id());
+    let main_model_id = main_provider.id().to_string();
+    let sub_model_id = sub_provider.id().to_string();
+    let provider_id = format!("main: {main_model_id} · sub: {sub_model_id}");
 
     log::info!("workspace: {}", workspace.display());
     log::info!("{}", provider_id);
@@ -187,7 +189,14 @@ async fn run() -> Result<()> {
 
     // 4) Run the codex-style TUI.
     let manager = Arc::new(manager);
-    let tui = Tui::new(manager, bus, autoreport_home, workspace, provider_id);
+    let tui = Tui::new(
+        manager,
+        bus,
+        autoreport_home,
+        workspace,
+        main_model_id,
+        sub_model_id,
+    );
     tui.run().await?;
 
     Ok(())
