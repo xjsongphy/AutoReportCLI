@@ -1,6 +1,7 @@
 //! OpenAI-compatible Chat Completions provider. Works for OpenAI, DeepSeek,
 //! OpenRouter, and any custom OpenAI-style endpoint.
 
+use crate::provider::sse::sse_frame_end;
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
 use anyhow::{Result, anyhow};
@@ -225,10 +226,17 @@ fn parse_final(v: &Value) -> LLMResponse {
         .pointer("/choices/0/message")
         .cloned()
         .unwrap_or(Value::Null);
-    let content = choice
-        .get("content")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string());
+    // OpenAI-compatible gateways normally return a string here, but newer
+    // OpenAI/OpenRouter responses may use an array of typed content parts.
+    // Normalize both shapes so a valid text answer cannot disappear merely
+    // because the gateway selected multipart output.
+    let content = extract_text_content(choice.get("content")).or_else(|| {
+        choice
+            .get("refusal")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    });
     let tool_calls = choice
         .get("tool_calls")
         .and_then(|c| c.as_array())
@@ -275,8 +283,30 @@ fn parse_final(v: &Value) -> LLMResponse {
         content,
         tool_calls,
         thinking: None,
+        thinking_signature: None,
         usage,
     }
+}
+
+fn extract_text_content(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        return (!text.is_empty()).then_some(text.to_string());
+    }
+    let parts = value.as_array()?;
+    let mut text = String::new();
+    for part in parts {
+        if let Some(fragment) = part.as_str() {
+            text.push_str(fragment);
+        } else if let Some(fragment) = part
+            .get("text")
+            .and_then(Value::as_str)
+            .or_else(|| part.get("content").and_then(Value::as_str))
+        {
+            text.push_str(fragment);
+        }
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 /// Accumulate tool-call fragments by index while streaming.
@@ -294,14 +324,18 @@ async fn run_stream(
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut tool_acc: BTreeMap<u64, ToolAccum> = BTreeMap::new();
+    // `build_body` sets `stream_options.include_usage`, so the terminal chunk
+    // carries a top-level `usage` object (prompt_tokens / completion_tokens).
+    // Capture it here so streamed turns report real token usage like Anthropic.
+    let mut usage: Option<Usage> = None;
 
     while let Some(chunk_res) = stream.next().await {
         let chunk = chunk_res?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find("\n\n") {
-            let frame: String = buf.drain(..idx + 2).collect();
+        while let Some((idx, delimiter_len)) = sse_frame_end(&buf) {
+            let frame: String = buf.drain(..idx + delimiter_len).collect();
             for line in frame.lines() {
-                let Some(payload) = line.strip_prefix("data: ") else {
+                let Some(payload) = line.strip_prefix("data:").map(str::trim_start) else {
                     continue;
                 };
                 let payload = payload.trim();
@@ -318,7 +352,24 @@ async fn run_stream(
                         .unwrap_or("stream error")
                         .to_string();
                     let _ = tx.send(Err(anyhow!(msg))).await;
-                    continue;
+                    // Stop processing: otherwise the trailing `done: true` chunk
+                    // below would mask this error from the consumer.
+                    return Ok(());
+                }
+                if let Some(u) = ev.get("usage") {
+                    usage = Some(Usage {
+                        input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                        output_tokens: u
+                            .get("completion_tokens")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0),
+                    });
+                }
+                if let Some(stop_reason) = ev
+                    .pointer("/choices/0/finish_reason")
+                    .and_then(|value| value.as_str())
+                {
+                    log::debug!("openai-compatible stream finish_reason={stop_reason}");
                 }
                 let delta = match ev.pointer("/choices/0/delta") {
                     Some(d) => d.clone(),
@@ -369,6 +420,20 @@ async fn run_stream(
                         }
                     }
                 }
+                if let Some(refusal) = delta.get("refusal").and_then(|c| c.as_str()) {
+                    if !refusal.is_empty() {
+                        let _ = tx
+                            .send(Ok(LLMStreamChunk {
+                                delta: Some(refusal.to_string()),
+                                thinking_delta: None,
+                                thinking_signature: None,
+                                tool_calls: None,
+                                done: false,
+                                usage: None,
+                            }))
+                            .await;
+                    }
+                }
             }
         }
     }
@@ -397,8 +462,55 @@ async fn run_stream(
                 Some(tool_calls)
             },
             done: true,
-            usage: None,
+            usage,
         }))
         .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_text_content, parse_final};
+    use serde_json::json;
+
+    #[test]
+    fn parses_multipart_chat_content_without_losing_body() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "text", "text": " second"}
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            parse_final(&response).content.as_deref(),
+            Some("first second")
+        );
+    }
+
+    #[test]
+    fn extracts_string_and_part_content_shapes() {
+        assert_eq!(
+            extract_text_content(Some(&json!("hello"))).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(
+            extract_text_content(Some(&json!([{"content": "world"}]))).as_deref(),
+            Some("world")
+        );
+    }
+
+    #[test]
+    fn preserves_chat_refusal_when_no_content_part_exists() {
+        let response = json!({
+            "choices": [{"message": {"refusal": "I can't help with that."}}]
+        });
+        assert_eq!(
+            parse_final(&response).content.as_deref(),
+            Some("I can't help with that.")
+        );
+    }
 }

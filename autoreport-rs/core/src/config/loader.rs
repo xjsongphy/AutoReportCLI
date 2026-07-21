@@ -30,6 +30,14 @@ pub const REQUIRED_DIRS: &[&str] = &[
     "Outline",
 ];
 
+/// Return whether the workspace already contains the complete report layout.
+///
+/// This only checks the fixed directory structure; files inside the report
+/// directories remain user-owned and are intentionally not inspected.
+pub fn workspace_is_complete(workspace: &Path) -> bool {
+    REQUIRED_DIRS.iter().all(|dir| workspace.join(dir).is_dir())
+}
+
 /// Create any missing required directories under `workspace`. Idempotent.
 pub fn ensure_workspace(workspace: &Path) -> Result<()> {
     for dir in REQUIRED_DIRS {
@@ -330,8 +338,28 @@ mod tests {
         let dir = tempdir().unwrap();
         ensure_workspace(dir.path()).unwrap();
         for d in REQUIRED_DIRS {
-            assert!(dir.path().join(d).exists(), "missing required dir {d}");
+            assert!(dir.path().join(d).is_dir(), "missing required dir {d}");
         }
+        assert!(workspace_is_complete(dir.path()));
+    }
+
+    #[test]
+    fn workspace_is_incomplete_when_a_required_dir_is_missing() {
+        let dir = tempdir().unwrap();
+        ensure_workspace(dir.path()).unwrap();
+        std::fs::remove_dir_all(dir.path().join("Plots/Fig")).unwrap();
+
+        assert!(!workspace_is_complete(dir.path()));
+    }
+
+    #[test]
+    fn workspace_is_incomplete_when_a_required_path_is_not_a_directory() {
+        let dir = tempdir().unwrap();
+        ensure_workspace(dir.path()).unwrap();
+        std::fs::remove_dir(dir.path().join("Tex")).unwrap();
+        std::fs::write(dir.path().join("Tex"), "not a directory").unwrap();
+
+        assert!(!workspace_is_complete(dir.path()));
     }
 
     #[test]

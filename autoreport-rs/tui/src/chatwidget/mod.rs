@@ -1,8 +1,6 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
-use crate::app_state::ToolEntry;
-use autoreport_core::types::{AgentStatus, AgentType};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
@@ -26,12 +24,7 @@ pub(crate) fn render_user_text(text: &str) -> Vec<Line<'static>> {
                     run.push(chars[i]);
                     i += 1;
                 }
-                spans.push(Span::styled(
-                    run,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
+                spans.push(Span::styled(run, Style::default().fg(Color::Cyan)));
             } else {
                 buf.push(chars[i]);
                 i += 1;
@@ -41,31 +34,6 @@ pub(crate) fn render_user_text(text: &str) -> Vec<Line<'static>> {
             spans.push(Span::raw(buf));
         }
         out.push(Line::from(spans));
-    }
-    out
-}
-
-pub(crate) fn render_reasoning_lines(
-    agent: AgentType,
-    text: &str,
-    streaming: bool,
-) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    out.push(Line::from(vec![Span::styled(
-        format!("{} thinking", agent.label()),
-        Style::default().fg(Color::DarkGray),
-    )]));
-    for line in text.lines() {
-        out.push(Line::from(Span::styled(
-            format!("  {line}"),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    if streaming {
-        if let Some(last) = out.last_mut() {
-            last.spans
-                .push(Span::styled("▍", Style::default().fg(Color::Yellow)));
-        }
     }
     out
 }
@@ -123,49 +91,6 @@ pub(crate) fn extract_mentions(text: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn status_mark(s: AgentStatus) -> &'static str {
-    match s {
-        AgentStatus::Idle => "○",
-        AgentStatus::Thinking => "●",
-        AgentStatus::RunningTool => "●",
-        AgentStatus::Queued => "○",
-        AgentStatus::Error => "✗",
-        AgentStatus::DebugMode => "●",
-    }
-}
-
-pub(crate) fn status_text(s: AgentStatus) -> &'static str {
-    match s {
-        AgentStatus::Idle => "idle",
-        AgentStatus::Thinking => "thinking",
-        AgentStatus::RunningTool => "running",
-        AgentStatus::Queued => "queued",
-        AgentStatus::Error => "error",
-        AgentStatus::DebugMode => "debug",
-    }
-}
-
-pub(crate) fn status_color(s: AgentStatus) -> Color {
-    match s {
-        AgentStatus::Idle => Color::DarkGray,
-        AgentStatus::Thinking => Color::Yellow,
-        AgentStatus::RunningTool => Color::Cyan,
-        AgentStatus::Queued => Color::DarkGray,
-        AgentStatus::Error => Color::Red,
-        AgentStatus::DebugMode => Color::Magenta,
-    }
-}
-
-pub(crate) fn agent_color(a: AgentType) -> Color {
-    match a {
-        AgentType::Main => Color::Green,
-        AgentType::DataAnalysis => Color::Cyan,
-        AgentType::Plotting => Color::Magenta,
-        AgentType::Theory => Color::Blue,
-        AgentType::Report => Color::Yellow,
-    }
-}
-
 pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -173,22 +98,6 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
         let mut t: String = s.chars().take(max).collect();
         t.push('…');
         t
-    }
-}
-
-pub(crate) fn tool_status_glyph(item: &ToolEntry) -> &'static str {
-    match (&item.result, &item.error) {
-        (_, Some(_)) => "✕",
-        (Some(_), None) => "✓",
-        (None, None) => "…",
-    }
-}
-
-pub(crate) fn tool_status_color(item: &ToolEntry) -> Color {
-    match (&item.result, &item.error) {
-        (_, Some(_)) => Color::Red,
-        (Some(_), None) => Color::Green,
-        (None, None) => Color::Yellow,
     }
 }
 
@@ -239,7 +148,7 @@ pub(crate) fn render_tool_result_lines(
             .lines()
             .map(|l| {
                 Line::from(Span::styled(
-                    format!("      error: {l}"),
+                    format!("Error: {l}"),
                     Style::default().fg(Color::Red),
                 ))
             })
@@ -259,7 +168,7 @@ pub(crate) fn render_tool_result_lines(
         .lines()
         .map(|l| {
             Line::from(Span::styled(
-                format!("      {l}"),
+                l.to_string(),
                 Style::default().fg(Color::DarkGray),
             ))
         })
@@ -313,19 +222,7 @@ pub(crate) fn render_file_change_lines(name: &str, args: &Value) -> Option<Vec<L
     if raw.trim().is_empty() {
         return None;
     }
-    Some(
-        crate::diff_render::render(&raw)
-            .into_iter()
-            .map(indent_line)
-            .collect(),
-    )
-}
-
-pub(crate) fn indent_line(mut line: Line<'static>) -> Line<'static> {
-    let mut spans = Vec::with_capacity(line.spans.len() + 1);
-    spans.push(Span::raw("      "));
-    spans.append(&mut line.spans);
-    Line::from(spans)
+    Some(crate::diff_render::render(&raw).into_iter().collect())
 }
 
 pub(crate) fn pretty(v: &serde_json::Value) -> String {
@@ -334,3 +231,5 @@ pub(crate) fn pretty(v: &serde_json::Value) -> String {
     }
     serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
 }
+
+mod rendering;

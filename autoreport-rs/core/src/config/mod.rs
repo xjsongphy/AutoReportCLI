@@ -10,6 +10,6 @@ pub mod schema;
 pub use loader::{
     ensure_autoreport_home, ensure_workspace, find_autoreport_home, load_settings,
     needs_api_config, needs_model_config, resolve_api_key, resolve_model, save_settings,
-    workspace_state_dir,
+    workspace_is_complete, workspace_state_dir,
 };
 pub use schema::{AgentDefaults, ModelAssignments, ModelConfig, Settings};

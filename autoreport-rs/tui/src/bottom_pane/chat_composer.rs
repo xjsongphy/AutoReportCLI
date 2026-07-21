@@ -1,0 +1,911 @@
+//! Chat composer migrated from Codex's `bottom_pane/chat_composer.rs`.
+//!
+//! AutoReport's command and mention catalog remains runtime-specific, while the editable draft,
+//! cursor, and bottom-pane rendering live in the same component boundary as Codex.
+//!
+//! Non-bracketed terminal paste classification lives in [`super::paste_burst`]; the event router
+//! feeds it plain characters and applies the resulting typed/paste decision here. Enter remains
+//! submit by default, but becomes a newline while the burst suppression window is active.
+
+use crate::render::renderable::Renderable;
+use crate::style::{accent_style, user_message_style};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Stylize;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, WidgetRef};
+use unicode_width::UnicodeWidthStr;
+
+// Same separator vocabulary as Codex's textarea word-motion helpers. Word
+// motion treats punctuation runs separately from identifier runs instead of
+// collapsing `foo.bar` into one word.
+const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
+fn is_word_separator(ch: char) -> bool {
+    WORD_SEPARATORS.contains(ch)
+}
+
+pub(crate) struct ChatComposer {
+    text: String,
+    cursor: usize,
+    focused_agent: String,
+    status_line: Option<Line<'static>>,
+    show_agent_picker: bool,
+    shortcuts_visible: bool,
+    history: Vec<String>,
+    history_index: Option<usize>,
+    draft_before_history: Option<String>,
+    history_search_query: Option<String>,
+    history_search_index: Option<usize>,
+    killed_text: Option<String>,
+}
+
+impl ChatComposer {
+    pub(crate) fn new(focused_agent: impl Into<String>) -> Self {
+        Self {
+            text: String::new(),
+            cursor: 0,
+            focused_agent: focused_agent.into(),
+            status_line: None,
+            show_agent_picker: true,
+            shortcuts_visible: false,
+            history: Vec::new(),
+            history_index: None,
+            draft_before_history: None,
+            history_search_query: None,
+            history_search_index: None,
+            killed_text: None,
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn record_history(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.trim().is_empty() && self.history.last() != Some(&text) {
+            self.history.push(text);
+        }
+    }
+
+    pub(crate) fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub(crate) fn set_text_and_cursor(&mut self, text: String, cursor: usize) {
+        self.text = text;
+        self.cursor = self.clamp_cursor(cursor.min(self.text.len()));
+        self.reset_history_search();
+    }
+
+    /// Remove a UTF-8-safe range immediately before the cursor. This is the
+    /// retro-capture operation used by Codex's non-bracketed paste detector.
+    pub(crate) fn remove_range_before_cursor(&mut self, start: usize) -> Option<String> {
+        if start > self.cursor || !self.text.is_char_boundary(start) {
+            return None;
+        }
+        let removed = self.text[start..self.cursor].to_string();
+        self.text.replace_range(start..self.cursor, "");
+        self.cursor = start;
+        Some(removed)
+    }
+
+    pub(crate) fn take_text(&mut self) -> String {
+        self.cursor = 0;
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        let text = std::mem::take(&mut self.text);
+        if !text.trim().is_empty() {
+            self.history.push(text.clone());
+        }
+        text
+    }
+
+    /// Codex's Ctrl-C editor behavior clears a non-empty draft without adding
+    /// it to command history. The kill buffer is intentionally preserved so a
+    /// subsequent Ctrl-Y still has the same semantics as the upstream editor.
+    pub(crate) fn clear_for_ctrl_c(&mut self) -> Option<String> {
+        if self.text.is_empty() {
+            return None;
+        }
+        let cleared = std::mem::take(&mut self.text);
+        self.cursor = 0;
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        Some(cleared)
+    }
+
+    pub(crate) fn insert(&mut self, ch: char) {
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        self.text.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    pub(crate) fn insert_text(&mut self, text: &str) {
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        self.text.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    /// Codex treats Shift+Enter as an editor newline while plain Enter submits.
+    pub(crate) fn insert_newline(&mut self) {
+        self.insert('\n');
+    }
+
+    pub(crate) fn delete_previous(&mut self) {
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        if self.cursor == 0 {
+            return;
+        }
+        let previous = self.text[..self.cursor]
+            .chars()
+            .next_back()
+            .expect("cursor is after a character");
+        self.killed_text = Some(previous.to_string());
+        self.cursor -= previous.len_utf8();
+        self.text.remove(self.cursor);
+    }
+
+    pub(crate) fn delete_next(&mut self) {
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let next = self.text[self.cursor..]
+            .chars()
+            .next()
+            .expect("cursor is before a character");
+        self.killed_text = Some(next.to_string());
+        self.text.drain(self.cursor..self.cursor + next.len_utf8());
+    }
+
+    pub(crate) fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= self.text[..self.cursor]
+                .chars()
+                .next_back()
+                .expect("cursor is after a character")
+                .len_utf8();
+        }
+    }
+
+    pub(crate) fn history_previous(&mut self) -> bool {
+        if self.history.is_empty() {
+            return false;
+        }
+        if self.history_index.is_none() {
+            self.draft_before_history = Some(self.text.clone());
+            self.history_index = Some(self.history.len());
+        }
+        let index = self.history_index.unwrap_or(0).saturating_sub(1);
+        self.history_index = Some(index);
+        self.text = self.history[index].clone();
+        self.cursor = self.text.len();
+        self.reset_history_search();
+        true
+    }
+
+    pub(crate) fn history_next(&mut self) -> bool {
+        let Some(index) = self.history_index else {
+            return false;
+        };
+        if index + 1 >= self.history.len() {
+            self.history_index = None;
+            self.text = self.draft_before_history.take().unwrap_or_default();
+        } else {
+            self.history_index = Some(index + 1);
+            self.text = self.history[index + 1].clone();
+        }
+        self.cursor = self.text.len();
+        self.reset_history_search();
+        true
+    }
+
+    /// Reverse-search the in-session history, matching Codex's Ctrl+R
+    /// direction. Persistent Codex history is owned by its history service;
+    /// AutoReport has no separate history daemon, so this searches the same
+    /// ordered entries already used by Up/Down recall.
+    pub(crate) fn history_search_previous(&mut self) -> bool {
+        let query = self
+            .history_search_query
+            .get_or_insert_with(|| self.text.clone())
+            .clone();
+        let start = self
+            .history_search_index
+            .unwrap_or(self.history.len())
+            .min(self.history.len());
+        let found = (0..start)
+            .rev()
+            .find(|&index| self.history[index].contains(&query));
+        let Some(index) = found else {
+            return false;
+        };
+        self.history_search_index = Some(index);
+        self.text = self.history[index].clone();
+        self.cursor = self.text.len();
+        true
+    }
+
+    /// Move forward through the current reverse-search session (Ctrl+S).
+    pub(crate) fn history_search_next(&mut self) -> bool {
+        let Some(query) = self.history_search_query.clone() else {
+            return false;
+        };
+        let start = self
+            .history_search_index
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(0);
+        let found = (start..self.history.len()).find(|&index| self.history[index].contains(&query));
+        let Some(index) = found else {
+            return false;
+        };
+        self.history_search_index = Some(index);
+        self.text = self.history[index].clone();
+        self.cursor = self.text.len();
+        true
+    }
+
+    pub(crate) fn history_search_active(&self) -> bool {
+        self.history_search_query.is_some()
+    }
+
+    pub(crate) fn history_search_query(&self) -> &str {
+        self.history_search_query.as_deref().unwrap_or_default()
+    }
+
+    pub(crate) fn accept_history_search(&mut self) {
+        self.reset_history_search();
+    }
+
+    pub(crate) fn cancel_history_search(&mut self) {
+        self.reset_history_search();
+    }
+
+    fn reset_history_search(&mut self) {
+        self.history_search_query = None;
+        self.history_search_index = None;
+    }
+
+    pub(crate) fn move_right(&mut self) {
+        if self.cursor < self.text.len() {
+            self.cursor += self.text[self.cursor..]
+                .chars()
+                .next()
+                .expect("cursor is before a character")
+                .len_utf8();
+        }
+    }
+
+    pub(crate) fn move_up(&mut self) -> bool {
+        let line_start = self.text[..self.cursor]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        if line_start == 0 {
+            return false;
+        }
+        let column = UnicodeWidthStr::width(&self.text[line_start..self.cursor]);
+        let previous_end = line_start.saturating_sub(1);
+        let previous_start = self.text[..previous_end]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        self.cursor = visual_column_cursor(&self.text, previous_start, previous_end, column);
+        true
+    }
+
+    pub(crate) fn move_down(&mut self) -> bool {
+        let line_end = self.text[self.cursor..]
+            .find('\n')
+            .map(|index| self.cursor + index)
+            .unwrap_or(self.text.len());
+        if line_end == self.text.len() {
+            return false;
+        }
+        let line_start = self.text[..self.cursor]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let column = UnicodeWidthStr::width(&self.text[line_start..self.cursor]);
+        let next_start = line_end + 1;
+        let next_end = self.text[next_start..]
+            .find('\n')
+            .map(|index| next_start + index)
+            .unwrap_or(self.text.len());
+        self.cursor = visual_column_cursor(&self.text, next_start, next_end, column);
+        true
+    }
+
+    pub(crate) fn move_word_left(&mut self) {
+        self.cursor = beginning_of_previous_word(&self.text, self.cursor);
+    }
+
+    pub(crate) fn move_word_right(&mut self) {
+        self.cursor = end_of_next_word(&self.text, self.cursor);
+    }
+
+    pub(crate) fn move_home(&mut self) {
+        self.cursor = self.text[..self.cursor]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+    }
+
+    pub(crate) fn move_end(&mut self) {
+        self.cursor = self.text[self.cursor..]
+            .find('\n')
+            .map(|index| self.cursor + index)
+            .unwrap_or(self.text.len());
+    }
+
+    pub(crate) fn delete_word_previous(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let boundary = beginning_of_previous_word(&self.text, self.cursor);
+        let killed = self.text[boundary..self.cursor].to_string();
+        self.text.replace_range(boundary..self.cursor, "");
+        self.killed_text = Some(killed);
+        self.cursor = boundary;
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+    }
+
+    pub(crate) fn delete_word_next(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let start = self.cursor;
+        let boundary = end_of_next_word(&self.text, start);
+        self.killed_text = Some(self.text[start..boundary].to_string());
+        self.text.replace_range(start..boundary, "");
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+    }
+
+    pub(crate) fn delete_to_home(&mut self) {
+        let home = self.text[..self.cursor]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        self.killed_text = Some(self.text[home..self.cursor].to_string());
+        self.text.replace_range(home..self.cursor, "");
+        self.cursor = home;
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+    }
+
+    pub(crate) fn delete_to_end(&mut self) {
+        let end = self.text[self.cursor..]
+            .find('\n')
+            .map(|index| self.cursor + index)
+            .unwrap_or(self.text.len());
+        self.killed_text = Some(self.text[self.cursor..end].to_string());
+        self.text.replace_range(self.cursor..end, "");
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.reset_history_search();
+    }
+
+    pub(crate) fn yank(&mut self) {
+        if let Some(text) = self.killed_text.clone() {
+            self.insert_text(&text);
+        }
+    }
+
+    pub(crate) fn set_focused_agent(&mut self, agent: impl Into<String>) {
+        self.focused_agent = agent.into();
+    }
+
+    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
+        self.status_line = status_line;
+    }
+
+    pub(crate) fn toggle_shortcuts(&mut self) {
+        self.shortcuts_visible = !self.shortcuts_visible;
+    }
+
+    fn clamp_cursor(&self, cursor: usize) -> usize {
+        if self.text.is_char_boundary(cursor) {
+            cursor
+        } else {
+            self.text
+                .char_indices()
+                .map(|(index, _)| index)
+                .take_while(|index| *index < cursor)
+                .last()
+                .unwrap_or(0)
+        }
+    }
+}
+
+impl Renderable for ChatComposer {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+
+        Block::default()
+            .style(user_message_style())
+            .render_ref(area, buf);
+
+        // This is Codex's multiline composer geometry: the prompt is shown on
+        // the first row and continuation rows use the same two-column indent.
+        let prompt = Span::from("›").bold();
+        let input_width = usize::from(area.width.saturating_sub(4).max(1));
+        let input_lines = if self.text.is_empty() {
+            vec!["Use /skills to list available skills".to_string()]
+        } else {
+            self.text
+                .split('\n')
+                .flat_map(|line| wrap_input_line(line, input_width))
+                .collect()
+        };
+        let max_input_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        for (row, text) in input_lines.iter().take(max_input_lines).enumerate() {
+            let line = if row == 0 {
+                let span = if self.text.is_empty() {
+                    Span::from(text.clone()).dim()
+                } else {
+                    Span::from(text.clone())
+                };
+                Line::from(vec![prompt.clone(), Span::raw(" "), span])
+            } else {
+                Line::from(vec![Span::raw("  "), Span::raw(text.clone())])
+            };
+            line.render_ref(
+                Rect::new(
+                    area.x + 1,
+                    area.y + 1 + u16::try_from(row).unwrap_or(u16::MAX),
+                    area.width.saturating_sub(2),
+                    1,
+                ),
+                buf,
+            );
+        }
+
+        let hint = if self.history_search_active() {
+            Line::from(vec![
+                Span::raw("  reverse-i-search: ").dim(),
+                Span::raw(self.history_search_query().to_string()).dim(),
+                Span::raw("  Enter accept · Esc cancel").dim(),
+            ])
+        } else if !self.shortcuts_visible {
+            self.status_line
+                .clone()
+                .unwrap_or_else(|| Line::from(Span::from("  ? for shortcuts").dim()))
+        } else if self.show_agent_picker {
+            Line::from(vec![
+                Span::raw("  ").dim(),
+                Span::styled(self.focused_agent.clone(), accent_style()),
+                Span::raw("  Tab switch agent   Enter send   @ files   / commands").dim(),
+            ])
+        } else {
+            Line::from(Span::from("  Enter send   @ files   / commands").dim())
+        };
+        // Codex truncates footer/status lines before painting them.  In
+        // particular this keeps a long provider/model id from running past
+        // the terminal edge while preserving the model name's leading text.
+        let hint = crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
+            hint,
+            usize::from(area.width),
+        );
+        hint.render_ref(
+            Rect::new(
+                area.x,
+                area.y
+                    + 1
+                    + u16::try_from(input_lines.len().min(max_input_lines)).unwrap_or(u16::MAX),
+                area.width,
+                1,
+            ),
+            buf,
+        );
+    }
+
+    fn desired_height(&self, _width: u16) -> u16 {
+        // Keep the composer bounded like Codex's textarea while allowing
+        // Shift+Enter drafts to remain visible instead of overflowing the
+        // transcript. The transcript flex child absorbs the remaining rows.
+        let width = usize::from(_width.saturating_sub(4).max(1));
+        let lines = if self.text.is_empty() {
+            1
+        } else {
+            self.text
+                .split('\n')
+                .map(|line| wrap_input_line(line, width).len())
+                .sum()
+        }
+        .max(1)
+        .min(8);
+        u16::try_from(lines + 3).unwrap_or(u16::MAX)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let prefix_width = UnicodeWidthStr::width("› ") as u16;
+        let before_cursor = &self.text[..self.cursor];
+        let (line_index, line_text) = before_cursor
+            .rsplit_once('\n')
+            .map(|(prefix, line)| (prefix.matches('\n').count() + 1, line))
+            .unwrap_or((0, before_cursor));
+        let input_width = usize::from(area.width.saturating_sub(4).max(1));
+        let wrapped_before = wrap_input_line(line_text, input_width);
+        let visual_row = line_index + wrapped_before.len().saturating_sub(1);
+        let cursor_width = UnicodeWidthStr::width(
+            wrapped_before
+                .last()
+                .map(String::as_str)
+                .unwrap_or_default(),
+        ) as u16;
+        let prefix_width = if visual_row == 0 { prefix_width } else { 2 };
+        Some((
+            area.x
+                .saturating_add(1)
+                .saturating_add(prefix_width)
+                .saturating_add(cursor_width)
+                .min(area.right().saturating_sub(1)),
+            area.y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(visual_row.min(7)).unwrap_or(u16::MAX)),
+        ))
+    }
+}
+
+fn beginning_of_previous_word(text: &str, cursor: usize) -> usize {
+    let prefix = &text[..cursor.min(text.len())];
+    let Some((last_idx, last)) = prefix
+        .char_indices()
+        .rev()
+        .find(|&(_, ch)| !ch.is_whitespace())
+    else {
+        return 0;
+    };
+    let separator = is_word_separator(last);
+    let mut boundary = last_idx;
+    let mut remaining_non_ascii = !last.is_ascii();
+    while boundary > 0 {
+        let (idx, ch) = prefix[..boundary]
+            .char_indices()
+            .next_back()
+            .expect("boundary is after a character");
+        if ch.is_whitespace() || is_word_separator(ch) != separator {
+            break;
+        }
+        // Unicode word boundaries in Codex treat adjacent CJK graphemes as
+        // separate navigation targets. Keep the same useful behavior without
+        // introducing another text segmentation dependency here.
+        if remaining_non_ascii && !ch.is_ascii() {
+            break;
+        }
+        remaining_non_ascii = !ch.is_ascii();
+        boundary = idx;
+    }
+    boundary
+}
+
+fn end_of_next_word(text: &str, cursor: usize) -> usize {
+    let suffix = &text[cursor.min(text.len())..];
+    let Some((first_offset, first)) = suffix.char_indices().find(|&(_, ch)| !ch.is_whitespace())
+    else {
+        return text.len();
+    };
+    let mut boundary = cursor.min(text.len()) + first_offset + first.len_utf8();
+    let separator = is_word_separator(first);
+    let mut previous_non_ascii = !first.is_ascii();
+    for (offset, ch) in suffix[first_offset + first.len_utf8()..].char_indices() {
+        if ch.is_whitespace() || is_word_separator(ch) != separator {
+            break;
+        }
+        if previous_non_ascii && !ch.is_ascii() {
+            break;
+        }
+        previous_non_ascii = !ch.is_ascii();
+        boundary =
+            cursor.min(text.len()) + first_offset + first.len_utf8() + offset + ch.len_utf8();
+    }
+    boundary
+}
+
+/// Convert a visual column back to a UTF-8 byte cursor on one logical line.
+/// Codex's textarea uses display width rather than byte offsets, which keeps
+/// vertical motion stable for CJK and wide glyphs.
+fn visual_column_cursor(text: &str, line_start: usize, line_end: usize, target: usize) -> usize {
+    let line = &text[line_start..line_end];
+    let mut width = 0usize;
+    for (offset, ch) in line.char_indices() {
+        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if width + ch_width > target {
+            return line_start + offset;
+        }
+        width += ch_width;
+        if width == target {
+            return line_start + offset + ch.len_utf8();
+        }
+    }
+    line_end
+}
+
+fn wrap_input_line(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut row_width = 0usize;
+    for ch in line.chars() {
+        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if !row.is_empty() && row_width + ch_width > width {
+            rows.push(std::mem::take(&mut row));
+            row_width = 0;
+        }
+        row.push(ch);
+        row_width += ch_width;
+    }
+    rows.push(row);
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::render::renderable::Renderable;
+    use ratatui::style::{Color, Modifier, Stylize};
+    use ratatui::text::{Line, Span};
+
+    use super::ChatComposer;
+
+    #[test]
+    fn composer_keeps_utf8_cursor_boundaries_during_editing() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert('你');
+        composer.insert('a');
+        assert_eq!(composer.text(), "你a");
+
+        composer.move_left();
+        composer.delete_previous();
+        assert_eq!(composer.text(), "a");
+        assert_eq!(composer.cursor(), 0);
+
+        composer.delete_next();
+        assert!(composer.text().is_empty());
+    }
+
+    #[test]
+    fn taking_text_resets_the_cursor() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert('a');
+        assert_eq!(composer.take_text(), "a");
+        assert_eq!(composer.cursor(), 0);
+        assert!(composer.text().is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_clears_draft_without_recording_history() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("draft");
+        assert_eq!(composer.clear_for_ctrl_c().as_deref(), Some("draft"));
+        assert!(composer.text().is_empty());
+        assert!(!composer.history_previous());
+    }
+
+    #[test]
+    fn history_navigation_restores_draft_after_last_entry() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("first");
+        assert_eq!(composer.take_text(), "first");
+        composer.insert_text("second");
+        assert_eq!(composer.take_text(), "second");
+        composer.insert_text("draft");
+
+        assert!(composer.history_previous());
+        assert_eq!(composer.text(), "second");
+        assert!(composer.history_previous());
+        assert_eq!(composer.text(), "first");
+        assert!(composer.history_next());
+        assert_eq!(composer.text(), "second");
+        assert!(composer.history_next());
+        assert_eq!(composer.text(), "draft");
+    }
+
+    #[test]
+    fn pasted_text_preserves_newlines() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("a\nb");
+        assert_eq!(composer.text(), "a\nb");
+        assert_eq!(composer.cursor(), 3);
+    }
+
+    #[test]
+    fn long_lines_wrap_and_keep_cursor_on_visual_tail() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("abcdefghij");
+        assert_eq!(composer.desired_height(10), 5);
+        let cursor = composer.cursor_pos(ratatui::layout::Rect::new(0, 0, 10, 8));
+        assert_eq!(cursor.map(|(_, y)| y), Some(2));
+    }
+
+    #[test]
+    fn codex_editing_shortcuts_preserve_utf8_and_line_boundaries() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("你好 world\nnext");
+        composer.move_home();
+        assert_eq!(composer.cursor(), "你好 world\n".len());
+        composer.move_left();
+        composer.delete_word_previous();
+        assert_eq!(composer.text(), "你好 \nnext");
+        composer.move_end();
+        assert_eq!(composer.cursor(), "你好 ".len());
+        composer.move_right();
+        composer.move_end();
+        composer.move_home();
+        composer.delete_to_end();
+        assert_eq!(composer.text(), "你好 \n");
+        composer.move_left();
+        composer.delete_to_home();
+        assert_eq!(composer.text(), "\n");
+    }
+
+    #[test]
+    fn multiline_vertical_motion_precedes_history_recall() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("ab\ncd\nef");
+        composer.move_home();
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), 3);
+        composer.move_home();
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), 0);
+        assert!(composer.move_down());
+        assert_eq!(composer.cursor(), 3);
+    }
+
+    #[test]
+    fn vertical_motion_uses_display_width_for_wide_glyphs() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("你a\nbcde");
+        composer.move_home();
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), 0);
+        assert!(composer.move_down());
+        composer.move_end();
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), "你a".len());
+    }
+
+    #[test]
+    fn codex_word_shortcuts_and_yank_round_trip() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("hello world");
+        composer.delete_word_previous();
+        assert_eq!(composer.text(), "hello ");
+        composer.yank();
+        assert_eq!(composer.text(), "hello world");
+        composer.move_word_left();
+        assert_eq!(composer.cursor(), 6);
+        composer.delete_word_next();
+        assert_eq!(composer.text(), "hello ");
+    }
+
+    #[test]
+    fn word_motion_matches_codex_separator_and_cjk_boundaries() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("foo.bar 你好");
+        composer.move_home();
+        composer.move_end();
+        composer.move_word_left();
+        assert_eq!(composer.cursor(), "foo.bar 你".len());
+        composer.move_word_left();
+        assert_eq!(composer.cursor(), "foo.bar ".len());
+        composer.move_word_left();
+        assert_eq!(composer.cursor(), "foo.".len());
+        composer.move_word_left();
+        assert_eq!(composer.cursor(), "foo".len());
+    }
+
+    #[test]
+    fn reverse_history_search_matches_and_advances() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("cargo test");
+        composer.take_text();
+        composer.insert_text("cargo build");
+        composer.take_text();
+        composer.insert_text("cargo");
+        assert!(composer.history_search_previous());
+        assert_eq!(composer.text(), "cargo build");
+        assert!(composer.history_search_previous());
+        assert_eq!(composer.text(), "cargo test");
+        assert!(composer.history_search_next());
+        assert_eq!(composer.text(), "cargo build");
+    }
+
+    #[test]
+    fn history_search_uses_codex_footer_mode_until_accept() {
+        let mut composer = ChatComposer::new("Main");
+        composer.record_history("cargo test");
+        composer.insert_text("cargo");
+        assert!(composer.history_search_previous());
+        let area = ratatui::layout::Rect::new(0, 0, 60, 5);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        composer.render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("reverse-i-search: cargo"));
+        composer.accept_history_search();
+        assert!(!composer.history_search_active());
+    }
+
+    #[test]
+    fn focused_agent_footer_is_not_dimmed_with_shortcuts() {
+        let mut composer = ChatComposer::new("Main");
+        composer.toggle_shortcuts();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 4)).expect("terminal");
+        terminal
+            .draw(|frame| composer.render(frame.area(), frame.buffer_mut()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let main_column = (0..80)
+            .find(|&x| buffer.cell((x, 2)).is_some_and(|cell| cell.symbol() == "M"))
+            .expect("agent label");
+        let cell = buffer.cell((main_column, 2)).expect("agent cell");
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(!cell.modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn empty_composer_renders_codex_status_line_when_shortcuts_are_hidden() {
+        let mut composer = ChatComposer::new("Main");
+        composer.set_status_line(Some(Line::from(vec![
+            Span::styled(
+                "gpt-5.6-luna",
+                ratatui::style::Style::default().fg(Color::Cyan),
+            ),
+            Span::from(" · ").dim(),
+            Span::styled("~", ratatui::style::Style::default().fg(Color::Green)),
+        ])));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 4);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        composer.render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("Use /skills to list available skills"));
+        assert!(rendered.contains("gpt-5.6-luna"));
+        assert!(rendered.contains("~"));
+    }
+
+    #[test]
+    fn long_status_line_is_truncated_before_footer_render() {
+        let mut composer = ChatComposer::new("Main");
+        composer.set_status_line(Some(Line::from(
+            "provider/this-is-a-very-long-model-name · ~/project",
+        )));
+        let area = ratatui::layout::Rect::new(0, 0, 20, 4);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        composer.render(area, &mut buffer);
+        let footer = (0..area.width)
+            .map(|x| buffer[(x, 2)].symbol())
+            .collect::<String>();
+        assert!(footer.contains('…'));
+        assert!(!footer.contains("project"));
+    }
+}

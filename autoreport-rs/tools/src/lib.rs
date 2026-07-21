@@ -9,6 +9,7 @@ pub mod exec_tool;
 pub mod file_tools;
 pub mod manifest;
 pub mod registry;
+pub mod request_user_input;
 pub mod task_tools;
 
 pub use registry::{ToolExecutionContext, ToolRegistry};

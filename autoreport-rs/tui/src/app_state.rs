@@ -1,29 +1,64 @@
 //! State owned by the terminal application.
 
 use crate::config_update::{ConfigScreen, Outcome};
+use crate::environment_setup::EnvironmentScreen;
 use crate::model_migration::ModelScreen;
-use autoreport_core::types::AgentType;
+use autoreport_core::request_user_input::{RequestUserInputAnswer, RequestUserInputQuestion};
+use autoreport_core::types::{AgentType, TaskStatus};
 use ratatui::Frame;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, atomic::AtomicBool};
+use std::time::Instant;
 
+#[derive(Debug)]
 pub(crate) enum Cell {
     User {
-        agent: AgentType,
+        _agent: AgentType,
         text: String,
     },
-    Assistant {
+    /// Transient Codex `AgentMessageCell` equivalent. The active stream is
+    /// mutated in place; the final contiguous run is consolidated into the
+    /// source-backed `AgentMarkdown` cell when the provider completes.
+    AgentMessage {
         agent: AgentType,
         text: String,
-        streaming: bool,
+        is_first_line: bool,
     },
-    Reasoning {
+    /// Source-backed Codex `AgentMarkdownCell` equivalent. The raw markdown is
+    /// retained so a resize re-renders from source instead of stale wrapped
+    /// terminal lines.
+    AgentMarkdown {
         agent: AgentType,
         text: String,
-        streaming: bool,
     },
     ToolGroup {
         agent: AgentType,
         items: Vec<ToolEntry>,
+    },
+    /// Codex-style collaborator history row.
+    Collab {
+        agent: AgentType,
+        title: ratatui::text::Line<'static>,
+        details: Vec<ratatui::text::Line<'static>>,
+    },
+    /// Codex's final-message separator with the completed turn duration.
+    TurnSeparator {
+        agent: AgentType,
+        elapsed_seconds: Option<u64>,
+    },
+    /// Source-backed Codex-style checkbox plan snapshot.
+    PlanUpdate {
+        agent: AgentType,
+        explanation: Option<String>,
+        steps: Vec<(String, TaskStatus)>,
+    },
+    /// Completed Codex request_user_input exchange.
+    UserInputResult {
+        agent: AgentType,
+        questions: Vec<RequestUserInputQuestion>,
+        answers: HashMap<String, RequestUserInputAnswer>,
+        interrupted: bool,
     },
     System {
         text: String,
@@ -31,14 +66,22 @@ pub(crate) enum Cell {
     },
 }
 
+#[derive(Debug)]
 pub(crate) struct ToolEntry {
     pub(crate) name: String,
     pub(crate) args: Value,
     pub(crate) result: Option<Value>,
     pub(crate) error: Option<String>,
+    /// Start time for Codex-style animated in-flight tool rows. Replayed
+    /// history has no live clock and leaves this as `None`.
+    pub(crate) started_at: Option<Instant>,
+    /// Provider-assigned tool call id, used to correlate a `ToolResult` with the
+    /// exact `ToolCall` even when the same tool is invoked more than once in
+    /// flight. `None` for replayed history where no live correlation is needed.
+    pub(crate) call_id: Option<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum SysKind {
     Info,
     Error,
@@ -54,6 +97,7 @@ pub(crate) struct Mention {
 pub(crate) enum Overlay {
     Api(ConfigScreen),
     Models(ModelScreen),
+    Environment(EnvironmentScreen),
 }
 
 impl Overlay {
@@ -61,6 +105,7 @@ impl Overlay {
         match self {
             Self::Api(screen) => screen.draw(frame),
             Self::Models(screen) => screen.draw(frame),
+            Self::Environment(screen) => screen.draw(frame),
         }
     }
 
@@ -68,6 +113,7 @@ impl Overlay {
         match self {
             Self::Api(screen) => screen.handle_key(key),
             Self::Models(screen) => screen.handle_key(key),
+            Self::Environment(screen) => screen.handle_key(key),
         }
     }
 
@@ -75,6 +121,7 @@ impl Overlay {
         match self {
             Self::Api(screen) => &screen.settings,
             Self::Models(screen) => &screen.settings,
+            Self::Environment(_) => panic!("environment overlay has no API settings"),
         }
     }
 }
@@ -87,4 +134,62 @@ pub(crate) struct PendingApproval {
     pub(crate) cwd: Option<String>,
     pub(crate) summary: Vec<autoreport_core::policy::ParsedCommand>,
     pub(crate) reason: Option<String>,
+}
+
+/// A Codex `request_user_input` prompt waiting in the shared TUI queue.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingUserInput {
+    pub(crate) agent: AgentType,
+    pub(crate) call_id: String,
+    pub(crate) questions: Vec<RequestUserInputQuestion>,
+    pub(crate) auto_resolution_ms: Option<u64>,
+    pub(crate) question_index: usize,
+    pub(crate) selected: usize,
+    pub(crate) draft: String,
+    pub(crate) cursor: usize,
+    pub(crate) answers: HashMap<String, String>,
+    pub(crate) started_at: Instant,
+}
+
+impl PendingUserInput {
+    pub(crate) fn new(
+        agent: AgentType,
+        call_id: String,
+        questions: Vec<RequestUserInputQuestion>,
+        auto_resolution_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            agent,
+            call_id,
+            questions,
+            auto_resolution_ms,
+            question_index: 0,
+            selected: 0,
+            draft: String::new(),
+            cursor: 0,
+            answers: HashMap::new(),
+            started_at: Instant::now(),
+        }
+    }
+
+    pub(crate) fn question(&self) -> Option<&RequestUserInputQuestion> {
+        self.questions.get(self.question_index)
+    }
+
+    pub(crate) fn timed_out(&self) -> bool {
+        self.auto_resolution_ms
+            .is_some_and(|ms| self.started_at.elapsed() >= std::time::Duration::from_millis(ms))
+    }
+}
+
+/// A locally-rendered user row whose runtime turn has not reached a tool call
+/// yet. This boundary lets Ctrl-C restore the submitted text and retract the
+/// row, separately from clearing an editor draft or interrupting a tool.
+pub(crate) struct PendingSubmission {
+    pub(crate) agent: AgentType,
+    pub(crate) text: String,
+    pub(crate) history_index: usize,
+    pub(crate) tool_started: bool,
+    pub(crate) cancelled: Arc<AtomicBool>,
+    pub(crate) submitted: Arc<AtomicBool>,
 }

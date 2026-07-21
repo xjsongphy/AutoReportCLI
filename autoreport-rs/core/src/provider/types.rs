@@ -99,6 +99,7 @@ pub struct LLMResponse {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub thinking: Option<String>,
+    pub thinking_signature: Option<String>,
     pub usage: Option<Usage>,
 }
 

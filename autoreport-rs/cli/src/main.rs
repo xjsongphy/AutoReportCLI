@@ -19,10 +19,12 @@ use std::sync::Arc;
 use autoreport_core::bus::Bus;
 use autoreport_core::config;
 use autoreport_core::config::Settings;
+use autoreport_core::environment;
 use autoreport_core::provider::build_provider;
 use autoreport_runtime::LoopManager;
 use autoreport_tui::Tui;
 use autoreport_tui::config_update::{ConfigScreen, Outcome};
+use autoreport_tui::environment_setup::EnvironmentScreen;
 use autoreport_tui::model_migration::ModelScreen;
 use autoreport_tui::workspace_confirm::{WorkspaceOutcome, WorkspaceScreen};
 
@@ -51,6 +53,11 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Apply OS-level process hardening as the very first thing (mirrors codex's
+    // `responses-api-proxy`): deny debugger attach (PT_DENY_ATTACH on macOS),
+    // scrub DYLD_* env, drop core dumps. Our binary holds API keys in memory,
+    // so this narrows the local-attach exfil surface. Best-effort; never fatal.
+    autoreport_process_hardening::pre_main_hardening();
     dispatch_windows_sandbox_wrapper();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -151,12 +158,24 @@ async fn run() -> Result<()> {
         }
     }
 
+    // Local tool and Python setup follows API/model selection and precedes the
+    // workspace trust gate, so the selected interpreter is available to every
+    // agent before its first prompt is assembled.
+    if environment::needs_python_config(&autoreport_home)? {
+        match run_environment_wizard(&autoreport_home, &workspace) {
+            Outcome::Saved => {}
+            Outcome::Cancelled => return Ok(()),
+        }
+    }
+
     // The selected directory is user data. Ask before creating the report
-    // layout or constructing the runtime (which creates the project-scoped
-    // state directory).
-    match run_workspace_confirmation(&workspace) {
-        WorkspaceOutcome::Confirmed => {}
-        WorkspaceOutcome::Cancelled => return Ok(()),
+    // layout only when the standard layout is not already present. Existing
+    // complete workspaces can proceed directly without another confirmation.
+    if !config::workspace_is_complete(&workspace) {
+        match run_workspace_confirmation(&workspace) {
+            WorkspaceOutcome::Confirmed => {}
+            WorkspaceOutcome::Cancelled => return Ok(()),
+        }
     }
 
     config::ensure_workspace(&workspace)?;
@@ -165,7 +184,13 @@ async fn run() -> Result<()> {
     let (sub_api, sub_model) = config::resolve_model(&settings, &settings.models.sub, "sub")?;
     let main_provider = build_provider(main_api, main_model)?;
     let sub_provider = build_provider(sub_api, sub_model)?;
-    let provider_id = format!("main: {} · sub: {}", main_provider.id(), sub_provider.id());
+    // Codex's session header receives the selected model slug, not the
+    // provider transport id. The latter includes prefixes such as
+    // `openai-responses/` and was the source of the header overflow shown in
+    // the original UI. Keep provider ids for diagnostics only.
+    let main_provider_id = main_provider.id().to_string();
+    let sub_provider_id = sub_provider.id().to_string();
+    let provider_id = format!("main: {main_provider_id} · sub: {sub_provider_id}");
 
     log::info!("workspace: {}", workspace.display());
     log::info!("{}", provider_id);
@@ -187,7 +212,14 @@ async fn run() -> Result<()> {
 
     // 4) Run the codex-style TUI.
     let manager = Arc::new(manager);
-    let tui = Tui::new(manager, bus, autoreport_home, workspace, provider_id);
+    let tui = Tui::new(
+        manager,
+        bus,
+        autoreport_home,
+        workspace,
+        main_model.to_string(),
+        sub_model.to_string(),
+    );
     tui.run().await?;
 
     Ok(())
@@ -207,6 +239,28 @@ fn run_model_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
         }
     };
     let mut screen = ModelScreen::new(settings, home.to_path_buf());
+    let outcome = screen
+        .run_fullscreen(&mut terminal)
+        .unwrap_or(Outcome::Cancelled);
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    outcome
+}
+
+/// Open the global Python/local-tool environment page after model selection.
+fn run_environment_wizard(home: &std::path::Path, workspace: &std::path::Path) -> Outcome {
+    enable_raw_mode().ok();
+    let _ = execute!(io::stdout(), EnterAlternateScreen);
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Outcome::Cancelled;
+        }
+    };
+    let mut screen = EnvironmentScreen::new(home.to_path_buf(), workspace.to_path_buf());
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);

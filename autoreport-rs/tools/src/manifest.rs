@@ -138,12 +138,27 @@ impl ManifestStore {
     }
 
     fn walk_dir(&self, dir: &Path, out: &mut Vec<ManifestFile>) {
+        self.walk_dir_bounded(dir, out, 0);
+    }
+
+    /// Bounded recursive walk. Depth and total-entry caps stop a pathological
+    /// tree (deeply nested or huge) from consuming unbounded CPU/memory on
+    /// every `record()` after a mutating tool call. Symlinks are still skipped.
+    fn walk_dir_bounded(&self, dir: &Path, out: &mut Vec<ManifestFile>, depth: usize) {
+        const MAX_DEPTH: usize = 16;
+        const MAX_ENTRIES: usize = 50_000;
+        if depth > MAX_DEPTH || out.len() >= MAX_ENTRIES {
+            return;
+        }
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
+            if out.len() >= MAX_ENTRIES {
+                return;
+            }
             let path = entry.path();
             let file_name = entry.file_name();
             let file_name = file_name.to_string_lossy();
@@ -160,7 +175,7 @@ impl ManifestStore {
                 if Self::should_ignore_dir(&file_name) {
                     continue;
                 }
-                self.walk_dir(&path, out);
+                self.walk_dir_bounded(&path, out, depth + 1);
                 continue;
             }
             if Self::should_ignore_file(&file_name) {

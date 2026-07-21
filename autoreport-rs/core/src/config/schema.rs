@@ -52,7 +52,7 @@ impl Default for Settings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
-    /// "anthropic" | "openai" | "deepseek" | "openrouter" | "google" | "custom"
+    /// "anthropic" | "openai" | "openai-responses" | "deepseek" | "openrouter" | "google" | "custom"
     #[serde(default = "default_kind")]
     pub kind: String,
     /// Optional user-facing name. When omitted, the provider map key (usually
@@ -111,7 +111,7 @@ impl ProviderConfig {
     pub fn env_key(&self) -> Option<&'static str> {
         match self.kind.as_str() {
             "anthropic" => Some("ANTHROPIC_API_KEY"),
-            "openai" => Some("OPENAI_API_KEY"),
+            "openai" | "openai-responses" => Some("OPENAI_API_KEY"),
             "deepseek" => Some("DEEPSEEK_API_KEY"),
             "openrouter" => Some("OPENROUTER_API_KEY"),
             "google" => Some("GEMINI_API_KEY"),

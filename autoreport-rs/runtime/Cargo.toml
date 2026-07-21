@@ -25,6 +25,7 @@ autoreport-core = { path = "../core" }
 autoreport-rollout = { path = "../rollout" }
 autoreport-sandboxing = { path = "../sandboxing" }
 autoreport-tools = { path = "../tools" }
+autoreport-utils-string = { path = "../utils/string" }
 
 [dev-dependencies]
 tempfile = "3"

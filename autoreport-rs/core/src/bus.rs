@@ -12,6 +12,7 @@
 //! ported from codex's `approval_overlay.rs`.
 
 use crate::policy::ReviewDecision;
+use crate::request_user_input::RequestUserInputResponse;
 use crate::types::BusMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +27,8 @@ pub struct Bus {
     /// This is the reply half of the approval flow (codex's analog is its
     /// app-server `RequestId` resolution).
     approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ReviewDecision>>>>,
+    /// Pending Codex-compatible user-input requests.
+    user_inputs: Arc<Mutex<HashMap<String, oneshot::Sender<RequestUserInputResponse>>>>,
 }
 
 impl Bus {
@@ -34,6 +37,7 @@ impl Bus {
         Self {
             tx: Arc::new(tx),
             approvals: Arc::new(Mutex::new(HashMap::new())),
+            user_inputs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -53,7 +57,16 @@ impl Bus {
     /// with the same `call_id` so the TUI can surface it.
     pub async fn register_approval(&self, call_id: &str) -> oneshot::Receiver<ReviewDecision> {
         let (tx, rx) = oneshot::channel();
-        self.approvals.lock().await.insert(call_id.to_string(), tx);
+        let mut pending = self.approvals.lock().await;
+        // `HashMap::insert` overwrites a duplicate `call_id` (retry, race,
+        // restarted agent) and returns the stale sender, which we drop here —
+        // dropping it closes that oneshot, so the prior awaiter observes a
+        // cancellation (`recv()` → `None`) instead of blocking forever. This
+        // mirrors codex `session::insert_pending_approval` + the caller's
+        // collision `warn!` (`codex-rs/core/src/session/mod.rs`).
+        if let Some(_stale) = pending.insert(call_id.to_string(), tx) {
+            log::warn!("overwriting existing pending approval for call_id: {call_id}");
+        }
         rx
     }
 
@@ -64,6 +77,31 @@ impl Bus {
         let mut pending = self.approvals.lock().await;
         if let Some(tx) = pending.remove(call_id) {
             let _ = tx.send(decision);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn register_user_input(
+        &self,
+        call_id: &str,
+    ) -> oneshot::Receiver<RequestUserInputResponse> {
+        let (tx, rx) = oneshot::channel();
+        let mut pending = self.user_inputs.lock().await;
+        pending.remove(call_id);
+        pending.insert(call_id.to_string(), tx);
+        rx
+    }
+
+    pub async fn resolve_user_input(
+        &self,
+        call_id: &str,
+        response: RequestUserInputResponse,
+    ) -> bool {
+        let mut pending = self.user_inputs.lock().await;
+        if let Some(tx) = pending.remove(call_id) {
+            let _ = tx.send(response);
             true
         } else {
             false
@@ -114,5 +152,23 @@ mod tests {
         });
         let msg = rx.recv().await.unwrap();
         assert!(matches!(msg, BusMessage::ApprovalRequest { .. }));
+    }
+
+    #[tokio::test]
+    async fn user_input_broker_round_trips_response() {
+        let bus = Bus::new();
+        let rx = bus.register_user_input("question-1").await;
+        let mut answers = HashMap::new();
+        answers.insert(
+            "q".to_string(),
+            crate::request_user_input::RequestUserInputAnswer {
+                answers: vec!["yes".to_string()],
+            },
+        );
+        assert!(
+            bus.resolve_user_input("question-1", RequestUserInputResponse { answers },)
+                .await
+        );
+        assert_eq!(rx.await.unwrap().answers["q"].answers, ["yes"]);
     }
 }

@@ -24,23 +24,34 @@ pub(crate) fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
     // (thinking text, signature) carried from a preceding Reasoning item to
     // the next assistant message.
     let mut pending_thinking: Option<(String, Option<String>)> = None;
-    let flush = |pending: &mut Vec<ProviderToolCall>, out: &mut Vec<Message>| {
+    // Flush pending tool calls as one assistant message. A preceding `Reasoning`
+    // item belongs to *this* assistant turn — its signature must round-trip on
+    // the same message that carries the tool_calls (providers reject a thinking
+    // signature attached to a later, unrelated message), so consume
+    // `pending_thinking` here rather than letting it leak onto the next turn.
+    let flush = |pending: &mut Vec<ProviderToolCall>,
+                 out: &mut Vec<Message>,
+                 pending_thinking: &mut Option<(String, Option<String>)>| {
         if !pending.is_empty() {
             let calls = std::mem::take(pending);
+            let (thinking, signature): (Option<String>, Option<String>) = pending_thinking
+                .take()
+                .map(|(t, s)| (Some(t), s))
+                .unwrap_or((None::<String>, None::<String>));
             out.push(Message {
                 role: "assistant".into(),
                 content: String::new(),
                 tool_calls: Some(calls),
                 tool_call_id: None,
-                thinking: None,
-                thinking_signature: None,
+                thinking,
+                thinking_signature: signature,
             });
         }
     };
     for item in items {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                flush(&mut pending, &mut out);
+                flush(&mut pending, &mut out, &mut pending_thinking);
                 let text: String = content.iter().map(|c| c.text().to_string()).collect();
                 let (thinking, signature) = if role == "assistant" {
                     match pending_thinking.take() {
@@ -76,7 +87,7 @@ pub(crate) fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
             ResponseItem::FunctionCallOutput {
                 call_id, output, ..
             } => {
-                flush(&mut pending, &mut out);
+                flush(&mut pending, &mut out, &mut pending_thinking);
                 out.push(Message::tool_result(call_id, output));
             }
             ResponseItem::Reasoning {
@@ -97,15 +108,21 @@ pub(crate) fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
                     })
                     .unwrap_or_default();
                 let sig = encrypted_content.clone();
-                flush(&mut pending, &mut out);
-                if !text.is_empty() {
+                flush(&mut pending, &mut out, &mut pending_thinking);
+                if !text.is_empty() || sig.as_deref().is_some_and(|sig| !sig.is_empty()) {
                     pending_thinking = Some((text, sig.filter(|s| !s.is_empty())));
                 }
             }
             ResponseItem::Compaction { encrypted_content } => {
+                if encrypted_content == "__autoreport_retract_last_user__" {
+                    // This is an append-only rollout tombstone. Runtime
+                    // history is normalized on resume; tolerate it here too
+                    // so a live context never sends the marker to the model.
+                    continue;
+                }
                 // Re-feed the compaction summary to the model as a context note
                 // (otherwise compact() would trim history and tell nobody).
-                flush(&mut pending, &mut out);
+                flush(&mut pending, &mut out, &mut pending_thinking);
                 pending_thinking = None;
                 let text = format!(
                     "[This conversation was compacted. Summary of prior context:]\n\n{}",
@@ -127,7 +144,7 @@ pub(crate) fn items_to_messages(items: &[ResponseItem]) -> Vec<Message> {
             }
         }
     }
-    flush(&mut pending, &mut out);
+    flush(&mut pending, &mut out, &mut pending_thinking);
     // Normalize: every assistant tool_call must have a matching tool result,
     // else providers reject the request with a 400. Inject a synthetic
     // "[aborted]" result for any orphaned call id. (codex:

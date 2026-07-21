@@ -6,7 +6,9 @@
 pub mod anthropic;
 pub mod factory;
 pub mod openai;
+pub mod openai_responses;
 pub mod retry;
+pub(crate) mod sse;
 pub mod trait_def;
 pub mod types;
 

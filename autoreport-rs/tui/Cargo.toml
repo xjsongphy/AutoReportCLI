@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+arboard.workspace = true
 base64.workspace = true
 chrono.workspace = true
 crossterm.workspace = true
@@ -28,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
+supports-color.workspace = true
 syntect.workspace = true
 textwrap.workspace = true
 thiserror.workspace = true
@@ -38,6 +40,7 @@ two-face.workspace = true
 url.workspace = true
 urlencoding.workspace = true
 uuid.workspace = true
+unicode-width.workspace = true
 autoreport-core = { path = "../core" }
 autoreport-runtime = { path = "../runtime" }
 autoreport-rollout = { path = "../rollout" }

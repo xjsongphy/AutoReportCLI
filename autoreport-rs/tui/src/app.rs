@@ -1,17 +1,26 @@
 //! Codex-style terminal UI.
 //!
-//! Layout: top status bar, scrolling markdown-rendered history, bottom input
-//! box, and an `@` file-mention popup. Built on ratatui + crossterm. Agent loops
-//! run in background tasks; the TUI subscribes to the bus to render their
-//! streamed output.
+//! Layout: Codex-style scrolling transcript, bottom-pane composer, and an `@` file-mention popup.
+//! Built on ratatui + crossterm. Agent loops run in background tasks; the TUI subscribes to the
+//! bus to render their streamed output.
 
-use crate::app_state::{Cell, Mention, Overlay, PendingApproval, SysKind, ToolEntry};
+use crate::app_state::{
+    Cell, Mention, Overlay, PendingApproval, PendingSubmission, PendingUserInput, SysKind,
+    ToolEntry,
+};
+use crate::bottom_pane::paste_burst::PasteBurst;
+use crate::bottom_pane::{ChatComposer, PendingInputPreview};
+use crate::clipboard_copy::ClipboardLease;
 use crate::config_update::ConfigScreen;
+use crate::environment_setup::EnvironmentScreen;
 use crate::file_search::FileIndex;
+use crate::frame_requester::FrameRequester;
 use crate::model_migration::ModelScreen;
+use crate::pager_overlay::PagerOverlay;
 use crate::slash_command::SlashCompletion;
 use autoreport_core::bus::Bus;
 use autoreport_core::config::load_settings;
+use autoreport_core::request_user_input::RequestUserInputQuestion;
 use autoreport_core::types::{AgentStatus, AgentType, BusMessage};
 use autoreport_rollout::ResponseItem;
 use autoreport_runtime::LoopManager;
@@ -22,10 +31,11 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_stream::StreamExt;
 
 pub struct Tui {
@@ -33,22 +43,34 @@ pub struct Tui {
     pub(crate) bus: Bus,
     pub(crate) autoreport_home: PathBuf,
     pub(crate) workspace: PathBuf,
-    pub(crate) workspace_display: String,
-    pub(crate) provider_id: String,
+    pub(crate) main_model: String,
+    pub(crate) sub_model: String,
     pub(crate) history: Vec<Cell>,
     pub(crate) statuses: HashMap<AgentType, AgentStatus>,
+    pub(crate) status_since: HashMap<AgentType, Instant>,
     pub(crate) focused: AgentType,
-    pub(crate) input: String,
-    pub(crate) cursor: usize,
+    pub(crate) composer: ChatComposer,
+    pub(crate) pending_input_preview: PendingInputPreview,
+    /// Follow-up inputs are held here while the focused agent is in a turn,
+    /// matching Codex's input_queue plus PendingInputPreview.
+    pub(crate) queued_inputs: HashMap<AgentType, VecDeque<String>>,
+    pub(crate) pending_submissions: Vec<PendingSubmission>,
+    pub(crate) suppress_until_idle: HashSet<AgentType>,
+    pub(crate) paste_burst: PasteBurst,
     pub(crate) scroll: usize,
     rx: tokio::sync::broadcast::Receiver<BusMessage>,
     pub(crate) index: FileIndex,
     pub(crate) mention: Option<Mention>,
     pub(crate) slash: Option<SlashCompletion>,
+    pub(crate) dismissed_mention: Option<String>,
+    pub(crate) dismissed_slash: Option<String>,
     pub(crate) overlay: Option<Overlay>,
+    pub(crate) pager: Option<PagerOverlay>,
+    /// Codex's copy-friendly raw transcript mode (Alt+R).
+    pub(crate) raw_output: bool,
     pub(crate) want_config: bool,
     pub(crate) want_models: bool,
-    pub(crate) tick: usize,
+    pub(crate) want_environment: bool,
     // `/ide` toggle state — mirrors codex's IdeContextState. When enabled, each
     // outgoing user turn is prefixed with IDE context fetched over the codex
     // IPC socket (`\\.\pipe\codex-ipc` / `$TMPDIR/codex-ipc/ipc-<uid>.sock`).
@@ -57,7 +79,15 @@ pub struct Tui {
     /// Pending human-approval requests from any agent (single shared channel —
     /// ported from codex's `ApprovalOverlay` queue). Front = currently shown.
     pub(crate) pending_approvals: VecDeque<PendingApproval>,
+    /// Shared queue for Codex-compatible user-input prompts.
+    pub(crate) pending_user_inputs: VecDeque<PendingUserInput>,
+    pub(crate) user_input_requests: HashMap<String, (AgentType, Vec<RequestUserInputQuestion>)>,
     pub(crate) exit_requested: bool,
+    pub(crate) clipboard_lease: Option<ClipboardLease>,
+    /// Codex's status widget owns its next-frame requests. The requester is
+    /// installed when the terminal loop starts, because it needs the draw
+    /// broadcast channel created by `run`.
+    pub(crate) frame_requester: Option<FrameRequester>,
 }
 
 impl Tui {
@@ -66,9 +96,9 @@ impl Tui {
         bus: Bus,
         autoreport_home: PathBuf,
         workspace: PathBuf,
-        provider_id: String,
+        main_model: String,
+        sub_model: String,
     ) -> Self {
-        let workspace_display = workspace.display().to_string();
         let index = FileIndex::new(&workspace);
         index.refresh();
         let rx = bus.subscribe();
@@ -78,43 +108,70 @@ impl Tui {
             autoreport_home,
             rx,
             workspace,
-            workspace_display,
-            provider_id,
+            main_model,
+            sub_model,
             history: Vec::new(),
             statuses: HashMap::new(),
+            status_since: HashMap::new(),
             focused: AgentType::Main,
-            input: String::new(),
-            cursor: 0,
+            composer: ChatComposer::new(AgentType::Main.label()),
+            pending_input_preview: PendingInputPreview::new(),
+            queued_inputs: HashMap::new(),
+            pending_submissions: Vec::new(),
+            suppress_until_idle: HashSet::new(),
+            paste_burst: PasteBurst::default(),
             scroll: 0,
             index,
             mention: None,
             slash: None,
+            dismissed_mention: None,
+            dismissed_slash: None,
             overlay: None,
+            pager: None,
+            raw_output: false,
             want_config: false,
             want_models: false,
-            tick: 0,
+            want_environment: false,
             ide_enabled: false,
             ide_warned: false,
             pending_approvals: VecDeque::new(),
+            pending_user_inputs: VecDeque::new(),
+            user_input_requests: HashMap::new(),
             exit_requested: false,
+            clipboard_lease: None,
+            frame_requester: None,
         }
     }
 
     pub async fn run(mut self) -> io::Result<()> {
-        self.restore_history().await;
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
+        // Codex probes the terminal palette before its event stream owns stdin.
+        // Keep that ordering so OSC 10/11 replies cannot be mistaken for input,
+        // and let the shared palette choose the correct RGB/ANSI representation.
+        let colors = crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+            .ok()
+            .flatten();
+        crate::terminal_palette::set_default_colors_from_startup_probe(colors);
+
+        // Codex inserts session notices before replayed transcript cells, so a
+        // resumed conversation starts below the header/help surface.
         self.system(
             "AutoReportCLI ready. Type @ to mention a file, Tab switches agent, /help for commands.",
             SysKind::Info,
         );
+        self.restore_history().await;
 
         let mut events = EventStream::new();
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Codex uses a coalescing frame scheduler instead of a fixed polling
+        // sleep. The same requester drives the Working animation and elapsed
+        // timer without redrawing idle sessions.
+        let (draw_tx, mut draw_rx) = tokio::sync::broadcast::channel(8);
+        let frame_requester = FrameRequester::new(draw_tx);
+        self.frame_requester = Some(frame_requester.clone());
         loop {
             if self.want_config {
                 self.want_config = false;
@@ -134,22 +191,42 @@ impl Tui {
                     self.autoreport_home.clone(),
                 )));
             }
+            if self.want_environment {
+                self.want_environment = false;
+                self.overlay = Some(Overlay::Environment(EnvironmentScreen::new(
+                    self.autoreport_home.clone(),
+                    self.workspace.clone(),
+                )));
+            }
             terminal.draw(|f| self.draw(f))?;
 
             tokio::select! {
                 maybe_ev = events.next() => {
                     let Some(Ok(ev)) = maybe_ev else { break; };
                     if !self.handle_event(ev) { break; }
+                    if self.paste_burst.is_active() {
+                        frame_requester.schedule_frame_in(
+                            PasteBurst::recommended_flush_delay(),
+                        );
+                    }
                 }
                 msg = self.rx.recv() => {
                     match msg {
-                        Ok(m) => self.apply_bus(m),
+                        Ok(m) => {
+                            self.apply_bus(m);
+                            // State changes should redraw immediately; the
+                            // status widget owns subsequent animation ticks.
+                            frame_requester.schedule_frame();
+                        },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,
                     }
                 }
-                _ = interval.tick() => {
-                    self.tick = self.tick.wrapping_add(1);
+                _ = draw_rx.recv() => {
+                    self.flush_paste_burst_if_due(Instant::now());
+                    self.poll_user_input_deadlines();
+                    self.recompute_slash();
+                    self.recompute_mention();
                 }
             }
         }
@@ -176,69 +253,99 @@ impl Tui {
                             continue;
                         }
                         match role.as_str() {
-                            "user" => self.history.push(Cell::User { agent, text }),
-                            "assistant" => self.history.push(Cell::Assistant {
-                                agent,
-                                text,
-                                streaming: false,
-                            }),
+                            "user" => {
+                                self.composer.record_history(text.clone());
+                                self.history.push(Cell::User {
+                                    _agent: agent,
+                                    text,
+                                });
+                            }
+                            "assistant" => self.history.push(Cell::AgentMarkdown { agent, text }),
                             _ => {}
                         }
                     }
-                    ResponseItem::Reasoning {
-                        content, summary, ..
-                    } => {
-                        let text = content
-                            .as_ref()
-                            .map(|parts| {
-                                parts
-                                    .iter()
-                                    .map(|part| part.text())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .filter(|text| !text.trim().is_empty())
-                            .or_else(|| {
-                                let text = summary
-                                    .iter()
-                                    .map(|part| part.text())
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                (!text.trim().is_empty()).then_some(text)
-                            });
-                        if let Some(text) = text {
-                            self.history.push(Cell::Reasoning {
-                                agent,
-                                text,
-                                streaming: false,
-                            });
-                        }
-                    }
+                    // Codex keeps raw reasoning out of the normal transcript.
+                    // AutoReport follows that policy unconditionally: only
+                    // assistant text is rendered to the user.
+                    ResponseItem::Reasoning { .. } => {}
                     ResponseItem::FunctionCall {
-                        name, arguments, ..
+                        call_id,
+                        name,
+                        arguments,
+                        ..
                     } => {
-                        self.history.push(Cell::ToolGroup {
-                            agent,
-                            items: vec![ToolEntry {
-                                name,
-                                args: match serde_json::from_str(&arguments) {
-                                    Ok(value) => value,
-                                    Err(_) => serde_json::Value::String(arguments),
-                                },
-                                result: None,
-                                error: None,
-                            }],
-                        });
-                    }
-                    ResponseItem::FunctionCallOutput { output, .. } => {
+                        if name == "request_user_input"
+                            && let Ok(args) = serde_json::from_str::<
+                                autoreport_core::request_user_input::RequestUserInputArgs,
+                            >(&arguments)
+                        {
+                            self.user_input_requests
+                                .insert(call_id, (agent, args.questions));
+                            continue;
+                        }
+                        let item = ToolEntry {
+                            name,
+                            args: match serde_json::from_str(&arguments) {
+                                Ok(value) => value,
+                                Err(_) => serde_json::Value::String(arguments),
+                            },
+                            result: None,
+                            error: None,
+                            call_id: Some(call_id),
+                            started_at: None,
+                        };
                         if let Some(Cell::ToolGroup {
                             agent: owner,
                             items,
                         }) = self.history.last_mut()
                             && *owner == agent
-                            && let Some(entry) = items.last_mut()
                         {
-                            entry.result = Some(serde_json::Value::String(output));
+                            items.push(item);
+                        } else {
+                            self.history.push(Cell::ToolGroup {
+                                agent,
+                                items: vec![item],
+                            });
+                        }
+                    }
+                    ResponseItem::FunctionCallOutput { call_id, output } => {
+                        if let Some((owner, questions)) = self.user_input_requests.remove(&call_id)
+                        {
+                            let answers = serde_json::from_str::<serde_json::Value>(&output)
+                                .ok()
+                                .and_then(|value| value.get("answers").cloned())
+                                .and_then(|value| serde_json::from_value(value).ok())
+                                .unwrap_or_default();
+                            self.history.push(Cell::UserInputResult {
+                                agent: owner,
+                                questions,
+                                answers,
+                                interrupted: false,
+                            });
+                            continue;
+                        }
+                        // Rollout replay can contain several parallel calls;
+                        // correlate by the persisted call id rather than
+                        // assuming the last call finished first.
+                        for cell in self.history.iter_mut().rev() {
+                            let Cell::ToolGroup {
+                                agent: owner,
+                                items,
+                            } = cell
+                            else {
+                                continue;
+                            };
+                            if *owner != agent {
+                                continue;
+                            }
+                            if let Some(entry) = items
+                                .iter_mut()
+                                .rev()
+                                .find(|entry| entry.call_id.as_deref() == Some(call_id.as_str()))
+                            {
+                                entry.result = Some(serde_json::Value::String(output));
+                                break;
+                            }
                         }
                     }
                     ResponseItem::Compaction { .. } | ResponseItem::Other => {}
@@ -252,6 +359,22 @@ impl Tui {
             text: text.to_string(),
             kind,
         });
+    }
+
+    /// Clear only the visible transcript, mirroring Codex's global Ctrl-L.
+    /// The agent/session context is deliberately untouched; the next draw
+    /// still renders the session header and new replies continue the same
+    /// conversation.
+    pub(crate) fn clear_terminal_ui(&mut self) {
+        self.history.clear();
+        self.cancel_all_user_inputs();
+        self.user_input_requests.clear();
+        self.queued_inputs.clear();
+        self.pending_submissions.clear();
+        self.suppress_until_idle.clear();
+        self.pending_input_preview.set_queued_messages(Vec::new());
+        self.scroll = 0;
+        self.pager = None;
     }
 
     /// `/ide [on|off|status]` — mirrors codex's IdeContextState toggle. Toggling
@@ -277,28 +400,38 @@ impl Tui {
         self.ide_enabled = on;
         self.ide_warned = false;
         if on {
-            match crate::ide_context::fetch_ide_context(&self.workspace) {
-                Ok(context) => {
-                    if crate::ide_context::has_prompt_context(&context) {
-                        self.system(
-                            "IDE context is on. Future messages will include your current IDE selection and open tabs.",
-                            SysKind::Info,
-                        );
-                    } else {
-                        self.system("IDE context is on. Connected to your IDE.", SysKind::Info);
+            // Probe connectivity off the event loop: the IDE IPC fetch can block
+            // up to 5s, which would freeze the TUI. Toggle on optimistically and
+            // report the probe outcome asynchronously via a system notice.
+            self.system("IDE context is on.", SysKind::Info);
+            let bus = self.bus.clone();
+            let workspace = self.workspace.clone();
+            tokio::spawn(async move {
+                let probe = tokio::task::spawn_blocking(move || {
+                    crate::ide_context::fetch_ide_context(&workspace)
+                })
+                .await;
+                let notice = match probe {
+                    Ok(Ok(context)) => {
+                        if crate::ide_context::has_prompt_context(&context) {
+                            "IDE context is on. Future messages will include your current IDE selection and open tabs.".to_string()
+                        } else {
+                            "IDE context is on. Connected to your IDE.".to_string()
+                        }
                     }
-                }
-                Err(err) => {
-                    self.ide_enabled = false;
-                    self.system(
-                        &format!(
+                    Ok(Err(err)) => {
+                        format!(
                             "IDE context could not be enabled: {}",
                             err.user_facing_hint()
-                        ),
-                        SysKind::Error,
-                    );
-                }
-            }
+                        )
+                    }
+                    Err(_) => "IDE context probe failed.".to_string(),
+                };
+                bus.publish(autoreport_core::types::BusMessage::SystemNotice {
+                    agent_type: None,
+                    content: notice,
+                });
+            });
         } else {
             self.system("IDE context is off.", SysKind::Info);
         }
@@ -307,10 +440,7 @@ impl Tui {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::chatwidget::{
-        extract_mentions, render_reasoning_lines, render_tool_result_lines, status_mark,
-    };
+    use crate::chatwidget::{extract_mentions, render_tool_result_lines};
     use crate::slash_command;
 
     #[test]
@@ -348,30 +478,9 @@ mod tests {
     }
 
     #[test]
-    fn active_statuses_use_codex_dot_indicator() {
-        assert_eq!(status_mark(AgentStatus::Thinking), "●");
-        assert_eq!(status_mark(AgentStatus::RunningTool), "●");
-        assert_eq!(status_mark(AgentStatus::Idle), "○");
-    }
-
-    #[test]
     fn slash_command_matches_filter_by_prefix_in_presentation_order() {
         let matches = slash_command::matches("co");
         let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
-        assert_eq!(names, vec!["config", "compact"]);
-    }
-
-    #[test]
-    fn reasoning_lines_show_thinking_label_and_content() {
-        let lines = render_reasoning_lines(AgentType::Main, "checking context", false);
-        let flattened = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("");
-
-        assert!(flattened.contains("Main thinking"));
-        assert!(flattened.contains("checking context"));
+        assert_eq!(names, vec!["config", "compact", "copy"]);
     }
 }

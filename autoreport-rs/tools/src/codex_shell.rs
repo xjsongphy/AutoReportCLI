@@ -92,8 +92,24 @@ impl CodexShell {
                     shell_invocation.clone(),
                     cwd,
                     spec,
-                )?
-                .unwrap_or(shell_invocation);
+                )?;
+                // Fail closed: only `DangerFullAccess` may legitimately run
+                // without a platform sandbox wrapper. Any restrictive mode that
+                // gets no wrapper (unsupported Unix, missing backend) must NOT
+                // fall back to running the bare shell unrestricted — return an
+                // error so the turn surfaces it instead of silently escaping.
+                let wrapped = match wrapped {
+                    Some(wrapped) => wrapped,
+                    None if spec.mode == autoreport_sandboxing::SandboxMode::DangerFullAccess => {
+                        shell_invocation
+                    }
+                    None => {
+                        return Err(format!(
+                            "no platform sandbox backend available for mode {:?}; refusing to run command unsandboxed",
+                            spec.mode
+                        ));
+                    }
+                };
                 let prog = wrapped
                     .first()
                     .ok_or_else(|| "empty seatbelt command".to_string())?
