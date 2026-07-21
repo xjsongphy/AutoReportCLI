@@ -501,6 +501,24 @@ fn compute_replacements(
     // upstream algorithm text.
     #[allow(clippy::unnecessary_sort_by)]
     replacements.sort_by(|(lhs_idx, _, _), (rhs_idx, _, _)| lhs_idx.cmp(rhs_idx));
+
+    // Defensive invariant: replacements must be non-overlapping. Each match
+    // search starts at `line_index` past the previous match, so this holds by
+    // construction today — but `apply_replacements` applies in reverse and a
+    // future change to the seek logic could otherwise silently corrupt the file
+    // via overlapping edits. Fail closed instead.
+    let mut cursor = 0usize;
+    for &(start_idx, old_len, _) in &replacements {
+        if start_idx < cursor {
+            return Err(format!(
+                "Overlapping edit detected in {} at line {} (previous edit ended at line {}); refusing to apply a corrupting patch",
+                path.display(),
+                start_idx,
+                cursor
+            ));
+        }
+        cursor = start_idx + old_len;
+    }
     Ok(replacements)
 }
 
@@ -661,19 +679,21 @@ pub fn apply(patch: &str, ctx: &FsCtx) -> Result<Vec<serde_json::Value>, String>
         for change in &changes {
             match change {
                 PreparedChange::Add { path, contents } => {
-                    write_with_parents(path, contents)?;
+                    secure_write(ctx, path, contents.as_bytes())?;
                     report.push(json!({"add": path.display().to_string()}));
                 }
                 PreparedChange::Delete { path } => {
+                    ctx.assert_write_allowed(path)?;
                     std::fs::remove_file(path).map_err(|e| e.to_string())?;
                     report.push(json!({"delete": path.display().to_string()}));
                 }
                 PreparedChange::Update { path, contents } => {
-                    std::fs::write(path, contents).map_err(|e| e.to_string())?;
+                    secure_write(ctx, path, contents.as_bytes())?;
                     report.push(json!({"update": path.display().to_string()}));
                 }
                 PreparedChange::Move { from, to, contents } => {
-                    write_with_parents(to, contents)?;
+                    secure_write(ctx, to, contents.as_bytes())?;
+                    ctx.assert_write_allowed(from)?;
                     std::fs::remove_file(from).map_err(|e| e.to_string())?;
                     report.push(
                         json!({"move": from.display().to_string(), "to": to.display().to_string()}),
@@ -723,10 +743,6 @@ fn restore_backups(backups: &HashMap<PathBuf, Option<Vec<u8>>>) -> Result<(), St
     Ok(())
 }
 
-fn write_with_parents(path: &Path, contents: &str) -> Result<(), String> {
-    write_bytes_with_parents(path, contents.as_bytes())
-}
-
 fn write_bytes_with_parents(path: &Path, contents: &[u8]) -> Result<(), String> {
     match std::fs::write(path, contents) {
         Ok(()) => Ok(()),
@@ -738,6 +754,43 @@ fn write_bytes_with_parents(path: &Path, contents: &[u8]) -> Result<(), String> 
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Write `contents` to `path` with the leaf opened via `O_NOFOLLOW` (Unix) so a
+/// path swapped to a symlink between validation and write cannot redirect the
+/// write through the symlink target. Falls back to a plain write off-Unix.
+#[cfg(unix)]
+fn write_file_nofollow(path: &Path, contents: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    opts.custom_flags(libc::O_NOFOLLOW);
+    let mut f = opts.open(path).map_err(|e| e.to_string())?;
+    f.write_all(contents).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn write_file_nofollow(path: &Path, contents: &[u8]) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| e.to_string())
+}
+
+/// Secured write used by apply_patch. `assert_write_allowed` already ran during
+/// hunk validation, but a concurrently-run `exec` command (which is itself
+/// sandboxed but can still create symlinks *inside* the writable dir pointing
+/// outside) could swap a regular path for a symlink in the gap between
+/// validation and write. To shrink that TOCTOU window this re-validates
+/// containment immediately before creating parents and writing the leaf, and
+/// opens the leaf with `O_NOFOLLOW` so a symlinked leaf is rejected.
+fn secure_write(ctx: &FsCtx, path: &Path, contents: &[u8]) -> Result<(), String> {
+    ctx.assert_write_allowed(path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        // create_dir_all follows symlinked intermediate components; after it
+        // runs, the canonical parent must still be inside the writable dir.
+        ctx.assert_write_allowed(parent)?;
+    }
+    write_file_nofollow(path, contents)
 }
 
 #[cfg(test)]

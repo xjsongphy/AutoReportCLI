@@ -11,9 +11,22 @@ pub struct TaskBoard {
     inner: Arc<Mutex<Inner>>,
 }
 
+/// A sub-agent's `respond` outcome, stored on the board so a dispatcher that
+/// misses the live `BusMessage::Report` (e.g. a broadcast `Lagged` overflow)
+/// can still recover it instead of deadlocking until the wall-clock cap.
+#[derive(Clone)]
+pub struct ReportRecord {
+    pub report_type: String,
+    pub summary: String,
+    pub content: String,
+}
+
 struct Inner {
     tasks: HashMap<String, TaskItem>,
     counter: u64,
+    /// Latest report per task_id, recorded by `respond`. Source of truth for
+    /// `wait_for_report` when the broadcast fan-out drops the Report.
+    reports: HashMap<String, ReportRecord>,
 }
 
 impl TaskBoard {
@@ -22,8 +35,22 @@ impl TaskBoard {
             inner: Arc::new(Mutex::new(Inner {
                 tasks: HashMap::new(),
                 counter: 0,
+                reports: HashMap::new(),
             })),
         }
+    }
+
+    /// Record (or overwrite) the latest report for a task. Called by `respond`.
+    pub fn record_report(&self, task_id: &str, record: ReportRecord) {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.reports.insert(task_id.to_string(), record);
+    }
+
+    /// Remove and return the latest report for a task, if any. Used as a
+    /// fallback by `wait_for_report` so a consumed report is not replayed.
+    pub fn take_report(&self, task_id: &str) -> Option<ReportRecord> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.reports.remove(task_id)
     }
 
     fn next_id(&self, g: &mut Inner) -> String {
@@ -66,7 +93,14 @@ impl TaskBoard {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let task = g.tasks.get_mut(task_id)?;
         task.status = status;
-        task.completed_at = status.is_settled().then(Utc::now);
+        // Only stamp `completed_at` for truly terminal states. `Blocked` is
+        // *settled* (no longer in-flight) but not finished — it is still
+        // waiting on the dispatcher, so it must not look completed.
+        task.completed_at = matches!(
+            status,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+        )
+        .then(Utc::now);
         Some(task.clone())
     }
 
@@ -190,7 +224,14 @@ impl TaskBoard {
                 });
             task.brief = brief;
             task.status = status;
-            task.completed_at = status.is_settled().then(Utc::now);
+            // Match `set_status`: only truly terminal states stamp
+            // `completed_at`. `Blocked` is settled but not finished (still
+            // waiting on the dispatcher), so it must not look completed.
+            task.completed_at = matches!(
+                status,
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+            )
+            .then(Utc::now);
             task.blocking = false;
             task.session_id = None;
             task.plan_order = Some(order as u32);

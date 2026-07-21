@@ -358,17 +358,39 @@ fn extract_env_block(obj: &str) -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Return the byte index just after a `key` token occurrence (the position of
-/// the following `:`).
+/// Return the byte index of the `:` that follows the first occurrence of the
+/// identifier `key` as an object key. The match is anchored: the byte before
+/// `key` must not be an identifier character (`[A-Za-z0-9_$]`), otherwise we
+/// would match a suffix of a longer key — e.g. `name` inside `displayName`,
+/// which would silently parse the wrong value out of untrusted external data.
+/// Quoted keys (`"name":`) are anchored by their opening quote.
 fn find_key(obj: &str, key: &str) -> Option<usize> {
-    let q = format!("{key}:");
-    let q2 = format!("\"{key}\":");
-    if let Some(pos) = obj.find(&q2) {
-        // Point at the colon after the quoted key, just like the unquoted
-        // form below. The old calculation pointed into the key itself.
-        return Some(pos + key.len() + 2);
+    // Quoted forms (`"key":` / `'key':`) are inherently anchored by the quotes
+    // — try them first. The colon sits at opening-quote + key.len() + 2.
+    for quote in [b'"', b'\''] {
+        let needle = format!("{}{}{}:", quote as char, key, quote as char);
+        if let Some(pos) = obj.find(&needle) {
+            return Some(pos + key.len() + 2);
+        }
     }
-    obj.find(&q).map(|pos| pos + key.len())
+    // Unquoted identifier form: anchor the match so we don't match a suffix of a
+    // longer key — e.g. `name` inside `displayName`, which would silently parse
+    // the wrong value out of untrusted external data.
+    let needle = format!("{key}:");
+    let bytes = obj.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = obj[from..].find(&needle) {
+        let pos = from + rel;
+        let prev_is_ident = pos > 0 && {
+            let prev = bytes[pos - 1];
+            prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'$'
+        };
+        if !prev_is_ident {
+            return Some(pos + key.len());
+        }
+        from = pos + 1;
+    }
+    None
 }
 
 /// Given a slice starting at `{`, return the inner text up to the matching `}`.
