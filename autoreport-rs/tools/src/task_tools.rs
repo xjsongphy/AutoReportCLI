@@ -27,11 +27,20 @@ use tokio::time::{Duration, Instant};
 pub struct UpdatePlanTool {
     board: TaskBoard,
     agent: AgentType,
+    bus: Bus,
 }
 
 impl UpdatePlanTool {
     pub fn new(board: TaskBoard, agent: AgentType) -> Self {
-        Self { board, agent }
+        Self {
+            board,
+            agent,
+            bus: Bus::new(),
+        }
+    }
+
+    pub fn new_with_bus(board: TaskBoard, bus: Bus, agent: AgentType) -> Self {
+        Self { board, agent, bus }
     }
 }
 
@@ -107,6 +116,7 @@ impl Tool for UpdatePlanTool {
             Some(_) => return ToolOutput::err("explanation must be a string"),
         };
 
+        let plan_was_updated = args.get("plan").is_some();
         let plan = match args.get("plan") {
             Some(Value::Array(items)) => {
                 let mut parsed = Vec::with_capacity(items.len());
@@ -144,6 +154,21 @@ impl Tool for UpdatePlanTool {
             Some(_) => return ToolOutput::err("plan must be an array"),
             None => self.board.local_plan(self.agent),
         };
+
+        // Codex emits a dedicated plan history cell for an actual plan
+        // mutation.  Keep TaskUpdate for delegation bookkeeping, but publish
+        // this complete snapshot so the TUI can render the same checkbox list
+        // instead of dropping the update as internal plumbing.
+        if plan_was_updated {
+            self.bus.publish(BusMessage::PlanUpdate {
+                agent_type: self.agent,
+                explanation: explanation.clone(),
+                steps: plan
+                    .iter()
+                    .map(|task| (task.brief.clone(), task.status))
+                    .collect(),
+            });
+        }
 
         let todo: Vec<Value> = self
             .board
@@ -440,7 +465,7 @@ impl Tool for SendToAgentTool {
             message_id: dispatch_id,
         });
 
-        match wait_for_report(&mut rx, agent, &task_id, self.timeout_secs).await {
+        match wait_for_report(&mut rx, &self.board, agent, &task_id, self.timeout_secs).await {
             WaitOutcome::Report {
                 report_type,
                 summary: response_summary,
@@ -505,6 +530,7 @@ enum WaitOutcome {
 /// `_await_with_liveness`.
 async fn wait_for_report(
     rx: &mut broadcast::Receiver<BusMessage>,
+    board: &TaskBoard,
     target: AgentType,
     task_id: &str,
     timeout_secs: u64,
@@ -520,6 +546,17 @@ async fn wait_for_report(
         if now >= wall_deadline {
             return WaitOutcome::Timeout;
         }
+        // Board fallback: `respond` records the report durably, so a broadcast
+        // `Lagged` that dropped the live `Report` cannot deadlock us. Checked
+        // every iteration (covers the case where the report landed before we
+        // subscribed or was evicted while we were busy).
+        if let Some(rec) = board.take_report(task_id) {
+            return WaitOutcome::Report {
+                report_type: rec.report_type,
+                summary: rec.summary,
+                content: rec.content,
+            };
+        }
         let next_deadline = idle_deadline.min(wall_deadline);
         match tokio::time::timeout_at(next_deadline, rx.recv()).await {
             Err(_) => {
@@ -531,6 +568,8 @@ async fn wait_for_report(
                 return WaitOutcome::Timeout;
             }
             Ok(Err(broadcast::error::RecvError::Closed)) => return WaitOutcome::ChannelClosed,
+            // A Lagged means we may have missed the Report; loop and re-check
+            // the board fallback rather than relying solely on the broadcast.
             Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
             Ok(Ok(msg)) => match msg {
                 BusMessage::Report {
@@ -666,6 +705,17 @@ impl Tool for RespondTool {
             summary: summary.clone(),
             content: content.clone(),
         });
+        // Also record the report on the board as the durable source of truth,
+        // so a dispatcher that misses the broadcast (Lagged overflow) can still
+        // recover it via `wait_for_report`'s board fallback.
+        self.board.record_report(
+            &task_id,
+            autoreport_core::taskboard::ReportRecord {
+                report_type: report_type.clone(),
+                summary: summary.clone(),
+                content: content.clone(),
+            },
+        );
 
         ToolOutput::ok(json!({
             "status": "ok",
@@ -680,14 +730,22 @@ impl Tool for RespondTool {
 
 pub fn main_tools(board: TaskBoard, bus: Bus) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(UpdatePlanTool::new(board.clone(), AgentType::Main)),
+        Arc::new(UpdatePlanTool::new_with_bus(
+            board.clone(),
+            bus.clone(),
+            AgentType::Main,
+        )),
         Arc::new(SendToAgentTool::new(board, bus)),
     ]
 }
 
 pub fn sub_tools(board: TaskBoard, bus: Bus, agent: AgentType) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(UpdatePlanTool::new(board.clone(), agent)),
+        Arc::new(UpdatePlanTool::new_with_bus(
+            board.clone(),
+            bus.clone(),
+            agent,
+        )),
         Arc::new(RespondTool::new(board, bus, agent)),
     ]
 }

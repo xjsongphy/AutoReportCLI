@@ -174,12 +174,14 @@ pub enum BusMessage {
         agent_type: AgentType,
         tool_name: String,
         arguments: serde_json::Value,
+        call_id: String,
     },
     ToolResult {
         agent_type: AgentType,
         tool_name: String,
         result: serde_json::Value,
         error: Option<String>,
+        call_id: String,
     },
     StatusChange {
         agent_type: AgentType,
@@ -210,6 +212,13 @@ pub enum BusMessage {
         target_agent: AgentType,
         brief: String,
     },
+    /// A Codex-style `update_plan` snapshot.  Unlike TaskUpdate (which is
+    /// delegation bookkeeping), this is a user-visible plan history event.
+    PlanUpdate {
+        agent_type: AgentType,
+        explanation: Option<String>,
+        steps: Vec<(String, TaskStatus)>,
+    },
     Error {
         agent_type: Option<AgentType>,
         message: String,
@@ -231,6 +240,15 @@ pub enum BusMessage {
         /// Optional human-readable reason (e.g. "retry without sandbox").
         reason: Option<String>,
     },
+    /// Codex `request_user_input` prompt. The answer is delivered through the
+    /// broker on [`crate::bus::Bus`], while this broadcast is consumed by the
+    /// TUI (or a future app-server client).
+    UserInputRequest {
+        agent_type: AgentType,
+        call_id: String,
+        questions: Vec<crate::request_user_input::RequestUserInputQuestion>,
+        auto_resolution_ms: Option<u64>,
+    },
 }
 
 impl BusMessage {
@@ -244,8 +262,10 @@ impl BusMessage {
             | BusMessage::StatusChange { agent_type, .. }
             | BusMessage::Report { agent_type, .. }
             | BusMessage::ApprovalRequest { agent_type, .. } => Some(*agent_type),
+            BusMessage::UserInputRequest { agent_type, .. } => Some(*agent_type),
             BusMessage::SystemNotice { agent_type, .. } => *agent_type,
             BusMessage::TaskUpdate { target_agent, .. } => Some(*target_agent),
+            BusMessage::PlanUpdate { agent_type, .. } => Some(*agent_type),
             BusMessage::Error { agent_type, .. } => *agent_type,
         }
     }
