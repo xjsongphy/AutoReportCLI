@@ -5,24 +5,53 @@
 //! wrapped height to the parent render tree.
 
 use crate::app_state::{Cell, SysKind};
-use crate::chatwidget::{render_tool_result_lines, render_user_text, tool_arg_summary};
+use crate::chatwidget::{render_tool_result_lines, tool_arg_summary};
 use crate::line_utils::{prefix_lines, push_owned_lines};
-use crate::markdown_render;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_style;
-use crate::wrapping::{RtOptions, adaptive_wrap_line, adaptive_wrap_lines};
+use crate::wrapping::RtOptions;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Style, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, WidgetRef, Wrap};
 
+mod base;
+mod exec;
+mod mcp;
+mod messages;
+mod patches;
+mod plans;
+mod request_user_input;
+mod separators;
 mod session;
 pub(crate) use session::SessionHeaderHistoryCell;
+
+/// AutoReport stores all agent events in one vector; Codex displays the
+/// currently selected thread. Apply that same boundary when building lines.
+pub(crate) fn belongs_to_agent(cell: &Cell, focused: autoreport_core::types::AgentType) -> bool {
+    match cell {
+        Cell::User { _agent, .. } => *_agent == focused,
+        Cell::AgentMessage { agent, .. }
+        | Cell::AgentMarkdown { agent, .. }
+        | Cell::ToolGroup { agent, .. }
+        | Cell::Collab { agent, .. }
+        | Cell::TurnSeparator { agent, .. }
+        | Cell::PlanUpdate { agent, .. }
+        | Cell::UserInputResult { agent, .. } => *agent == focused,
+        Cell::System { .. } => true,
+    }
+}
 
 /// Width-aware history cell contract from Codex's transcript renderer.
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
+
+    /// Copy-friendly source lines, matching Codex's raw scrollback mode.
+    /// Cells that do not have a separate source representation fall back to
+    /// an unwrapped rich render at an effectively unlimited width.
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        self.display_lines(u16::MAX)
+    }
 
     fn desired_height(&self, width: u16) -> u16 {
         Paragraph::new(Text::from(self.display_lines(width)))
@@ -55,84 +84,115 @@ impl HistoryCell for Cell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         render_cell_lines(self, width)
     }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        match self {
+            Cell::User { text, .. } => vec![Line::from(sanitize_user_text(text))],
+            Cell::AgentMessage { text, .. } | Cell::AgentMarkdown { text, .. } => text
+                .split('\n')
+                .map(|line| Line::from(line.to_string()))
+                .collect(),
+            Cell::Collab { title, details, .. } => {
+                let mut lines = vec![Line::from(
+                    title
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>(),
+                )];
+                lines.extend(details.iter().map(|line| {
+                    Line::from(
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>(),
+                    )
+                }));
+                lines
+            }
+            Cell::ToolGroup { .. } | Cell::System { .. } => self.display_lines(u16::MAX),
+            Cell::TurnSeparator {
+                elapsed_seconds, ..
+            } => separators::FinalMessageSeparator::new(*elapsed_seconds).raw_lines(),
+            Cell::PlanUpdate {
+                explanation, steps, ..
+            } => plans::raw_lines(explanation, steps),
+            Cell::UserInputResult {
+                questions,
+                answers,
+                interrupted,
+                ..
+            } => request_user_input::raw_lines(questions, answers, *interrupted),
+        }
+    }
 }
 
-pub(crate) fn render_history_lines(cells: &[Cell], width: u16) -> Vec<Line<'static>> {
+pub(crate) fn render_history_lines_for_agent(
+    cells: &[Cell],
+    focused: autoreport_core::types::AgentType,
+    width: u16,
+) -> Vec<Line<'static>> {
     cells
         .iter()
+        .filter(|cell| belongs_to_agent(cell, focused))
         .flat_map(|cell| cell.display_lines(width))
         .collect()
 }
 
+pub(crate) fn render_raw_history_lines_for_agent(
+    cells: &[Cell],
+    focused: autoreport_core::types::AgentType,
+) -> Vec<Line<'static>> {
+    cells
+        .iter()
+        .filter(|cell| belongs_to_agent(cell, focused))
+        .flat_map(HistoryCell::raw_lines)
+        .collect()
+}
+
+/// Codex strips terminal CSI/control sequences from user-authored text before
+/// placing it in scrollback. This prevents pasted escape sequences from
+/// changing terminal state while preserving tabs and explicit newlines.
+fn sanitize_user_text(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.next_if_eq(&'[').is_some() {
+            let _ = chars.find(|ch| ('@'..='~').contains(ch));
+        } else if matches!(ch, '\n' | '\t') || !ch.is_control() {
+            sanitized.push(ch);
+        }
+    }
+    sanitized
+}
+
 fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
+    let width_u16 = width.min(u16::MAX as usize) as u16;
     let mut out = Vec::new();
     match cell {
         Cell::User { text, .. } => {
-            let style = user_message_style();
-            let message_lines = render_user_text(text)
-                .into_iter()
-                .map(|line| line.style(style))
-                .collect::<Vec<_>>();
-            if message_lines.is_empty() {
-                return out;
-            }
-            let wrapped = adaptive_wrap_lines(
-                message_lines,
-                RtOptions::new(width.saturating_sub(3).max(1)),
+            out.extend(messages::UserHistoryCell { text: text.clone() }.display_lines(width_u16));
+        }
+        Cell::AgentMarkdown { text, .. } => {
+            out.extend(messages::AgentMarkdownCell { text: text.clone() }.display_lines(width_u16));
+        }
+        Cell::AgentMessage {
+            text,
+            is_first_line,
+            ..
+        } => {
+            out.extend(
+                messages::AgentMessageCell {
+                    text: text.clone(),
+                    is_first_line: *is_first_line,
+                }
+                .display_lines(width_u16),
             );
-            out.push(Line::from("").style(style));
-            out.extend(prefix_lines(
-                wrapped,
-                Span::from("› ").bold().dim(),
-                Span::from("  "),
-            ));
-            out.push(Line::from("").style(style));
         }
-        Cell::Assistant { text, .. } => {
-            if text.is_empty() {
-                return out;
-            }
-            // Direct adaptation of Codex's `AgentMarkdownCell`: render the
-            // source at the reserved content width, then let Codex's wrapper
-            // own the bullet and continuation indentation.
-            let markdown = markdown_render::render_markdown_text_with_width(
-                text,
-                Some(width.saturating_sub(2).max(1)),
-            )
-            .lines;
-            out.extend(adaptive_wrap_lines(
-                markdown,
-                RtOptions::new(width)
-                    .initial_indent("• ".dim().into())
-                    .subsequent_indent("  ".into()),
-            ));
-        }
-        Cell::Reasoning { text, .. } => {
-            // Copied from Codex's `ReasoningSummaryCell::lines`, using the
-            // already-migrated markdown renderer in place of `append_markdown`.
-            let summary_style = Style::default().dim().italic();
-            let summary_lines = markdown_render::render_markdown_text_with_width(
-                text,
-                Some(width.saturating_sub(2).max(1)),
-            )
-            .lines
-            .into_iter()
-            .map(|mut line| {
-                line.spans = line
-                    .spans
-                    .into_iter()
-                    .map(|span| span.patch_style(summary_style))
-                    .collect();
-                line
-            })
-            .collect::<Vec<_>>();
-            out.extend(adaptive_wrap_lines(
-                summary_lines,
-                RtOptions::new(width)
-                    .initial_indent("• ".dim().into())
-                    .subsequent_indent("  ".into()),
-            ));
+        Cell::Collab { title, details, .. } => {
+            out.push(title.clone());
+            out.extend(prefix_lines(details.clone(), "  └ ".dim(), "    ".into()));
         }
         Cell::ToolGroup { agent, items } => {
             for item in items {
@@ -147,6 +207,27 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
                 SysKind::Error => out.push(vec![format!("■ {text}").red()].into()),
             }
         }
+        Cell::TurnSeparator {
+            elapsed_seconds, ..
+        } => {
+            out.extend(
+                separators::FinalMessageSeparator::new(*elapsed_seconds).display_lines(width_u16),
+            );
+        }
+        Cell::PlanUpdate {
+            explanation, steps, ..
+        } => out.extend(plans::display(explanation, steps, width_u16)),
+        Cell::UserInputResult {
+            questions,
+            answers,
+            interrupted,
+            ..
+        } => out.extend(request_user_input::display(
+            questions,
+            answers,
+            *interrupted,
+            width_u16,
+        )),
     }
     out
 }
@@ -160,81 +241,27 @@ fn render_tool_call_lines(
     item: &crate::app_state::ToolEntry,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let status = match (&item.result, &item.error) {
-        (_, Some(_)) => Some(false),
-        (Some(_), None) => Some(true),
-        (None, None) => None,
-    };
-    let bullet = match status {
-        Some(true) => "•".green().bold(),
-        Some(false) => "•".red().bold(),
-        None => "•".dim(),
-    };
-    let header_text = if status.is_some() {
-        "Called"
-    } else {
-        "Calling"
-    };
-    let invocation_line = Line::from(format!(
-        "{agent} · {}({})",
-        item.name,
-        tool_arg_summary(&item.name, &item.args)
-    ));
-    let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
-    let mut compact_header = Line::from(compact_spans.clone());
-    let reserved = compact_header.width();
-    let inline_invocation = invocation_line.width() <= width.saturating_sub(reserved);
-
-    let mut lines = Vec::new();
-    if inline_invocation {
-        compact_header.extend(invocation_line.spans);
-        lines.push(compact_header);
-    } else {
-        compact_spans.pop();
-        lines.push(Line::from(compact_spans));
-        let wrapped = adaptive_wrap_line(
-            &invocation_line,
-            RtOptions::new(width.saturating_sub(4).max(1))
-                .initial_indent("".into())
-                .subsequent_indent("    ".into()),
-        );
-        let mut body_lines = Vec::new();
-        push_owned_lines(&wrapped, &mut body_lines);
-        lines.extend(prefix_lines(body_lines, "  └ ".dim(), "    ".into()));
+    // Codex keeps exec, patch, and MCP calls as distinct history-cell
+    // families. AutoReport's bus has one compact tool event, so dispatch to
+    // the same visual families at the rendering boundary.
+    if item.name == "exec" {
+        return exec::display(agent, item, width);
     }
-
-    let detail_lines = render_tool_result_lines(
-        &item.name,
-        &item.args,
-        item.result.as_ref(),
-        item.error.as_deref(),
-    );
-    if !detail_lines.is_empty() {
-        let detail_width = width.saturating_sub(4).max(1);
-        let mut wrapped_details = Vec::new();
-        for detail in detail_lines {
-            let wrapped = adaptive_wrap_line(
-                &detail,
-                RtOptions::new(detail_width)
-                    .initial_indent("".into())
-                    .subsequent_indent("    ".into()),
-            );
-            push_owned_lines(&wrapped, &mut wrapped_details);
-        }
-        let initial_prefix = if inline_invocation {
-            "  └ ".dim()
-        } else {
-            "    ".into()
-        };
-        lines.extend(prefix_lines(wrapped_details, initial_prefix, "    ".into()));
+    if item.name == "apply_patch" {
+        return patches::display(agent, item, width);
     }
-    lines
+    if item.name.starts_with("mcp__") {
+        return mcp::display(agent, item, width);
+    }
+    base::display_generic_tool_call(agent, item, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Cell, HistoryCell};
     use autoreport_core::types::AgentType;
+    use ratatui::style::Stylize;
+    use ratatui::text::Line;
 
     fn plain_lines(cell: &Cell) -> Vec<String> {
         cell.display_lines(80)
@@ -245,6 +272,7 @@ mod tests {
                     .map(|span| span.content.into_owned())
                     .collect()
             })
+            .map(|line: String| line.trim_end().to_string())
             .collect()
     }
 
@@ -259,24 +287,205 @@ mod tests {
     }
 
     #[test]
+    fn user_message_rows_fill_the_available_width_like_codex() {
+        let cell = Cell::User {
+            _agent: AgentType::Main,
+            text: "hi".into(),
+        };
+        assert!(cell.display_lines(40).iter().all(|line| line.width() <= 40));
+        assert!(cell.display_lines(40).iter().any(|line| line.width() == 40));
+    }
+
+    #[test]
+    fn user_message_strips_terminal_control_sequences_like_codex() {
+        let lines = plain_lines(&Cell::User {
+            _agent: AgentType::Main,
+            text: "hello\u{1b}[2Jworld\u{7}".into(),
+        });
+        assert!(lines.iter().any(|line| line == "› helloworld"));
+        assert!(!lines.iter().any(|line| line.contains('\u{1b}')));
+    }
+
+    #[test]
     fn assistant_message_uses_codex_bullet_prefix() {
-        let lines = plain_lines(&Cell::Assistant {
+        let lines = plain_lines(&Cell::AgentMarkdown {
             agent: AgentType::Main,
             text: "hello".into(),
-            streaming: false,
         });
         assert!(lines.iter().any(|line| line == "• hello"));
         assert!(!lines.iter().any(|line| line.contains("Main")));
     }
 
     #[test]
-    fn reasoning_message_uses_codex_bullet_prefix() {
-        let lines = plain_lines(&Cell::Reasoning {
+    fn raw_history_lines_keep_source_without_rich_prefixes() {
+        let cells = vec![
+            Cell::User {
+                _agent: AgentType::Main,
+                text: "hello".into(),
+            },
+            Cell::AgentMarkdown {
+                agent: AgentType::Main,
+                text: "**answer**".into(),
+            },
+        ];
+        let lines = super::render_raw_history_lines_for_agent(&cells, AgentType::Main);
+        let text = lines
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(text, vec!["hello", "**answer**"]);
+    }
+
+    #[test]
+    fn exec_history_cell_shows_command_output_instead_of_raw_json() {
+        let lines = plain_lines(&Cell::ToolGroup {
             agent: AgentType::Main,
-            text: "checking context".into(),
-            streaming: false,
+            items: vec![crate::app_state::ToolEntry {
+                name: "exec".into(),
+                args: serde_json::json!({"command": "uname -a"}),
+                result: Some(serde_json::json!({
+                    "stdout": "Darwin\n",
+                    "stderr": "",
+                    "returncode": 0
+                })),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
         });
-        assert!(lines.iter().any(|line| line == "• checking context"));
-        assert!(!lines.iter().any(|line| line.contains("thinking")));
+        assert!(lines.iter().any(|line| line.contains("uname -a")));
+        assert!(lines.iter().any(|line| line.contains("Darwin")));
+        assert!(!lines.iter().any(|line| line.contains("returncode")));
+    }
+
+    #[test]
+    fn mcp_history_cell_uses_server_tool_invocation_shape() {
+        let lines = plain_lines(&Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "mcp__filesystem__read_file".into(),
+                args: serde_json::json!({"path": "README.md"}),
+                result: Some(serde_json::json!("ok")),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        });
+        assert!(lines.iter().any(|line| line.contains("MCP")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("filesystem/read_file"))
+        );
+    }
+
+    #[test]
+    fn tool_rows_wrap_without_exceeding_narrow_width() {
+        let cell = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "mcp__filesystem__read_file".into(),
+                args: serde_json::json!({"path": "/a/very/long/path/to/a/file.txt"}),
+                result: Some(serde_json::json!("result")),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        };
+        assert!(cell.display_lines(24).iter().all(|line| line.width() <= 24));
+    }
+
+    #[test]
+    fn collaborator_rows_use_codex_detail_tree() {
+        let lines = Cell::Collab {
+            agent: AgentType::Main,
+            title: vec![
+                "• ".dim(),
+                "Sent input to ".bold(),
+                "Data Analysis".cyan().bold(),
+            ]
+            .into(),
+            details: vec![Line::from("calculate the uncertainty")],
+        }
+        .display_lines(80);
+        let text = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(text[0], "• Sent input to Data Analysis");
+        assert_eq!(text[1], "  └ calculate the uncertainty");
+    }
+
+    #[test]
+    fn focused_agent_history_hides_other_threads_and_tool_owners() {
+        let cells = vec![
+            Cell::AgentMarkdown {
+                agent: AgentType::Main,
+                text: "main reply".into(),
+            },
+            Cell::ToolGroup {
+                agent: AgentType::DataAnalysis,
+                items: vec![crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "python analyze.py"}),
+                    result: None,
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                }],
+            },
+        ];
+        let text = super::render_history_lines_for_agent(&cells, AgentType::Main, 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<String>();
+        assert!(text.contains("main reply"));
+        assert!(!text.contains("python analyze.py"));
+        assert!(!text.contains("Data Analysis"));
+    }
+
+    #[test]
+    fn final_separator_matches_codex_worked_for_label() {
+        let lines = Cell::TurnSeparator {
+            agent: AgentType::Main,
+            elapsed_seconds: Some(61),
+        }
+        .display_lines(80);
+        let text = lines
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<String>();
+        assert!(text.contains("Worked for 1m 01s"));
+    }
+
+    #[test]
+    fn request_user_input_result_masks_secret_answers() {
+        let question = autoreport_core::request_user_input::RequestUserInputQuestion {
+            id: "token".into(),
+            header: "Token".into(),
+            question: "Provide token".into(),
+            is_other: false,
+            is_secret: true,
+            options: None,
+        };
+        let mut answers = std::collections::HashMap::new();
+        answers.insert(
+            "token".into(),
+            autoreport_core::request_user_input::RequestUserInputAnswer {
+                answers: vec!["secret".into()],
+            },
+        );
+        let text = Cell::UserInputResult {
+            agent: AgentType::Main,
+            questions: vec![question],
+            answers,
+            interrupted: false,
+        }
+        .display_lines(80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<String>();
+        assert!(text.contains("••••••"));
+        assert!(!text.contains("secret"));
     }
 }
