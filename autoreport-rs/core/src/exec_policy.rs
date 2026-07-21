@@ -274,40 +274,26 @@ fn unmatched_decision(
 }
 
 fn known_safe(command: &[String]) -> bool {
-    matches!(
-        command.first().map(String::as_str),
-        Some(
-            "cat"
-                | "head"
-                | "tail"
-                | "ls"
-                | "find"
-                | "rg"
-                | "grep"
-                | "sed"
-                | "awk"
-                | "wc"
-                | "pwd"
-                | "git"
-        )
-    ) && !command
-        .iter()
-        .any(|token| token.starts_with('-') && token.contains('w'))
+    // Delegate to Codex's `is_known_safe_command` (vendored
+    // `autoreport-shell-command`) instead of a hand-rolled program list, so
+    // classification tracks Codex's curated safe-command set.
+    autoreport_shell_command::is_safe_command::is_known_safe_command(command)
 }
 
 fn command_might_be_dangerous(command: &[String]) -> bool {
+    // Codex's `dangerous_command_match` (vendored `autoreport-shell-command`)
+    // is the source of truth for the dangerous-command classification.
+    if autoreport_shell_command::is_dangerous_command::dangerous_command_match(command).is_some() {
+        return true;
+    }
+    // Project-specific adaptation: a normal report script remains sandboxed and
+    // is safe under the `never` default, but inline/eval interpreter modes can
+    // conceal arbitrary filesystem or process operations, so they follow Codex's
+    // prompt path. This sits on top of Codex's classification, not in place of
+    // it.
     let Some(program) = command.first().map(String::as_str) else {
         return false;
     };
-    if matches!(
-        program,
-        "rm" | "mv" | "cp" | "chmod" | "chown" | "sudo" | "dd" | "mkfs"
-    ) {
-        return true;
-    }
-    // A normal report script remains sandboxed and is safe to run under the
-    // `never` default. Inline/eval interpreter modes can conceal arbitrary
-    // filesystem or process operations, so they follow Codex's prompt path.
     matches!(
         program,
         "python" | "python3" | "bash" | "sh" | "zsh" | "node" | "perl" | "ruby"
@@ -410,7 +396,25 @@ fn matching_paren(value: &str) -> Option<usize> {
 }
 
 fn field_value<'a>(body: &'a str, field: &str) -> Option<&'a str> {
-    let start = body.find(&format!("{field} ="))? + field.len() + 2;
+    // Anchor the match: the byte before `field` must not be an identifier
+    // character, otherwise a field name that is a suffix of another (e.g.
+    // `pattern` inside `url_pattern`) would read the wrong value from a
+    // user-authored rule body.
+    let needle = format!("{field} =");
+    let bytes = body.as_bytes();
+    let mut from = 0;
+    let start = loop {
+        let rel = body[from..].find(&needle)?;
+        let pos = from + rel;
+        let prev_is_ident = pos > 0 && {
+            let prev = bytes[pos - 1];
+            prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'$'
+        };
+        if !prev_is_ident {
+            break pos + field.len() + 2;
+        }
+        from = pos + 1;
+    };
     let value = body[start..].trim_start();
     let end = matching_value_end(value);
     Some(value[..end].trim())

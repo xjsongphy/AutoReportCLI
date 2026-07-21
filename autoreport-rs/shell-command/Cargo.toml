@@ -1,0 +1,29 @@
+[package]
+name = "autoreport-shell-command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Codex shell-command parsing + safety (vendored from codex-rs/shell-command)"
+
+[lib]
+name = "autoreport_shell_command"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+base64.workspace = true
+libc.workspace = true
+once_cell.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+shlex.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true
+url.workspace = true
+which.workspace = true
+autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+
+[dev-dependencies]
+pretty_assertions = "1"
