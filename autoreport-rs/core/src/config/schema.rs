@@ -6,13 +6,10 @@ use std::collections::BTreeMap;
 
 use autoreport_sandboxing::SandboxMode;
 
-/// Top-level settings, deserialized from `autoreport.config.yaml`.
+/// Top-level settings, deserialized from `$AUTOREPORT_HOME/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// Kept only to migrate pre-model-page configuration files. It is never
-    /// written back to YAML: model selection now lives in [`ModelAssignments`].
-    #[serde(default, rename = "active_provider", skip_serializing)]
-    pub legacy_active_provider: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
     /// The API/model binding used by Main and by the four sub-agents.
@@ -41,7 +38,6 @@ fn default_context_window() -> usize {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            legacy_active_provider: None,
             providers: BTreeMap::new(),
             models: ModelAssignments::default(),
             agents: AgentDefaults::default(),
@@ -54,14 +50,16 @@ impl Default for Settings {
 
 /// A single LLM provider entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// "anthropic" | "openai" | "deepseek" | "openrouter" | "google" | "custom"
     #[serde(default = "default_kind")]
     pub kind: String,
-    /// Read from legacy `providers.<name>.model` entries so those configs can
-    /// migrate cleanly. Models are now selected per agent, never per API.
-    #[serde(default, rename = "model", skip_serializing)]
-    pub legacy_model: Option<String>,
+    /// Optional user-facing name. When omitted, the provider map key (usually
+    /// the preset name) is used. Multiple entries may therefore share a kind
+    /// while remaining distinguishable in the UI.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// Optional, falls back to env var or provider default.
     #[serde(default)]
     pub api_key: Option<String>,

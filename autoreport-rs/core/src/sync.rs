@@ -4,9 +4,9 @@
 //!
 //! 1. **cc-switch** (`farion1231/cc-switch`) — TypeScript provider-preset files
 //!    (`*ProviderPresets.ts`) describing known providers/models/bases. Cached
-//!    under `.autoreport/external/cc-switch/`.
+//!    under `$AUTOREPORT_HOME/external/cc-switch/`.
 //! 2. **skills** (`xjsongphy/skills`) — the agent skill files (`SKILL.md`),
-//!    written into `.autoreport/skills/<name>/SKILL.md` where `SkillLoader`
+//!    written into `$AUTOREPORT_HOME/skills/<name>/SKILL.md` where `SkillLoader`
 //!    discovers them.
 //!
 //! This is a real, complete implementation: HTTPS fetch via reqwest, on-disk
@@ -14,13 +14,16 @@
 //! providers, and best-effort behaviour (offline → keep existing cache, never
 //! block startup beyond the timeout).
 
-use crate::config::schema::{ProviderConfig, Settings};
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-const CC_SWITCH_RAW: &str = "https://raw.githubusercontent.com/farion1231/cc-switch/main";
-const SKILLS_RAW: &str = "https://raw.githubusercontent.com/xjsongphy/skills/main";
+// Keep startup inputs immutable between releases. Refresh these revisions
+// deliberately when the upstream repositories have been reviewed.
+const CC_SWITCH_RAW: &str = "https://raw.githubusercontent.com/farion1231/cc-switch/f6e37ed99443890a865669e28bf1caf5e85d466d";
+const SKILLS_RAW: &str =
+    "https://raw.githubusercontent.com/xjsongphy/skills/2d4557328cd56d3bc922a0e61bb7cb34dbd42011";
 
 const PRESET_FILES: &[&str] = &[
     "claudeProviderPresets.ts",
@@ -29,8 +32,39 @@ const PRESET_FILES: &[&str] = &[
     "opencodeProviderPresets.ts",
     "openclawProviderPresets.ts",
     "hermesProviderPresets.ts",
+    "openaiProviderPresets.ts",
     "universalProviderPresets.ts",
 ];
+
+/// Read the cached cc-switch templates without adding any of them to the
+/// user's configured providers. A template becomes a provider only after the
+/// user explicitly adds it in `/config`.
+pub fn load_presets(home: &Path) -> Vec<PresetProvider> {
+    let cfg_dir = external_dir(home)
+        .join("cc-switch")
+        .join("src")
+        .join("config");
+    let mut seen = BTreeSet::new();
+    let mut presets = Vec::new();
+    for file in PRESET_FILES {
+        let Ok(body) = std::fs::read_to_string(cfg_dir.join(file)) else {
+            continue;
+        };
+        let kind = file_kind(file).map(|(kind, _)| kind).unwrap_or("openai");
+        for preset in parse_presets(&body, kind) {
+            let identity = (
+                preset.kind.clone(),
+                preset.name.clone(),
+                preset.base_url.clone(),
+                preset.env_key.clone(),
+            );
+            if seen.insert(identity) {
+                presets.push(preset);
+            }
+        }
+    }
+    presets
+}
 
 /// Skills to pull from the skills repo (name → path within repo).
 ///
@@ -60,34 +94,34 @@ impl SyncReport {
     }
 }
 
-/// Where synced external content lives inside a workspace.
-pub fn external_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".autoreport").join("external")
+/// Where synced external content lives inside the global home.
+pub fn external_dir(home: &Path) -> PathBuf {
+    home.join("external")
 }
-pub fn skills_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".autoreport").join("skills")
+pub fn skills_dir(home: &Path) -> PathBuf {
+    home.join("skills")
 }
 
 /// Whether the local cache has the minimum files needed to skip startup sync.
-pub fn cache_is_warm(workspace: &Path) -> bool {
-    let preset_dir = external_dir(workspace)
+pub fn cache_is_warm(home: &Path) -> bool {
+    let preset_dir = external_dir(home)
         .join("cc-switch")
         .join("src")
         .join("config");
-    let skills = skills_dir(workspace);
+    let skills = skills_dir(home);
     PRESET_FILES
         .iter()
-        .all(|file| preset_dir.join(file).exists())
+        .all(|file| preset_dir.join(file).is_file())
         && SKILL_FILES.iter().all(|(name, _)| {
-            skills.join(name).join("SKILL.md").exists()
-                || skills.join(format!("{name}.md")).exists()
+            skills.join(name).join("SKILL.md").is_file()
+                || skills.join(format!("{name}.md")).is_file()
         })
 }
 
-/// Fetch both repositories' content into the workspace cache. Network errors
+/// Fetch both repositories' content into the global cache. Network errors
 /// are recorded in the report rather than propagated, so a missing network
 /// degrades gracefully to the existing cache.
-pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncReport {
+pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .user_agent("AutoReportCLI/1.0")
@@ -97,7 +131,7 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
     let mut report = SyncReport::default();
 
     // 1) cc-switch presets.
-    let preset_dir = external_dir(workspace)
+    let preset_dir = external_dir(home)
         .join("cc-switch")
         .join("src")
         .join("config");
@@ -107,7 +141,7 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
         let dest = preset_dir.join(file);
         match fetch_text(&client, &url).await {
             Ok(body) => {
-                if let Err(e) = std::fs::write(&dest, &body) {
+                if let Err(e) = atomic_write(&dest, &body) {
                     report.errors.push(format!("write {file}: {e}"));
                 } else {
                     report.presets_fetched += 1;
@@ -119,7 +153,7 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
     }
 
     // 2) skills repo.
-    let skills = skills_dir(workspace);
+    let skills = skills_dir(home);
     let _ = std::fs::create_dir_all(&skills);
     for (name, repo_path) in SKILL_FILES {
         let url = format!("{SKILLS_RAW}/{repo_path}");
@@ -128,7 +162,7 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
                 let skill_dir = skills.join(name);
                 let _ = std::fs::create_dir_all(&skill_dir);
                 let dest = skill_dir.join("SKILL.md");
-                if let Err(e) = std::fs::write(&dest, &body) {
+                if let Err(e) = atomic_write(&dest, &body) {
                     report.errors.push(format!("write skill {name}: {e}"));
                 } else {
                     report.skills_fetched.push(name.to_string());
@@ -140,6 +174,26 @@ pub async fn sync_all(workspace: &Path, timeout: std::time::Duration) -> SyncRep
     }
 
     report
+}
+
+/// Replace a cache file in the same directory so readers never observe a
+/// truncated response after an interrupted sync. A unique sibling temp file
+/// also prevents concurrent syncs from clobbering one another's staging data.
+fn atomic_write(path: &Path, body: &str) -> std::io::Result<()> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("cache");
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        std::fs::write(&temp, body)?;
+        #[cfg(windows)]
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String> {
@@ -277,9 +331,13 @@ fn extract_env_block(obj: &str) -> std::collections::HashMap<String, String> {
             if c.is_whitespace() {
                 break;
             }
-            key_end = chars.next().unwrap().0 + 1;
+            let (key_index, key_char) = chars.next().unwrap();
+            key_end = key_index + key_char.len_utf8();
         }
-        let key = body[key_start..key_end].trim().to_string();
+        let key = body[key_start..key_end]
+            .trim()
+            .trim_matches(['"', '\'', '`'])
+            .to_string();
         // skip to ':'
         while let Some(&(_, c)) = chars.peek() {
             if c == ':' {
@@ -305,8 +363,12 @@ fn extract_env_block(obj: &str) -> std::collections::HashMap<String, String> {
 fn find_key(obj: &str, key: &str) -> Option<usize> {
     let q = format!("{key}:");
     let q2 = format!("\"{key}\":");
-    let pos = obj.find(&q2).or_else(|| obj.find(&q))?;
-    Some(pos + key.len())
+    if let Some(pos) = obj.find(&q2) {
+        // Point at the colon after the quoted key, just like the unquoted
+        // form below. The old calculation pointed into the key itself.
+        return Some(pos + key.len() + 2);
+    }
+    obj.find(&q).map(|pos| pos + key.len())
 }
 
 /// Given a slice starting at `{`, return the inner text up to the matching `}`.
@@ -541,32 +603,6 @@ fn config_call_arg(obj: &str, field: &str, arg_index: usize) -> Option<String> {
     args.get(arg_index).cloned()
 }
 
-/// Register parsed preset providers into `settings` (without overwriting
-/// existing keys). Each becomes a selectable provider entry.
-pub fn register_providers(settings: &mut Settings, presets: &[PresetProvider]) {
-    for p in presets {
-        if settings.providers.contains_key(&p.name) {
-            continue;
-        }
-        settings.providers.insert(
-            p.name.clone(),
-            ProviderConfig {
-                kind: p.kind.clone(),
-                legacy_model: None,
-                api_key: None,
-                api_base: if p.base_url.is_empty() {
-                    None
-                } else {
-                    Some(p.base_url.clone())
-                },
-                api_key_env: p.env_key.clone(),
-                temperature: 0.1,
-                max_tokens: 8192,
-            },
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +645,39 @@ mod tests {
         assert_eq!(presets[1].base_url, "https://api.pateway.ai");
     }
 
+    #[test]
+    fn parses_quoted_env_keys() {
+        let body = r#"export const providerPresets = [{
+  "name": "Quoted",
+  "settingsConfig": { "env": {
+    "OPENAI_BASE_URL": "https://example.test/v1",
+    "OPENAI_API_KEY": ""
+  }}
+}];"#;
+        let presets = parse_presets(body, "openai");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "Quoted");
+        assert_eq!(presets[0].base_url, "https://example.test/v1");
+        assert_eq!(presets[0].env_key.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn parses_env_keys_with_unicode_punctuation() {
+        let body = r#"export const providerPresets = [{
+  name: "Unicode",
+  settingsConfig: { env: {
+    "备注，说明": "ignored",
+    "OPENAI_BASE_URL": "https://example.test/v1",
+    "OPENAI_API_KEY": ""
+  }}
+}];"#;
+        let presets = parse_presets(body, "openai");
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "Unicode");
+        assert_eq!(presets[0].base_url, "https://example.test/v1");
+        assert_eq!(presets[0].env_key.as_deref(), Some("OPENAI_API_KEY"));
+    }
+
     /// Live network check against the real cc-switch claude preset. Run with
     /// `cargo test parse_live_cc_switch -- --ignored --nocapture`.
     #[tokio::test]
@@ -633,35 +702,6 @@ mod tests {
         let sheng = presets.iter().find(|p| p.name == "Shengsuanyun").unwrap();
         assert_eq!(sheng.base_url, "https://router.shengsuanyun.com/api");
         assert_eq!(sheng.env_key.as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
-    }
-
-    #[test]
-    fn register_providers_skips_existing() {
-        let mut settings = Settings::default();
-        settings.providers.insert(
-            "anthropic".into(),
-            ProviderConfig {
-                kind: "anthropic".into(),
-                legacy_model: None,
-                api_key: None,
-                api_base: None,
-                api_key_env: None,
-                temperature: 0.0,
-                max_tokens: 0,
-            },
-        );
-        let presets = vec![PresetProvider {
-            name: "anthropic".into(),
-            kind: "anthropic".into(),
-            base_url: "u".into(),
-            models: vec!["m".into()],
-            env_key: None,
-        }];
-        register_providers(&mut settings, &presets);
-        assert_eq!(
-            settings.providers.get("anthropic").unwrap().legacy_model,
-            None
-        );
     }
 
     #[test]

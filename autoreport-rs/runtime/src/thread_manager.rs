@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 pub struct LoopManager {
     workspace: PathBuf,
+    project_home: PathBuf,
     bus: Bus,
     task_board: TaskBoard,
     manifest: ManifestStore,
@@ -39,6 +40,7 @@ impl LoopManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: &Path,
+        autoreport_home: &Path,
         main_provider: Arc<dyn LLMProvider>,
         sub_provider: Arc<dyn LLMProvider>,
         bus: Bus,
@@ -46,15 +48,18 @@ impl LoopManager {
         sandbox: autoreport_sandboxing::SandboxSpec,
     ) -> Self {
         let task_board = TaskBoard::new();
-        let manifest = ManifestStore::new(workspace);
-        let skills = SkillLoader::new(workspace);
-        let prompts = PromptLoader::new(workspace);
-        let exec_policy = ExecPolicyManager::load(workspace).unwrap_or_else(|err| {
+        let state_dir = autoreport_core::config::workspace_state_dir(autoreport_home, workspace);
+        let _ = std::fs::create_dir_all(&state_dir);
+        let manifest = ManifestStore::new(workspace, &state_dir);
+        let skills = SkillLoader::new(autoreport_home, workspace);
+        let prompts = PromptLoader::new(autoreport_home, workspace);
+        let exec_policy = ExecPolicyManager::load(&state_dir).unwrap_or_else(|err| {
             log::warn!("failed to load execpolicy rules; starting with an empty policy: {err}");
-            ExecPolicyManager::empty(workspace)
+            ExecPolicyManager::empty(&state_dir)
         });
         Self {
             workspace: workspace.to_path_buf(),
+            project_home: state_dir,
             bus,
             task_board,
             manifest,
@@ -69,9 +74,8 @@ impl LoopManager {
         }
     }
 
-    /// Build each agent loop and start it. Agents persist until the process
-    /// exits (they are never shut down); only their context can be cleared.
-    pub fn start(&mut self) -> Result<()> {
+    /// Build each agent loop and start it.
+    pub async fn start(&mut self) -> Result<()> {
         for agent in AgentType::ALL {
             let provider = if agent == AgentType::Main {
                 self.main_provider.clone()
@@ -82,6 +86,7 @@ impl LoopManager {
             let loop_ = Arc::new(AgentLoop::new(
                 agent,
                 self.workspace.clone(),
+                self.project_home.clone(),
                 tools,
                 provider.clone(),
                 self.prompts.clone(),
@@ -92,7 +97,7 @@ impl LoopManager {
                 self.defaults.clone(),
                 self.exec_policy.clone(),
             ));
-            loop_.clone().start();
+            loop_.clone().start().await;
             self.loops.insert(agent, loop_);
         }
         Ok(())
@@ -100,6 +105,35 @@ impl LoopManager {
 
     pub fn get(&self, agent: AgentType) -> Option<Arc<AgentLoop>> {
         self.loops.get(&agent).cloned()
+    }
+
+    /// Snapshot every project-scoped conversation after startup recovery.
+    pub async fn history_snapshot(
+        &self,
+    ) -> Vec<(AgentType, Vec<autoreport_rollout::ResponseItem>)> {
+        let mut snapshot = Vec::new();
+        for agent in AgentType::ALL {
+            if let Some(loop_) = self.loops.get(&agent) {
+                snapshot.push((agent, loop_.history_snapshot().await));
+            }
+        }
+        snapshot
+    }
+
+    /// List only this project's persisted sessions, suitable for a TUI
+    /// `/sessions` view. The project state directory is selected before lookup.
+    pub fn session_summaries(&self) -> Vec<(AgentType, String, String)> {
+        let mut out = Vec::new();
+        for agent in AgentType::ALL {
+            for (_, meta) in autoreport_rollout::list_for_agent(
+                &self.project_home,
+                agent.as_str(),
+                &self.workspace,
+            ) {
+                out.push((agent, meta.conversation_id, meta.timestamp));
+            }
+        }
+        out
     }
 
     /// Snapshot of the produced-file manifests (all agents, or one if given).
@@ -146,6 +180,30 @@ impl LoopManager {
     pub fn interrupt_all(&self) {
         for agent in AgentType::ALL {
             self.interrupt(agent);
+        }
+    }
+
+    /// Stop active turns and flush every rollout before the UI/process exits.
+    pub async fn shutdown(&self) {
+        for agent in AgentType::ALL {
+            if let Some(loop_) = self.loops.get(&agent) {
+                loop_.interrupt().await;
+            }
+        }
+        for agent in AgentType::ALL {
+            if let Some(loop_) = self.loops.get(&agent) {
+                // `compact`/`clear_context` already use the same bounded idle
+                // wait. A final interrupt plus a short polling window here
+                // keeps shutdown deterministic without hanging on a provider.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                while loop_.is_busy().await && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                if loop_.is_busy().await {
+                    log::warn!("{}: shutdown timed out with an active turn", agent);
+                }
+                loop_.flush_rollout().await;
+            }
         }
     }
 

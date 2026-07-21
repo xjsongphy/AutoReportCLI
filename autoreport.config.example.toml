@@ -1,0 +1,39 @@
+# AutoReportCLI example configuration.
+# Copy this file to ~/.autoreport/config.toml (or $AUTOREPORT_HOME/config.toml)
+# and edit it. Store API keys through `/config` (in `auth.json`) or use
+# environment variables; they are deliberately not written to this TOML file.
+
+context_window = 128000
+
+[providers.anthropic]
+kind = "anthropic"
+# API key: use `/config` or ANTHROPIC_API_KEY
+temperature = 0.1
+max_tokens = 8192
+
+[providers.deepseek]
+kind = "deepseek"
+# API key: use `/config` or DEEPSEEK_API_KEY
+api_base = "https://api.deepseek.com/v1"
+temperature = 0.1
+max_tokens = 8192
+
+[providers.openrouter]
+kind = "openrouter"
+# API key: use `/config` or OPENROUTER_API_KEY
+api_base = "https://openrouter.ai/api/v1"
+
+[models.main]
+provider = "anthropic"
+model = "claude-sonnet-4-5-20251001"
+
+[models.sub]
+provider = "deepseek"
+model = "deepseek-chat"
+
+[agents]
+max_tool_iterations = 12
+compact_threshold = 0.8
+temperature = 0.1
+max_tokens = 8192
+exec_timeout_secs = 120

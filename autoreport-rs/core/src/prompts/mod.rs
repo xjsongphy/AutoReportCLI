@@ -1,6 +1,8 @@
 //! Prompt loading. Each agent's identity + full instructions live in
 //! `templates/agents/*.md` (compiled into the binary). Users may override any
-//! of them by placing a file of the same name in `References/agents/`.
+//! of them globally under `$AUTOREPORT_HOME/agents/`; explicit project
+//! overrides in `References/agents/` are also read, matching Codex's user and
+//! project instruction layers.
 
 use crate::skills::SkillLoader;
 use crate::types::AgentType;
@@ -16,20 +18,26 @@ const REPORT: &str = include_str!("../../../../templates/agents/report_agent.md"
 
 #[derive(Clone)]
 pub struct PromptLoader {
+    home: PathBuf,
     workspace: PathBuf,
 }
 
 impl PromptLoader {
-    pub fn new(workspace: &Path) -> Self {
+    pub fn new(home: &Path, workspace: &Path) -> Self {
         Self {
+            home: home.to_path_buf(),
             workspace: workspace.to_path_buf(),
         }
     }
 
-    /// User override path for an agent file, if present.
+    /// Project override takes precedence over the global user override.
     fn override_path(&self, file: &str) -> Option<PathBuf> {
         let p = self.workspace.join("References").join("agents").join(file);
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            return Some(p);
+        }
+        let p = self.home.join("agents").join(file);
+        p.exists().then_some(p)
     }
 
     fn read(&self, file: &str, default: &str) -> String {
@@ -113,8 +121,8 @@ mod tests {
         let prompt_path = agents.join("main_agent.md");
         std::fs::write(&prompt_path, "first prompt").unwrap();
 
-        let loader = PromptLoader::new(&workspace);
-        let skills = SkillLoader::new(&workspace);
+        let loader = PromptLoader::new(&workspace, &workspace);
+        let skills = SkillLoader::new(&workspace, &workspace);
 
         let first = loader.build_system_prompt(AgentType::Main, &skills, &workspace);
         std::fs::write(&prompt_path, "second prompt").unwrap();

@@ -31,23 +31,25 @@ const TARGETS: [(&str, &str); 2] = [("main", "Main"), ("sub", "Sub agents (all 4
 /// A two-stage model binding editor: select API, then enter model name.
 pub struct ModelScreen {
     pub settings: Settings,
-    pub workspace: PathBuf,
+    pub home: PathBuf,
     step: Step,
     target_selected: usize,
     api_selected: usize,
+    api_scroll_offset: usize,
     input: String,
     cursor: usize,
     error: Option<String>,
 }
 
 impl ModelScreen {
-    pub fn new(settings: Settings, workspace: PathBuf) -> Self {
+    pub fn new(settings: Settings, home: PathBuf) -> Self {
         let mut screen = Self {
             settings,
-            workspace,
+            home,
             step: Step::Target,
             target_selected: 0,
             api_selected: 0,
+            api_scroll_offset: 0,
             input: String::new(),
             cursor: 0,
             error: None,
@@ -73,7 +75,22 @@ impl ModelScreen {
     }
 
     fn api_keys(&self) -> Vec<String> {
-        self.settings.providers.keys().cloned().collect()
+        self.settings
+            .providers
+            .iter()
+            .filter(|(_, provider)| resolve_api_key(provider).is_ok())
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn api_label(&self, key: &str) -> String {
+        self.settings
+            .providers
+            .get(key)
+            .and_then(|provider| provider.alias.as_deref())
+            .filter(|alias| !alias.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| key.to_string())
     }
 
     fn sync_api_selection(&mut self) {
@@ -83,6 +100,7 @@ impl ModelScreen {
             .position(|key| key == &self.target().provider)
             .unwrap_or(0)
             .min(keys.len().saturating_sub(1));
+        self.api_scroll_offset = 0;
     }
 
     fn selected_api(&self) -> Option<String> {
@@ -144,6 +162,11 @@ impl ModelScreen {
 
     fn draw_header(&self, f: &mut Frame<'_>, area: Rect) {
         let selected = self.target();
+        let selected_provider_label = if selected.provider.is_empty() {
+            "-".to_string()
+        } else {
+            self.api_label(&selected.provider)
+        };
         let text = vec![
             Line::from(vec![
                 Span::styled("target  ", Style::default().fg(Color::DarkGray)),
@@ -155,14 +178,7 @@ impl ModelScreen {
                 ),
                 Span::raw("    "),
                 Span::styled("API  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    if selected.provider.is_empty() {
-                        "-"
-                    } else {
-                        &selected.provider
-                    },
-                    Style::default().fg(Color::Cyan),
-                ),
+                Span::styled(selected_provider_label, Style::default().fg(Color::Cyan)),
                 Span::raw("    "),
                 Span::styled("model  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
@@ -195,7 +211,7 @@ impl ModelScreen {
                 let value = if model.provider.is_empty() || model.model.is_empty() {
                     "not configured".to_string()
                 } else {
-                    format!("{} · {}", model.provider, model.model)
+                    format!("{} · {}", self.api_label(&model.provider), model.model)
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
@@ -231,36 +247,30 @@ impl ModelScreen {
         );
     }
 
-    fn draw_apis(&self, f: &mut Frame<'_>, area: Rect) {
+    fn draw_apis(&mut self, f: &mut Frame<'_>, area: Rect) {
         let keys = self.api_keys();
-        let items = keys
+        let mut items = keys
             .iter()
             .map(|key| {
                 let api = self.settings.providers.get(key);
                 let kind = api.map(|p| p.kind.as_str()).unwrap_or("?");
-                let key_state = api
-                    .map(resolve_api_key)
-                    .map(|r| if r.is_ok() { "key" } else { "no-key" })
-                    .unwrap_or("missing");
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{key:<22}"),
+                        format!("{:<22}", self.api_label(key)),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(format!("{kind:<14}"), Style::default().fg(Color::Gray)),
-                    Span::styled(
-                        key_state,
-                        Style::default().fg(if key_state == "key" {
-                            Color::Green
-                        } else {
-                            Color::Yellow
-                        }),
-                    ),
                 ]))
             })
             .collect::<Vec<_>>();
-        let mut state = ListState::default();
-        state.select(Some(self.api_selected));
+        if items.is_empty() {
+            items.push(ListItem::new(Line::styled(
+                "No configured APIs — add one in /config",
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        let mut state = ListState::default().with_offset(self.api_scroll_offset);
+        state.select((!keys.is_empty()).then_some(self.api_selected));
         f.render_stateful_widget(
             List::new(items)
                 .highlight_style(
@@ -269,14 +279,14 @@ impl ModelScreen {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .title(format!(" 1/2 — select API for {} ", self.target_label())),
-                ),
+                .block(Block::default().borders(Borders::TOP).title(format!(
+                    " 1/2 — select configured API for {} ",
+                    self.target_label()
+                ))),
             area,
             &mut state,
         );
+        self.api_scroll_offset = state.offset();
     }
 
     fn draw_model(&self, f: &mut Frame<'_>, area: Rect) {
@@ -444,7 +454,7 @@ impl ModelScreen {
 
     fn handle_preview(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Enter => match save_settings(&self.workspace, &self.settings) {
+            KeyCode::Enter => match save_settings(&self.home, &self.settings) {
                 Ok(()) => Some(Outcome::Saved),
                 Err(error) => {
                     self.error = Some(format!("save failed: {error}"));
@@ -501,7 +511,7 @@ mod tests {
     fn api() -> ProviderConfig {
         ProviderConfig {
             kind: "openai".into(),
-            legacy_model: None,
+            alias: None,
             api_key: Some("test".into()),
             api_base: None,
             api_key_env: None,
@@ -524,5 +534,20 @@ mod tests {
         screen.cursor = screen.input.len();
         screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(screen.target().model, "gpt-test");
+    }
+
+    #[test]
+    fn model_api_list_only_contains_entries_with_resolvable_keys() {
+        let mut settings = Settings::default();
+        settings.providers.insert("configured".into(), api());
+        settings.providers.insert(
+            "empty".into(),
+            ProviderConfig {
+                api_key: None,
+                ..api()
+            },
+        );
+        let screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
+        assert_eq!(screen.api_keys(), vec!["configured"]);
     }
 }

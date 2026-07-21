@@ -21,7 +21,7 @@ impl Tui {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(4),
                 Constraint::Min(5),
                 Constraint::Length(3),
                 Constraint::Length(1),
@@ -138,43 +138,74 @@ impl Tui {
     }
 
     fn draw_status(&self, f: &mut Frame<'_>, area: Rect) {
-        let mut spans = vec![
+        let block = Block::default().borders(Borders::BOTTOM);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(2)])
+            .split(inner);
+
+        let ide_width = if self.ide_enabled { 6 } else { 0 };
+        let fixed_width = 13usize + 2 + 2 + ide_width;
+        let available_width = (inner.width as usize).saturating_sub(fixed_width);
+        let provider_width = available_width.min(24).max(1);
+        let workspace_width = available_width.saturating_sub(provider_width);
+        let workspace = truncate(&self.workspace_display, workspace_width.saturating_sub(1));
+        let provider = truncate(&self.provider_id, provider_width.saturating_sub(1));
+        let mut identity = vec![
             Span::styled(
-                " AutoReportCLI ",
+                "AutoReportCLI",
                 Style::default()
                     .add_modifier(Modifier::BOLD)
                     .fg(Color::Cyan),
             ),
-            Span::raw(" "),
-            Span::styled(
-                self.workspace_display.clone(),
-                Style::default().fg(Color::DarkGray),
-            ),
             Span::raw("  "),
-            Span::styled(self.provider_id.clone(), Style::default().fg(Color::Yellow)),
-            Span::raw("  focused: "),
-            Span::styled(
-                self.focused.label().to_string(),
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Green),
-            ),
+            Span::styled(workspace, Style::default().fg(Color::DarkGray)),
+            Span::raw("  "),
+            Span::styled(provider, Style::default().fg(Color::Yellow)),
         ];
         if self.ide_enabled {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled("IDE●", Style::default().fg(Color::Magenta)));
+            identity.extend([
+                Span::raw("  "),
+                Span::styled("IDE●", Style::default().fg(Color::Magenta)),
+            ]);
         }
-        for a in AgentType::ALL {
-            let st = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("{} {} {}", status_mark(st), a.label(), status_text(st)),
-                Style::default().fg(status_color(st)),
-            ));
+        f.render_widget(Paragraph::new(Line::from(identity)), rows[0]);
+
+        // Codex keeps agent threads as separate picker/list entries. The
+        // five fixed cells below preserve that separation while keeping the
+        // complete agent roster visible at all times.
+        let agent_areas = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(20); 5])
+            .split(rows[1]);
+        for (a, agent_area) in AgentType::ALL.into_iter().zip(agent_areas.iter().copied()) {
+            let status = self.statuses.get(&a).copied().unwrap_or(AgentStatus::Idle);
+            let selected = a == self.focused;
+            let label_width = agent_area.width.saturating_sub(2).max(1) as usize;
+            let label = truncate(a.label(), label_width.saturating_sub(1));
+            let marker = if selected { "▸" } else { " " };
+            let label_style = Style::default()
+                .fg(agent_color(a))
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
+            let status_style = Style::default().fg(status_color(status));
+            let lines = vec![
+                Line::from(vec![Span::styled(format!("{marker} {label}"), label_style)]),
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(status_mark(status), status_style),
+                    Span::raw(" "),
+                    Span::styled(status_text(status), status_style),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(lines), agent_area);
         }
-        let block = Block::default().borders(Borders::BOTTOM);
-        let para = Paragraph::new(Line::from(spans)).block(block);
-        f.render_widget(para, area);
     }
 
     fn draw_history(&self, f: &mut Frame<'_>, area: Rect) {

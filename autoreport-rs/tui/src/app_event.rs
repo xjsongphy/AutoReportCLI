@@ -146,6 +146,23 @@ impl Tui {
             BusMessage::StatusChange { agent_type, status } => {
                 self.statuses.insert(agent_type, status);
             }
+            BusMessage::TaskUpdate {
+                action,
+                source_agent,
+                target_agent,
+                brief,
+                ..
+            } => {
+                self.system(
+                    &format!(
+                        "{} -> {}: task {} ({brief})",
+                        source_agent.label(),
+                        target_agent.label(),
+                        action
+                    ),
+                    SysKind::Info,
+                );
+            }
             BusMessage::SystemNotice {
                 agent_type,
                 content,
@@ -205,11 +222,11 @@ impl Tui {
             if let Some(outcome) = screen.handle_key(key) {
                 match outcome {
                     Outcome::Saved => {
-                        if let Err(e) = save_settings(&self.workspace, screen.settings()) {
+                        if let Err(e) = save_settings(&self.autoreport_home, screen.settings()) {
                             self.system(&format!("config save failed: {e}"), SysKind::Error);
                         } else {
                             self.system(
-                                "configuration saved to autoreport.config.yaml — restart to apply",
+                                "configuration saved to config.toml — restart to apply",
                                 SysKind::Info,
                             );
                         }
@@ -326,6 +343,9 @@ impl Tui {
         // Recompute completion popups based on the token under the cursor.
         self.recompute_slash();
         self.recompute_mention();
+        if self.exit_requested {
+            return false;
+        }
         true
     }
 }

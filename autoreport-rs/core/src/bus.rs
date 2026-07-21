@@ -86,9 +86,15 @@ mod tests {
         let bus = Bus::new();
         let rx = bus.register_approval("call-1").await;
         // Unknown id resolves to false and leaves the receiver pending.
-        assert!(!bus.resolve_approval("unknown", ReviewDecision::Denied).await);
+        assert!(
+            !bus.resolve_approval("unknown", ReviewDecision::Denied)
+                .await
+        );
         // Resolving the registered id delivers the decision.
-        assert!(bus.resolve_approval("call-1", ReviewDecision::Approved).await);
+        assert!(
+            bus.resolve_approval("call-1", ReviewDecision::Approved)
+                .await
+        );
         assert_eq!(rx.await.unwrap(), ReviewDecision::Approved);
         // A second resolve is a no-op (already consumed).
         assert!(!bus.resolve_approval("call-1", ReviewDecision::Denied).await);
@@ -103,10 +109,7 @@ mod tests {
             call_id: "c".into(),
             command: "cat Data/x.csv".into(),
             cwd: None,
-            summary: crate::policy::summarize_command(&[
-                "cat".into(),
-                "Data/x.csv".into(),
-            ]),
+            summary: crate::policy::summarize_command(&["cat".into(), "Data/x.csv".into()]),
             reason: None,
         });
         let msg = rx.recv().await.unwrap();

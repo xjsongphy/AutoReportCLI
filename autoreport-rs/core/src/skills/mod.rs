@@ -1,9 +1,9 @@
 //! Skill loader.
 //!
-//! Codex loads local skills from per-skill directories containing `SKILL.md`.
-//! We follow that layout for `References/skills/*/SKILL.md` and
-//! `.autoreport/skills/*/SKILL.md`, while keeping compatibility with the older
-//! flat-cache layout `.autoreport/skills/<name>.md`.
+//! Codex loads user skills from the global home and project skills from the
+//! project tree. AutoReport keeps pulled/user-wide skills in
+//! `$AUTOREPORT_HOME/skills/*/SKILL.md`; explicit project overrides under
+//! `References/skills` remain readable but are never created automatically.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -38,14 +38,12 @@ pub struct SkillLoader {
 }
 
 impl SkillLoader {
-    pub fn new(workspace: &Path) -> Self {
+    pub fn new(home: &Path, workspace: &Path) -> Self {
         let roots = vec![
             workspace.join("References").join("skills"),
-            workspace.join(".autoreport").join("skills"),
+            home.join("skills"),
         ];
-        for root in &roots {
-            let _ = std::fs::create_dir_all(root);
-        }
+        let _ = std::fs::create_dir_all(home.join("skills"));
         Self {
             roots,
             cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -55,9 +53,8 @@ impl SkillLoader {
     pub fn list(&self) -> Vec<Skill> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        // Iterate roots in reverse so a user override in `.autoreport/skills`
-        // wins over a same-named built-in under `References/skills` (codex
-        // keeps both via path-dedupe; we keep one, user-precedence).
+        // Iterate roots in reverse so an explicit project override wins over a
+        // same-named global skill, matching Codex's user/project precedence.
         for root in self.roots.iter().rev() {
             for path in discover_skill_files(root) {
                 let Ok(skill) = parse_skill(&path) else {
@@ -341,14 +338,14 @@ mod tests {
     #[test]
     fn skill_loader_reads_directory_skills() {
         let dir = std::env::temp_dir().join(format!("skills-dir-{}", stamp()));
-        let skill_dir = dir.join(".autoreport").join("skills").join("latex-compile");
+        let skill_dir = dir.join("skills").join("latex-compile");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: latex-compile\ndescription: compile latex\n---\nbody text",
         )
         .unwrap();
-        let loader = SkillLoader::new(&dir);
+        let loader = SkillLoader::new(&dir, &dir);
         let names: Vec<String> = loader.list().into_iter().map(|s| s.name).collect();
         assert!(
             names.iter().any(|n| n == "latex-compile"),
@@ -362,14 +359,14 @@ mod tests {
     #[test]
     fn skill_loader_keeps_flat_cache_compatibility() {
         let dir = std::env::temp_dir().join(format!("skills-flat-{}", stamp()));
-        let skills = dir.join(".autoreport").join("skills");
+        let skills = dir.join("skills");
         std::fs::create_dir_all(&skills).unwrap();
         std::fs::write(
             skills.join("md-report-writer.md"),
             "---\nname: md-report-writer\ndescription: write markdown reports\n---\nbody text",
         )
         .unwrap();
-        let loader = SkillLoader::new(&dir);
+        let loader = SkillLoader::new(&dir, &dir);
         let skill = loader.load("md-report-writer").expect("flat compat skill");
         assert_eq!(skill.name, "md-report-writer");
         std::fs::remove_dir_all(&dir).ok();
@@ -391,8 +388,8 @@ mod tests {
     #[test]
     fn render_injections_emits_bodies_for_mentioned_only() {
         let dir = std::env::temp_dir().join(format!("skills-inj-{}", stamp()));
-        let s1 = dir.join(".autoreport").join("skills").join("alpha");
-        let s2 = dir.join(".autoreport").join("skills").join("beta");
+        let s1 = dir.join("skills").join("alpha");
+        let s2 = dir.join("skills").join("beta");
         std::fs::create_dir_all(&s1).unwrap();
         std::fs::create_dir_all(&s2).unwrap();
         std::fs::write(
@@ -405,7 +402,7 @@ mod tests {
             "---\nname: beta\ndescription: beta skill\n---\nBETA BODY",
         )
         .unwrap();
-        let loader = SkillLoader::new(&dir);
+        let loader = SkillLoader::new(&dir, &dir);
         let mut mentioned = HashSet::new();
         mentioned.insert("beta".to_string());
         let inj = loader.render_injections(&mentioned);

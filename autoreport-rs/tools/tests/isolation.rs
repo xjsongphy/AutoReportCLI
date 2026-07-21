@@ -87,6 +87,31 @@ async fn exec_respects_write_dir() {
     std::fs::remove_dir_all(&ws).ok();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_patch_rejects_symlink_write_escape() {
+    use std::os::unix::fs::symlink;
+
+    let ws = workspace();
+    let outside = tempfile::tempdir().unwrap();
+    let link = ws.join("Data").join("Processed").join("outside");
+    symlink(outside.path(), &link).unwrap();
+
+    let patch = ApplyPatchTool::new(FsCtx::new(
+        ws.clone(),
+        Some(ws.join("Data").join("Processed")),
+    ));
+    let result = patch
+        .call(&json!({
+            "patch": "*** Begin Patch\n*** Add File: Data/Processed/outside/escape.txt\n+nope\n*** End Patch\n"
+        }))
+        .await;
+
+    assert!(result.error.is_some(), "symlink escape must be rejected");
+    assert!(!outside.path().join("escape.txt").exists());
+    std::fs::remove_dir_all(&ws).ok();
+}
+
 #[tokio::test]
 async fn escalation_requires_runtime_only_execution_context() {
     let ws = workspace();

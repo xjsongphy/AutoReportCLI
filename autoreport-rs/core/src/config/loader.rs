@@ -1,9 +1,20 @@
-//! Settings loading, API-key resolution and workspace folder creation.
+//! Global settings/auth loading, API-key resolution and workspace folder creation.
 
 use crate::config::schema::{ModelConfig, Settings};
 use crate::policy::AskForApproval;
 use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub const CONFIG_TOML_FILE: &str = "config.toml";
+pub const AUTH_JSON_FILE: &str = "auth.json";
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct AuthFile {
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
+}
 
 /// The fixed directories every AutoReport project owns.
 /// Users may only add/remove files *inside* these, never rename them.
@@ -17,41 +28,10 @@ pub const REQUIRED_DIRS: &[&str] = &[
     "Plots/Scripts",
     "Tex",
     "Outline",
-    ".autoreport",
-];
-
-/// Lowercase -> capitalized directory pairs for migrating projects created
-/// before the directory-name capitalization change. Applied once, in
-/// `ensure_workspace`, before the create-missing loop: if the capitalized dir
-/// does not exist but the legacy lowercase one does, rename it in place.
-const LEGACY_DIR_RENAMES: &[(&str, &str)] = &[
-    ("data/processed", "Data/Processed"),
-    ("data", "Data"),
-    ("references", "References"),
-    ("theory", "Theory"),
-    ("code", "Plots"),
-    ("tex", "Tex"),
-    ("outline", "Outline"),
 ];
 
 /// Create any missing required directories under `workspace`. Idempotent.
 pub fn ensure_workspace(workspace: &Path) -> Result<()> {
-    // One-time migration: rename legacy lowercase dirs to the capitalized
-    // layout. Order matters — rename `data/processed` before `data`, etc.
-    for (legacy, current) in LEGACY_DIR_RENAMES {
-        let new_path = workspace.join(current);
-        let old_path = workspace.join(legacy);
-        if !new_path.exists() && old_path.exists() {
-            if let Some(parent) = new_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            std::fs::rename(&old_path, &new_path).with_context(|| {
-                format!("migrating {} -> {}", old_path.display(), new_path.display())
-            })?;
-            log::info!("migrated directory {} -> {}", legacy, current);
-        }
-    }
-
     for dir in REQUIRED_DIRS {
         let path = workspace.join(dir);
         if !path.exists() {
@@ -60,20 +40,44 @@ pub fn ensure_workspace(workspace: &Path) -> Result<()> {
             log::info!("created missing directory {}", path.display());
         }
     }
-    // Materialize bundled skills + report template (standalone defaults).
-    crate::bundled::materialize(workspace);
     Ok(())
 }
 
-/// Load settings from `autoreport.config.yaml` in `workspace`, falling back to
-/// defaults if absent. Environment variables override individual fields.
-pub fn load_settings(workspace: &Path) -> Result<Settings> {
-    let path = workspace.join("autoreport.config.yaml");
+/// Resolve AutoReport's global home. This mirrors Codex's `find_codex_home`:
+/// `AUTOREPORT_HOME` overrides the default `~/.autoreport`.
+pub fn find_autoreport_home() -> Result<PathBuf> {
+    autoreport_utils_home_dir::find_autoreport_home()
+        .map(|path| path.to_path_buf())
+        .context("resolving AUTOREPORT_HOME")
+}
+
+/// Create the global home and its stable program-state subdirectories.
+pub fn ensure_autoreport_home(home: &Path) -> Result<()> {
+    std::fs::create_dir_all(home)
+        .with_context(|| format!("creating AutoReport home {}", home.display()))?;
+    for dir in ["skills", "external", "templates", "agents", "workspaces"] {
+        std::fs::create_dir_all(home.join(dir))
+            .with_context(|| format!("creating {}", home.join(dir).display()))?;
+    }
+    crate::bundled::materialize(home);
+    Ok(())
+}
+
+/// Return the global state directory associated with one workspace.
+pub fn workspace_state_dir(home: &Path, workspace: &Path) -> PathBuf {
+    autoreport_utils_home_dir::workspace_state_dir(home, workspace)
+}
+
+/// Load settings from the global Codex-style `config.toml` plus `auth.json`.
+/// Environment variables override individual fields.
+pub fn load_settings(home: &Path) -> Result<Settings> {
+    let path = home.join(CONFIG_TOML_FILE);
     if path.exists() {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let mut settings: Settings =
-            serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        merge_auth_keys(home, &mut settings)?;
         apply_env_overrides(&mut settings);
         normalize(&mut settings);
         Ok(settings)
@@ -83,13 +87,14 @@ pub fn load_settings(workspace: &Path) -> Result<Settings> {
             path.display()
         );
         let mut settings = Settings::default();
+        merge_auth_keys(home, &mut settings)?;
         apply_env_overrides(&mut settings);
         normalize(&mut settings);
         Ok(settings)
     }
 }
 
-/// Pull provider credentials/URLs from the environment when the YAML omits
+/// Pull provider credentials/URLs from the environment when the TOML omits
 /// them, so the tool works without a committed config file.
 fn apply_env_overrides(settings: &mut Settings) {
     if settings.providers.is_empty() {
@@ -134,38 +139,6 @@ fn normalize(settings: &mut Settings) {
     // Mirror the top-level user-facing `context_window` into the per-agent
     // defaults that runtime code (auto-compaction) actually reads.
     settings.agents.context_window = settings.context_window;
-    migrate_legacy_model_settings(settings);
-}
-
-/// Populate the new model bindings from an older `active_provider` plus its
-/// `model`, but only when a binding has not already been configured.
-fn migrate_legacy_model_settings(settings: &mut Settings) {
-    let fallback_provider = settings
-        .legacy_active_provider
-        .clone()
-        .filter(|key| settings.providers.contains_key(key))
-        .or_else(|| settings.providers.keys().next().cloned());
-    let Some(provider) = fallback_provider else {
-        return;
-    };
-    let legacy_model = settings
-        .providers
-        .get(&provider)
-        .and_then(|cfg| cfg.legacy_model.clone())
-        .unwrap_or_default();
-    for selection in [&mut settings.models.main, &mut settings.models.sub] {
-        let inherited_provider = selection.provider.is_empty();
-        if selection.provider.is_empty() {
-            selection.provider = provider.clone();
-        }
-        // Never copy a model name from one API onto an explicitly selected
-        // different API. A partially migrated config must still open the model
-        // page instead of silently sending (for example) a Claude model to an
-        // OpenAI endpoint.
-        if selection.model.is_empty() && (inherited_provider || selection.provider == provider) {
-            selection.model = legacy_model.clone();
-        }
-    }
 }
 
 fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_base: Option<&str>) {
@@ -174,7 +147,7 @@ fn try_register(settings: &mut Settings, key: &str, kind: &str, env: &str, api_b
             key.to_string(),
             crate::config::schema::ProviderConfig {
                 kind: kind.to_string(),
-                legacy_model: None,
+                alias: Some(key.to_string()),
                 api_key: None,
                 api_base: api_base.map(String::from),
                 api_key_env: None,
@@ -200,7 +173,7 @@ pub fn needs_model_config(settings: &Settings) -> bool {
 }
 
 /// True when startup needs the API configuration page. An API is usable only
-/// when its key can be resolved from inline config or the environment.
+/// when its key can be resolved from auth.json or the environment.
 pub fn needs_api_config(settings: &Settings) -> bool {
     settings
         .providers
@@ -224,7 +197,7 @@ pub fn resolve_model<'a>(
     Ok((provider, model.model.trim()))
 }
 
-/// Resolve the effective API key for a provider: YAML value → preset env var →
+/// Resolve the effective API key for a provider: auth.json value → preset env var →
 /// kind default env var.
 pub fn resolve_api_key(provider: &crate::config::schema::ProviderConfig) -> Result<String> {
     if let Some(k) = &provider.api_key {
@@ -260,24 +233,90 @@ pub fn resolve_api_key(provider: &crate::config::schema::ProviderConfig) -> Resu
     ))
 }
 
-/// Where per-agent manifests / runtime metadata live.
-pub fn metadata_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".autoreport")
-}
-
-/// Serialize settings to `autoreport.config.yaml` in `workspace`.
-pub fn save_settings(workspace: &Path, settings: &Settings) -> Result<()> {
-    let path = workspace.join("autoreport.config.yaml");
-    let raw = serde_yaml::to_string(settings).with_context(|| "serializing settings to YAML")?;
+/// Serialize settings to the global Codex-style `config.toml`.
+pub fn save_settings(home: &Path, settings: &Settings) -> Result<()> {
+    let path = home.join(CONFIG_TOML_FILE);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    save_auth(home, settings)?;
+    let mut public_settings = settings.clone();
+    for provider in public_settings.providers.values_mut() {
+        provider.api_key = None;
+    }
+    let raw =
+        toml::to_string_pretty(&public_settings).with_context(|| "serializing settings to TOML")?;
     std::fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
-/// True when there is no config file AND no provider key is resolvable — the
-/// first-run wizard trigger.
-pub fn needs_config(workspace: &Path, settings: &Settings) -> bool {
-    let _ = workspace;
-    needs_api_config(settings)
+fn load_auth(home: &Path) -> Result<AuthFile> {
+    let path = home.join(AUTH_JSON_FILE);
+    if !path.exists() {
+        return Ok(AuthFile::default());
+    }
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn merge_auth_keys(home: &Path, settings: &mut Settings) -> Result<()> {
+    let auth = load_auth(home)?;
+    for (name, key) in auth.providers {
+        if !key.is_empty()
+            && let Some(provider) = settings.providers.get_mut(&name)
+            && provider.api_key.as_deref().is_none_or(str::is_empty)
+        {
+            provider.api_key = Some(key);
+        }
+    }
+    Ok(())
+}
+
+fn save_auth(home: &Path, settings: &Settings) -> Result<()> {
+    let path = home.join(AUTH_JSON_FILE);
+    let mut auth = load_auth(home)?;
+    for (name, provider) in &settings.providers {
+        match provider.api_key.as_deref().map(str::trim) {
+            Some(key) if !key.is_empty() => {
+                auth.providers.insert(name.clone(), key.to_string());
+            }
+            _ => {
+                auth.providers.remove(name);
+            }
+        }
+    }
+    if auth.providers.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let raw = serde_json::to_string_pretty(&auth).context("serializing auth.json")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = file.metadata()?.permissions();
+        if permissions.mode() & 0o777 != 0o600 {
+            permissions.set_mode(0o600);
+            file.set_permissions(permissions)?;
+        }
+    }
+    use std::io::Write;
+    file.write_all(raw.as_bytes())?;
+    file.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -285,30 +324,6 @@ mod tests {
     use super::*;
     use crate::config::schema::ProviderConfig;
     use tempfile::tempdir;
-
-    #[test]
-    fn ensure_workspace_migrates_legacy_lowercase_dirs() {
-        let dir = tempdir().unwrap();
-        let ws = dir.path();
-        // Seed legacy lowercase layout with content.
-        std::fs::create_dir_all(ws.join("data/processed")).unwrap();
-        std::fs::create_dir_all(ws.join("code")).unwrap();
-        std::fs::write(ws.join("data/processed/out.csv"), "x").unwrap();
-        std::fs::write(ws.join("code/plot.py"), "x").unwrap();
-
-        ensure_workspace(ws).unwrap();
-
-        // Content is reachable at the capitalized paths. On case-sensitive
-        // filesystems the lowercase dirs are renamed; on case-insensitive ones
-        // (Windows NTFS) the case-only rename is a no-op but the content is
-        // accessible via the capitalized name regardless.
-        assert!(ws.join("Data/Processed/out.csv").exists());
-        assert!(ws.join("Plots/plot.py").exists());
-        // New required sub-dirs created.
-        assert!(ws.join("Plots/Fig").exists());
-        assert!(ws.join("Plots/Scripts").exists());
-        assert!(ws.join("Outline").exists());
-    }
 
     #[test]
     fn ensure_workspace_creates_all_required_dirs_when_empty() {
@@ -320,14 +335,14 @@ mod tests {
     }
 
     #[test]
-    fn save_settings_writes_yaml_and_roundtrips() {
+    fn save_settings_writes_toml_and_roundtrips() {
         let dir = tempdir().unwrap();
         let mut settings = Settings::default();
         settings.providers.insert(
             "anthropic".into(),
             ProviderConfig {
                 kind: "anthropic".into(),
-                legacy_model: None,
+                alias: None,
                 api_key: Some("sk-test".into()),
                 api_base: None,
                 api_key_env: None,
@@ -342,7 +357,10 @@ mod tests {
         settings.models.sub = settings.models.main.clone();
 
         save_settings(dir.path(), &settings).unwrap();
-        assert!(dir.path().join("autoreport.config.yaml").exists());
+        assert!(dir.path().join(CONFIG_TOML_FILE).exists());
+        assert!(dir.path().join(AUTH_JSON_FILE).exists());
+        let public_config = std::fs::read_to_string(dir.path().join(CONFIG_TOML_FILE)).unwrap();
+        assert!(!public_config.contains("sk-test"));
 
         let reloaded = load_settings(dir.path()).unwrap();
         assert_eq!(reloaded.models.main.provider, "anthropic");
@@ -351,25 +369,6 @@ mod tests {
             reloaded.providers["anthropic"].api_key.as_deref(),
             Some("sk-test")
         );
-    }
-
-    #[test]
-    fn needs_config_true_when_no_file_and_no_key() {
-        let dir = tempdir().unwrap();
-        let settings = Settings::default(); // empty providers
-        assert!(needs_config(dir.path(), &settings));
-    }
-
-    #[test]
-    fn needs_config_false_when_file_exists() {
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "providers:\n  openai:\n    api_key: test\n",
-        )
-        .unwrap();
-        let settings = load_settings(dir.path()).unwrap();
-        assert!(!needs_config(dir.path(), &settings));
     }
 
     #[test]
@@ -387,8 +386,8 @@ mod tests {
         // Non-`Never` policies are now honored: they route `exec` through the
         // interactive approval flow. The loader must NOT rewrite them.
         std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "agents:\n  approval_policy: on-request\n",
+            dir.path().join(CONFIG_TOML_FILE),
+            "[agents]\napproval_policy = \"on-request\"\n",
         )
         .unwrap();
         let settings = load_settings(dir.path()).unwrap();
@@ -402,8 +401,8 @@ mod tests {
     fn loader_keeps_never_approval() {
         let dir = tempdir().unwrap();
         std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "agents:\n  approval_policy: never\n",
+            dir.path().join(CONFIG_TOML_FILE),
+            "[agents]\napproval_policy = \"never\"\n",
         )
         .unwrap();
         let settings = load_settings(dir.path()).unwrap();
@@ -417,48 +416,23 @@ mod tests {
     fn needs_api_config_when_existing_file_has_no_resolvable_key() {
         let dir = tempdir().unwrap();
         std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "providers:\n  openai:\n    kind: openai\n",
+            dir.path().join(CONFIG_TOML_FILE),
+            "[providers.openai]\nkind = \"openai\"\n",
         )
         .unwrap();
         let settings = load_settings(dir.path()).unwrap();
-        assert!(needs_config(dir.path(), &settings));
+        assert!(needs_api_config(&settings));
     }
 
     #[test]
-    fn partial_migration_never_crosses_api_and_model() {
+    fn removed_legacy_config_fields_are_rejected() {
         let dir = tempdir().unwrap();
         std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "active_provider: anthropic\nproviders:\n  anthropic:\n    kind: anthropic\n    model: claude-legacy\n    api_key: test\n  openai:\n    kind: openai\n    api_key: test\nmodels:\n  main:\n    provider: openai\n",
-        )
-        .unwrap();
-        let settings = load_settings(dir.path()).unwrap();
-        assert_eq!(settings.models.main.provider, "openai");
-        assert!(settings.models.main.model.is_empty());
-        assert!(needs_model_config(&settings));
-    }
-
-    #[test]
-    fn legacy_active_provider_and_model_migrate_to_main_and_sub() {
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("autoreport.config.yaml"),
-            "active_provider: legacy\nproviders:\n  legacy:\n    kind: openai\n    model: gpt-legacy\n    api_key: test\n",
+            dir.path().join(CONFIG_TOML_FILE),
+            "active_provider = \"openai\"\n[providers.openai]\nkind = \"openai\"\nmodel = \"gpt-old\"\n",
         )
         .unwrap();
 
-        let settings = load_settings(dir.path()).unwrap();
-        assert_eq!(settings.models.main.provider, "legacy");
-        assert_eq!(settings.models.main.model, "gpt-legacy");
-        assert_eq!(settings.models.sub.provider, "legacy");
-        assert_eq!(settings.models.sub.model, "gpt-legacy");
-
-        save_settings(dir.path(), &settings).unwrap();
-        let saved = std::fs::read_to_string(dir.path().join("autoreport.config.yaml")).unwrap();
-        assert!(!saved.contains("active_provider"));
-        let saved_yaml: serde_yaml::Value = serde_yaml::from_str(&saved).unwrap();
-        assert!(saved_yaml["providers"]["legacy"].get("model").is_none());
-        assert!(saved.contains("models:"));
+        assert!(load_settings(dir.path()).is_err());
     }
 }

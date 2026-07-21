@@ -5,7 +5,7 @@
 //! run in background tasks; the TUI subscribes to the bus to render their
 //! streamed output.
 
-use crate::app_state::{Cell, Mention, Overlay, PendingApproval, SysKind};
+use crate::app_state::{Cell, Mention, Overlay, PendingApproval, SysKind, ToolEntry};
 use crate::config_update::ConfigScreen;
 use crate::file_search::FileIndex;
 use crate::model_migration::ModelScreen;
@@ -13,6 +13,7 @@ use crate::slash_command::SlashCompletion;
 use autoreport_core::bus::Bus;
 use autoreport_core::config::load_settings;
 use autoreport_core::types::{AgentStatus, AgentType, BusMessage};
+use autoreport_rollout::ResponseItem;
 use autoreport_runtime::LoopManager;
 use crossterm::event::EventStream;
 use crossterm::execute;
@@ -30,6 +31,7 @@ use tokio_stream::StreamExt;
 pub struct Tui {
     pub(crate) manager: Arc<LoopManager>,
     pub(crate) bus: Bus,
+    pub(crate) autoreport_home: PathBuf,
     pub(crate) workspace: PathBuf,
     pub(crate) workspace_display: String,
     pub(crate) provider_id: String,
@@ -55,12 +57,14 @@ pub struct Tui {
     /// Pending human-approval requests from any agent (single shared channel —
     /// ported from codex's `ApprovalOverlay` queue). Front = currently shown.
     pub(crate) pending_approvals: VecDeque<PendingApproval>,
+    pub(crate) exit_requested: bool,
 }
 
 impl Tui {
     pub fn new(
         manager: Arc<LoopManager>,
         bus: Bus,
+        autoreport_home: PathBuf,
         workspace: PathBuf,
         provider_id: String,
     ) -> Self {
@@ -71,6 +75,7 @@ impl Tui {
         Self {
             manager,
             bus,
+            autoreport_home,
             rx,
             workspace,
             workspace_display,
@@ -91,10 +96,12 @@ impl Tui {
             ide_enabled: false,
             ide_warned: false,
             pending_approvals: VecDeque::new(),
+            exit_requested: false,
         }
     }
 
     pub async fn run(mut self) -> io::Result<()> {
+        self.restore_history().await;
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
@@ -111,18 +118,20 @@ impl Tui {
         loop {
             if self.want_config {
                 self.want_config = false;
-                let settings = load_settings(&self.workspace).unwrap_or_default();
-                self.overlay = Some(Overlay::Api(ConfigScreen::new(
+                let settings = load_settings(&self.autoreport_home).unwrap_or_default();
+                let presets = autoreport_core::sync::load_presets(&self.autoreport_home);
+                self.overlay = Some(Overlay::Api(ConfigScreen::new_with_presets(
                     settings,
-                    self.workspace.clone(),
+                    self.autoreport_home.clone(),
+                    presets,
                 )));
             }
             if self.want_models {
                 self.want_models = false;
-                let settings = load_settings(&self.workspace).unwrap_or_default();
+                let settings = load_settings(&self.autoreport_home).unwrap_or_default();
                 self.overlay = Some(Overlay::Models(ModelScreen::new(
                     settings,
-                    self.workspace.clone(),
+                    self.autoreport_home.clone(),
                 )));
             }
             terminal.draw(|f| self.draw(f))?;
@@ -145,9 +154,97 @@ impl Tui {
             }
         }
 
+        self.manager.shutdown().await;
         disable_raw_mode()?;
         execute!(io::stdout(), LeaveAlternateScreen)?;
         Ok(())
+    }
+
+    /// Rebuild the visible transcript from the already-resumed project
+    /// sessions. Startup recovery happens before `Tui::run`, so this is a
+    /// deterministic snapshot rather than a race with the session processor.
+    async fn restore_history(&mut self) {
+        for (agent, items) in self.manager.history_snapshot().await {
+            for item in items {
+                match item {
+                    ResponseItem::Message { role, content, .. } => {
+                        let text = content
+                            .iter()
+                            .map(|part| part.text().to_string())
+                            .collect::<String>();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        match role.as_str() {
+                            "user" => self.history.push(Cell::User { agent, text }),
+                            "assistant" => self.history.push(Cell::Assistant {
+                                agent,
+                                text,
+                                streaming: false,
+                            }),
+                            _ => {}
+                        }
+                    }
+                    ResponseItem::Reasoning {
+                        content, summary, ..
+                    } => {
+                        let text = content
+                            .as_ref()
+                            .map(|parts| {
+                                parts
+                                    .iter()
+                                    .map(|part| part.text())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .filter(|text| !text.trim().is_empty())
+                            .or_else(|| {
+                                let text = summary
+                                    .iter()
+                                    .map(|part| part.text())
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                (!text.trim().is_empty()).then_some(text)
+                            });
+                        if let Some(text) = text {
+                            self.history.push(Cell::Reasoning {
+                                agent,
+                                text,
+                                streaming: false,
+                            });
+                        }
+                    }
+                    ResponseItem::FunctionCall {
+                        name, arguments, ..
+                    } => {
+                        self.history.push(Cell::ToolGroup {
+                            agent,
+                            items: vec![ToolEntry {
+                                name,
+                                args: match serde_json::from_str(&arguments) {
+                                    Ok(value) => value,
+                                    Err(_) => serde_json::Value::String(arguments),
+                                },
+                                result: None,
+                                error: None,
+                            }],
+                        });
+                    }
+                    ResponseItem::FunctionCallOutput { output, .. } => {
+                        if let Some(Cell::ToolGroup {
+                            agent: owner,
+                            items,
+                        }) = self.history.last_mut()
+                            && *owner == agent
+                            && let Some(entry) = items.last_mut()
+                        {
+                            entry.result = Some(serde_json::Value::String(output));
+                        }
+                    }
+                    ResponseItem::Compaction { .. } | ResponseItem::Other => {}
+                }
+            }
+        }
     }
 
     pub(crate) fn system(&mut self, text: &str, kind: SysKind) {

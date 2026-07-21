@@ -24,6 +24,7 @@ use autoreport_runtime::LoopManager;
 use autoreport_tui::Tui;
 use autoreport_tui::config_update::{ConfigScreen, Outcome};
 use autoreport_tui::model_migration::ModelScreen;
+use autoreport_tui::workspace_confirm::{WorkspaceOutcome, WorkspaceScreen};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -87,21 +88,22 @@ async fn run() -> Result<()> {
         None => std::env::current_dir()?,
     };
 
-    // 1) Make sure the required project folders exist.
-    config::ensure_workspace(&workspace)?;
-
-    // 2) Load config.
-    let mut settings = config::load_settings(&workspace)?;
+    let autoreport_home = config::find_autoreport_home()?;
+    config::ensure_autoreport_home(&autoreport_home)?;
+    // Load config without touching the selected workspace. Report-layout
+    // creation is deferred until after explicit consent.
+    let mut settings = config::load_settings(&autoreport_home)?;
 
     // 3) Sync the two upstream repositories (cc-switch presets + skills), like
     //    AutoReport does on startup. Best-effort: network failure keeps the
     //    existing cache and continues. `--no-sync` skips the fetch; use the
     //    existing cache instead. `--sync-presets` forces a full fetch + exits.
-    let should_sync =
-        cli.sync_presets || (!cli.no_sync && !autoreport_core::sync::cache_is_warm(&workspace));
+    let should_sync = cli.sync_presets
+        || (!cli.no_sync && !autoreport_core::sync::cache_is_warm(&autoreport_home));
     if should_sync {
         let report =
-            autoreport_core::sync::sync_all(&workspace, std::time::Duration::from_secs(10)).await;
+            autoreport_core::sync::sync_all(&autoreport_home, std::time::Duration::from_secs(10))
+                .await;
         if report.total() > 0 {
             eprintln!(
                 "synced {} preset(s) and {} skill(s) from cc-switch + skills repos",
@@ -120,40 +122,13 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Always register providers from the (now possibly refreshed) preset cache.
-    // cc-switch's real shape: each entry's `settingsConfig.env` block carries
-    // the base URL, auth-token env var, and default model.
-    let cfg_dir = autoreport_core::sync::external_dir(&workspace)
-        .join("cc-switch")
-        .join("src")
-        .join("config");
-    for file in [
-        "claudeProviderPresets.ts",
-        "codexProviderPresets.ts",
-        "geminiProviderPresets.ts",
-        "openaiProviderPresets.ts",
-        "opencodeProviderPresets.ts",
-        "openclawProviderPresets.ts",
-        "hermesProviderPresets.ts",
-        "universalProviderPresets.ts",
-    ] {
-        let path = cfg_dir.join(file);
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            let kind = autoreport_core::sync::file_kind(file)
-                .map(|(k, _)| k)
-                .unwrap_or("openai");
-            let presets = autoreport_core::sync::parse_presets(&body, kind);
-            autoreport_core::sync::register_providers(&mut settings, &presets);
-        }
-    }
-
     // API setup is always first: an existing config file with expired/missing
     // credentials must re-open this page just like a first launch does.
     if config::needs_api_config(&settings) {
-        match run_wizard(&workspace, settings.clone()) {
+        match run_wizard(&autoreport_home, settings.clone()) {
             Outcome::Saved => {
                 // Re-read the just-written config and continue startup.
-                settings = config::load_settings(&workspace)?;
+                settings = config::load_settings(&autoreport_home)?;
             }
             Outcome::Cancelled => {
                 log::info!("config wizard cancelled; continuing with env/config defaults");
@@ -170,11 +145,21 @@ async fn run() -> Result<()> {
     // API setup and model selection are deliberately separate. After API
     // configuration is complete, the first-run flow asks for main/sub models.
     if config::needs_model_config(&settings) {
-        match run_model_wizard(&workspace, settings.clone()) {
-            Outcome::Saved => settings = config::load_settings(&workspace)?,
+        match run_model_wizard(&autoreport_home, settings.clone()) {
+            Outcome::Saved => settings = config::load_settings(&autoreport_home)?,
             Outcome::Cancelled => {}
         }
     }
+
+    // The selected directory is user data. Ask before creating the report
+    // layout or constructing the runtime (which creates the project-scoped
+    // state directory).
+    match run_workspace_confirmation(&workspace) {
+        WorkspaceOutcome::Confirmed => {}
+        WorkspaceOutcome::Cancelled => return Ok(()),
+    }
+
+    config::ensure_workspace(&workspace)?;
 
     let (main_api, main_model) = config::resolve_model(&settings, &settings.models.main, "main")?;
     let (sub_api, sub_model) = config::resolve_model(&settings, &settings.models.sub, "sub")?;
@@ -191,24 +176,25 @@ async fn run() -> Result<()> {
         autoreport_sandboxing::SandboxSpec::new(settings.sandbox_mode, settings.sandbox_network);
     let mut manager = LoopManager::new(
         &workspace,
+        &autoreport_home,
         main_provider,
         sub_provider,
         bus.clone(),
         settings.agents.clone(),
         sandbox,
     );
-    manager.start()?;
+    manager.start().await?;
 
     // 4) Run the codex-style TUI.
     let manager = Arc::new(manager);
-    let tui = Tui::new(manager, bus, workspace, provider_id);
+    let tui = Tui::new(manager, bus, autoreport_home, workspace, provider_id);
     tui.run().await?;
 
     Ok(())
 }
 
 /// Open the full-screen model-selection wizard after API setup.
-fn run_model_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
+fn run_model_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
@@ -220,7 +206,7 @@ fn run_model_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome 
             return Outcome::Cancelled;
         }
     };
-    let mut screen = ModelScreen::new(settings, workspace.to_path_buf());
+    let mut screen = ModelScreen::new(settings, home.to_path_buf());
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);
@@ -230,7 +216,7 @@ fn run_model_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome 
 }
 
 /// Open the full-screen config wizard. Owns terminal setup/teardown.
-fn run_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
+fn run_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
@@ -242,10 +228,35 @@ fn run_wizard(workspace: &std::path::Path, settings: Settings) -> Outcome {
             return Outcome::Cancelled;
         }
     };
-    let mut screen = ConfigScreen::new(settings, workspace.to_path_buf());
+    let presets = autoreport_core::sync::load_presets(home);
+    let mut screen = ConfigScreen::new_with_presets(settings, home.to_path_buf(), presets);
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+    outcome
+}
+
+/// Ask for explicit permission before AutoReport initializes the selected
+/// workspace. Terminal setup/teardown is kept local to the startup page so a
+/// declined prompt leaves the user's terminal in a clean state.
+fn run_workspace_confirmation(workspace: &std::path::Path) -> WorkspaceOutcome {
+    enable_raw_mode().ok();
+    let _ = execute!(io::stdout(), EnterAlternateScreen);
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return WorkspaceOutcome::Cancelled;
+        }
+    };
+    let mut screen = WorkspaceScreen::new(workspace.to_path_buf());
+    let outcome = screen
+        .run_fullscreen(&mut terminal)
+        .unwrap_or(WorkspaceOutcome::Cancelled);
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
     outcome
