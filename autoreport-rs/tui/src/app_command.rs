@@ -11,11 +11,12 @@ impl Tui {
         let rest = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /sessions         list this project's persisted sessions\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /models           assign main/sub APIs and model names\n  /clear            clear focused agent's context\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
+                "Commands:\n  /agents           list agents + statuses\n  /sessions         list this project's persisted sessions\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /model            assign main/sub APIs and model names\n  /models           alias for /model\n  /env              select Python and inspect local tool readiness\n  /clear            clear the terminal and start a new chat\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /copy             copy the last assistant response\n  /pager            open the transcript pager\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
                 SysKind::Info,
             ),
             "config" => self.want_config = true,
-            "models" => self.want_models = true,
+            "model" | "models" => self.want_models = true,
+            "env" => self.want_environment = true,
             "agents" => {
                 let mut output = String::from("Agents:\n");
                 for agent in AgentType::ALL {
@@ -40,6 +41,8 @@ impl Tui {
             "switch" => match rest.parse::<AgentType>() {
                 Ok(agent) => {
                     self.focused = agent;
+                    self.composer.set_focused_agent(agent.label());
+                    self.refresh_pending_input_preview();
                     self.system(&format!("focused: {}", agent.label()), SysKind::Info);
                 }
                 Err(_) => self.system(
@@ -48,13 +51,18 @@ impl Tui {
                 ),
             },
             "clear" => {
+                // Codex's `/clear` clears the visible transcript as well as
+                // starting a fresh context. Keep our focused-agent scope,
+                // but match that user-visible behavior.
+                self.clear_terminal_ui();
                 self.manager.clear_context(self.focused);
-                self.system(&format!("cleared {} context", self.focused.label()), SysKind::Info);
             }
             "compact" => {
                 self.manager.compact(self.focused);
                 self.system(&format!("compacting {} context…", self.focused.label()), SysKind::Info);
             }
+            "copy" => self.copy_last_response(),
+            "pager" => self.open_pager(),
             "new" => {
                 self.manager.clear_context(self.focused);
                 self.system(&format!("reset {}", self.focused.label()), SysKind::Info);

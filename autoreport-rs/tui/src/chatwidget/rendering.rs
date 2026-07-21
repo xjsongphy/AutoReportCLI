@@ -5,7 +5,9 @@
 //! child with no enclosing message box.
 
 use crate::app::Tui;
+use crate::app_state::Cell;
 use crate::bottom_pane::StatusIndicatorWidget;
+use crate::chatwidget::tool_arg_summary;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
@@ -23,6 +25,30 @@ impl Tui {
         self.codex_chat_renderable(area.width).cursor_pos(area)
     }
 
+    /// Total fixed-height bottom pane used by popups that must stop above the
+    /// composer, pending-input preview, and live Working/details rows.  Keep
+    /// this derived from the same status widget as the render tree so a
+    /// wrapped tool detail cannot be painted over by a slash/mention popup.
+    pub(crate) fn codex_chat_bottom_pane_height(&self, width: u16) -> u16 {
+        let status = self
+            .statuses
+            .get(&self.focused)
+            .copied()
+            .unwrap_or(autoreport_core::types::AgentStatus::Idle);
+        let (details, inline_message) = self.active_status_context();
+        let status_height =
+            StatusIndicatorWidget::new(status, self.status_since.get(&self.focused).copied())
+                .with_frame_requester(self.frame_requester.clone())
+                .with_details(details, inline_message)
+                .desired_height(width);
+        let has_pending_input = self.pending_input_preview.desired_height(width) > 0;
+        let has_status = !matches!(status, autoreport_core::types::AgentStatus::Idle);
+        status_height
+            .saturating_add(u16::from(has_pending_input && has_status))
+            .saturating_add(self.pending_input_preview.desired_height(width))
+            .saturating_add(self.composer.desired_height(width))
+    }
+
     fn codex_chat_renderable(&self, width: u16) -> FlexRenderable<'_> {
         let transcript = TranscriptAreaRenderable {
             lines: self.transcript_lines(width),
@@ -35,9 +61,28 @@ impl Tui {
             .get(&self.focused)
             .copied()
             .unwrap_or(autoreport_core::types::AgentStatus::Idle);
+        let (details, inline_message) = self.active_status_context();
         flex.push(
             /*flex*/ 0,
-            RenderableItem::Owned(Box::new(StatusIndicatorWidget::new(status))),
+            RenderableItem::Owned(Box::new(
+                StatusIndicatorWidget::new(status, self.status_since.get(&self.focused).copied())
+                    .with_frame_requester(self.frame_requester.clone())
+                    .with_details(details, inline_message),
+            )),
+        );
+        // Codex owns the pending-input preview as a sibling of the status and
+        // composer in BottomPane. Keep that same render-tree boundary rather
+        // than teaching ChatComposer about queue state.
+        let has_pending_input = self.pending_input_preview.desired_height(width) > 0;
+        let has_status = !matches!(status, autoreport_core::types::AgentStatus::Idle);
+        if has_pending_input && has_status {
+            // BottomPane keeps one breathing row between status/footer and
+            // inline previews when both are visible.
+            flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
+        }
+        flex.push(
+            /*flex*/ 0,
+            RenderableItem::Borrowed(&self.pending_input_preview),
         );
         flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.composer));
         flex
@@ -52,11 +97,46 @@ impl Tui {
         };
         let header = SessionHeaderHistoryCell::new(model, self.workspace.clone());
         let mut lines = header.display_lines(width);
-        lines.extend(crate::history_cell::render_history_lines(
-            &self.history,
-            width,
-        ));
+        if self.raw_output {
+            lines.extend(crate::history_cell::render_raw_history_lines_for_agent(
+                &self.history,
+                self.focused,
+            ));
+        } else {
+            lines.extend(crate::history_cell::render_history_lines_for_agent(
+                &self.history,
+                self.focused,
+                width,
+            ));
+        }
         lines
+    }
+
+    /// Codex's status row shows the active operation below the animated
+    /// header. The local bus already owns the authoritative pending tool
+    /// entry, so derive the same short detail text from that entry instead of
+    /// inventing a second status channel.
+    fn active_status_context(&self) -> (Option<String>, Option<String>) {
+        let details = self.history.iter().rev().find_map(|cell| {
+            let Cell::ToolGroup { agent, items } = cell else {
+                return None;
+            };
+            if *agent != self.focused {
+                return None;
+            }
+            let item = items
+                .iter()
+                .rev()
+                .find(|item| item.result.is_none() && item.error.is_none())?;
+            let summary = tool_arg_summary(&item.name, &item.args);
+            let text = if summary.is_empty() {
+                item.name.clone()
+            } else {
+                format!("{} · {}", item.name, summary)
+            };
+            Some(text)
+        });
+        (details, None)
     }
 }
 

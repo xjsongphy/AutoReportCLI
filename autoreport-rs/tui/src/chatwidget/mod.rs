@@ -1,6 +1,6 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
@@ -24,12 +24,7 @@ pub(crate) fn render_user_text(text: &str) -> Vec<Line<'static>> {
                     run.push(chars[i]);
                     i += 1;
                 }
-                spans.push(Span::styled(
-                    run,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
+                spans.push(Span::styled(run, Style::default().fg(Color::Cyan)));
             } else {
                 buf.push(chars[i]);
                 i += 1;
