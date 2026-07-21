@@ -11,3 +11,4 @@ docs
 templates/external/
 
 TODO.md
+*.tmp
