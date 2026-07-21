@@ -451,9 +451,13 @@ impl<'a> Renderable for InsetRenderable<'a> {
     }
     fn desired_height(&self, width: u16) -> u16 {
         self.child
-            .desired_height(width - self.insets.left - self.insets.right)
-            + self.insets.top
-            + self.insets.bottom
+            .desired_height(
+                width
+                    .saturating_sub(self.insets.left)
+                    .saturating_sub(self.insets.right),
+            )
+            .saturating_add(self.insets.top)
+            .saturating_add(self.insets.bottom)
     }
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.child.cursor_pos(area.inset(self.insets))

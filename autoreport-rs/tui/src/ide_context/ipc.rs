@@ -27,6 +27,7 @@ const OPEN_IDE_HINT: &str =
 #[cfg(any(unix, windows))]
 const IDE_DID_NOT_PROVIDE_CONTEXT_HINT: &str = "The IDE extension did not provide context.";
 #[cfg(any(unix, windows))]
+#[allow(dead_code)]
 const KEEP_TRYING_HINT: &str = "Codex will keep trying on future messages.";
 
 #[derive(Debug, Error)]
@@ -78,6 +79,7 @@ impl IdeContextError {
     }
 
     #[cfg(any(unix, windows))]
+    #[allow(dead_code)]
     pub(crate) fn prompt_skip_hint(&self) -> String {
         match self {
             IdeContextError::ResponseTooLarge => {
@@ -122,12 +124,14 @@ impl IdeContextError {
     }
 
     #[cfg(not(any(unix, windows)))]
+    #[allow(dead_code)]
     pub(crate) fn prompt_skip_hint(&self) -> String {
         self.to_string()
     }
 }
 
 #[cfg(any(unix, windows))]
+#[allow(dead_code)]
 fn hint_with_retry(message: &str) -> String {
     format!("{message} {KEEP_TRYING_HINT}")
 }

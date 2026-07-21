@@ -31,12 +31,24 @@ const COMMANDS: &[SlashCommandItem] = &[
         description: "view and edit API settings",
     },
     SlashCommandItem {
-        name: "models",
+        name: "model",
         description: "assign main/sub APIs and model names",
+    },
+    SlashCommandItem {
+        name: "models",
+        description: "alias for /model",
+    },
+    SlashCommandItem {
+        name: "env",
+        description: "select Python and inspect local tool readiness",
     },
     SlashCommandItem {
         name: "compact",
         description: "summarize focused agent context",
+    },
+    SlashCommandItem {
+        name: "pager",
+        description: "open the transcript pager",
     },
     SlashCommandItem {
         name: "new",
@@ -45,6 +57,10 @@ const COMMANDS: &[SlashCommandItem] = &[
     SlashCommandItem {
         name: "clear",
         description: "clear focused agent context",
+    },
+    SlashCommandItem {
+        name: "copy",
+        description: "copy the last assistant response",
     },
     SlashCommandItem {
         name: "manifest",

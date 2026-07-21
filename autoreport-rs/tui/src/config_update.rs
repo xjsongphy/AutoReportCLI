@@ -94,9 +94,10 @@ fn kind_rank(kind: &str) -> usize {
     match kind {
         "anthropic" => 0,
         "openai" => 1,
-        "google" => 2,
-        "deepseek" => 3,
-        "openrouter" => 4,
+        "openai-responses" => 2,
+        "google" => 3,
+        "deepseek" => 4,
+        "openrouter" => 5,
         _ => 99,
     }
 }
@@ -105,6 +106,7 @@ fn kind_label(kind: &str) -> String {
     match kind {
         "anthropic" => "Anthropic".to_string(),
         "openai" => "OpenAI-Compatible".to_string(),
+        "openai-responses" => "OpenAI Responses".to_string(),
         "google" => "Google".to_string(),
         "deepseek" => "DeepSeek".to_string(),
         "openrouter" => "OpenRouter".to_string(),

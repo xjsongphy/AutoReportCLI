@@ -1,53 +1,100 @@
-//! Real terminal palette detection. Codex's build relies on a *forked*
-//! crossterm that exposes `query_background_color` / `query_foreground_color`;
-//! upstream crossterm 0.28 lacks these, so we implement the same OSC 10/11
-//! color query ourselves (write the request, read the `rgb:` reply from the
-//! controlling terminal with a bounded timeout) — the identical mechanism, not
-//! a stub. Results are cached for the process lifetime.
+use crate::color::perceptual_distance;
+use crate::terminal_detection::TerminalName;
+use crate::terminal_detection::terminal_info;
+use ratatui::style::Color;
 
-use std::io::{Read, Write};
-use std::sync::Mutex;
-use std::sync::OnceLock;
-use std::time::Duration;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StdoutColorLevel {
+    TrueColor,
+    Ansi256,
+    Ansi16,
+    Unknown,
+}
 
-#[derive(Clone, Copy, Debug)]
+pub fn stdout_color_level() -> StdoutColorLevel {
+    match supports_color::on_cached(supports_color::Stream::Stdout) {
+        Some(level) if level.has_16m => StdoutColorLevel::TrueColor,
+        Some(level) if level.has_256 => StdoutColorLevel::Ansi256,
+        Some(_) => StdoutColorLevel::Ansi16,
+        None => StdoutColorLevel::Unknown,
+    }
+}
+
+#[allow(clippy::disallowed_methods)]
+pub fn rgb_color((r, g, b): (u8, u8, u8)) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+#[allow(clippy::disallowed_methods)]
+pub fn indexed_color(index: u8) -> Color {
+    Color::Indexed(index)
+}
+
+/// Returns the closest color to the target color that the terminal can display.
+pub fn best_color(target: (u8, u8, u8)) -> Color {
+    best_color_for_color_level(target, effective_stdout_color_level())
+}
+
+/// Returns the closest color to the target color for a known terminal color level.
+pub fn best_color_for_level(target: (u8, u8, u8), color_level: StdoutColorLevel) -> Color {
+    best_color_for_color_level(target, color_level)
+}
+
+fn effective_stdout_color_level() -> StdoutColorLevel {
+    stdout_color_level_for_terminal(
+        stdout_color_level(),
+        terminal_info().name,
+        std::env::var_os("WT_SESSION").is_some(),
+        std::env::var_os("FORCE_COLOR").is_some(),
+    )
+}
+
+fn stdout_color_level_for_terminal(
+    stdout_level: StdoutColorLevel,
+    terminal_name: TerminalName,
+    has_wt_session: bool,
+    has_force_color_override: bool,
+) -> StdoutColorLevel {
+    if has_wt_session && !has_force_color_override {
+        return StdoutColorLevel::TrueColor;
+    }
+
+    if stdout_level == StdoutColorLevel::Ansi16
+        && terminal_name == TerminalName::WindowsTerminal
+        && !has_force_color_override
+    {
+        StdoutColorLevel::TrueColor
+    } else {
+        stdout_level
+    }
+}
+
+fn best_color_for_color_level(target: (u8, u8, u8), color_level: StdoutColorLevel) -> Color {
+    match color_level {
+        StdoutColorLevel::TrueColor => rgb_color(target),
+        StdoutColorLevel::Ansi256 => xterm_fixed_colors()
+            .min_by(|(_, a), (_, b)| {
+                perceptual_distance(*a, target)
+                    .partial_cmp(&perceptual_distance(*b, target))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map_or_else(Color::default, |(i, _)| indexed_color(i as u8)),
+        StdoutColorLevel::Ansi16 | StdoutColorLevel::Unknown => Color::default(),
+    }
+}
+
+pub fn requery_default_colors() {
+    imp::requery_default_colors();
+}
+
+#[derive(Clone, Copy)]
 pub struct DefaultColors {
-    pub fg: (u8, u8, u8),
-    pub bg: (u8, u8, u8),
-}
-
-struct Cache<T: Copy> {
-    attempted: bool,
-    value: Option<T>,
-}
-
-impl<T: Copy> Default for Cache<T> {
-    fn default() -> Self {
-        Self {
-            attempted: false,
-            value: None,
-        }
-    }
-}
-
-impl<T: Copy> Cache<T> {
-    fn get_or_init_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
-        if !self.attempted {
-            self.value = init();
-            self.attempted = true;
-        }
-        self.value
-    }
-}
-
-fn cache() -> &'static Mutex<Cache<DefaultColors>> {
-    static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(Cache::default()))
+    fg: (u8, u8, u8),
+    bg: (u8, u8, u8),
 }
 
 pub fn default_colors() -> Option<DefaultColors> {
-    let mut c = cache().lock().ok()?;
-    c.get_or_init_with(query_default_colors)
+    imp::default_colors()
 }
 
 pub fn default_fg() -> Option<(u8, u8, u8)> {
@@ -58,116 +105,512 @@ pub fn default_bg() -> Option<(u8, u8, u8)> {
     default_colors().map(|c| c.bg)
 }
 
-/// Query both default colors via OSC 10/11. Returns `None` if the terminal
-/// does not reply within the timeout (e.g. piped output, unsupported term).
-fn query_default_colors() -> Option<DefaultColors> {
-    let fg = query_color(10)?;
-    let bg = query_color(11)?;
-    Some(DefaultColors { fg, bg })
+#[cfg(any(unix, windows))]
+pub(crate) fn set_default_colors_from_startup_probe(
+    colors: Option<crate::terminal_probe::DefaultColors>,
+) {
+    imp::set_default_colors_from_startup_probe(colors);
 }
 
-/// Query one default color: `which` is `10` (foreground) or `11` (background).
-fn query_color(which: u8) -> Option<(u8, u8, u8)> {
-    // The reply read can block; do it on a thread with a hard deadline so a
-    // non-responsive terminal can never hang the UI.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let builder = std::thread::Builder::new().name("osc-color-query".into());
-    builder
-        .spawn(move || {
-            let res = (|| -> Option<(u8, u8, u8)> {
-                // Talk to the controlling terminal directly so we don't disturb the
-                // app's stdin/stdout buffers.
-                let mut tty = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/tty")
-                    .ok()?;
-                // OSC Ps ; ? — request current color. ST = ESC backslash.
-                let req = format!("\x1b]{};?\x1b\\", which);
-                tty.write_all(req.as_bytes()).ok()?;
-                tty.flush().ok()?;
-                // Read until BEL (0x07) or ST (ESC \).
-                let mut buf = Vec::with_capacity(64);
-                let mut byte = [0u8; 1];
-                for _ in 0..256 {
-                    match tty.read(&mut byte) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            buf.push(byte[0]);
-                            if byte[0] == 0x07 {
-                                break;
-                            }
-                            if buf.len() >= 2
-                                && buf[buf.len() - 2] == 0x1b
-                                && buf[buf.len() - 1] == b'\\'
-                            {
-                                break;
-                            }
-                            if byte[0] == b'\n' {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                parse_color_reply(&buf)
-            })();
-            let _ = tx.send(res);
-        })
-        .ok()?;
+#[cfg(all(unix, not(test)))]
+mod imp {
+    use super::DefaultColors;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
 
-    rx.recv_timeout(Duration::from_millis(120)).ok().flatten()
-}
-
-/// Parse an OSC color reply of the form `ESC ] <ps> ; rgb:RRRR/GGGG/BBBB ST`.
-fn parse_color_reply(buf: &[u8]) -> Option<(u8, u8, u8)> {
-    let s = std::str::from_utf8(buf).ok()?;
-    // Locate `rgb:` payload.
-    let idx = s.find("rgb:")?;
-    let rest = &s[idx + 4..];
-    // Take up to the first terminator (ST/BEL/whitespace).
-    let end = rest
-        .find(|c: char| c.is_whitespace() || c == '\x07' || c == '\\')
-        .unwrap_or(rest.len());
-    let payload = &rest[..end];
-    let parts: Vec<&str> = payload.split('/').collect();
-    if parts.len() != 3 {
-        return None;
+    struct Cache<T> {
+        attempted: bool,
+        value: Option<T>,
     }
-    Some((
-        parse_channel(parts[0])?,
-        parse_channel(parts[1])?,
-        parse_channel(parts[2])?,
-    ))
+
+    impl<T> Default for Cache<T> {
+        fn default() -> Self {
+            Self {
+                attempted: false,
+                value: None,
+            }
+        }
+    }
+
+    impl<T: Copy> Cache<T> {
+        fn get_or_init_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
+            if !self.attempted {
+                self.value = init();
+                self.attempted = true;
+            }
+            self.value
+        }
+    }
+
+    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColors>> {
+        static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(Cache::default()))
+    }
+
+    pub(super) fn default_colors() -> Option<DefaultColors> {
+        let cache = default_colors_cache();
+        let mut cache = cache.lock().ok()?;
+        cache.get_or_init_with(query_default_colors)
+    }
+
+    pub(super) fn set_default_colors_from_startup_probe(
+        colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
+        if let Ok(mut cache) = default_colors_cache().lock() {
+            cache.value = colors.map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            });
+            cache.attempted = true;
+        }
+    }
+
+    pub(super) fn requery_default_colors() {
+        if let Ok(mut cache) = default_colors_cache().lock() {
+            // Don't try to refresh if the cache is already attempted and failed.
+            if cache.attempted && cache.value.is_none() {
+                return;
+            }
+
+            // Focus events arrive after crossterm's event stream is active. Requery through
+            // crossterm here so unrelated input stays in crossterm's skipped-event queue instead
+            // of being consumed by the bounded startup probe's direct tty reads.
+            cache.value =
+                crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+                    .ok()
+                    .flatten()
+                    .map(|colors| DefaultColors {
+                        fg: colors.fg,
+                        bg: colors.bg,
+                    });
+            cache.attempted = true;
+        }
+    }
+
+    /// Queries terminal default colors through the bounded startup probe path.
+    ///
+    /// The palette cache treats `None` as an attempted-but-unavailable result, so this function
+    /// collapses I/O errors and missing responses into the same fallback path used for terminals
+    /// that simply do not support OSC 10/11 queries.
+    fn query_default_colors() -> Option<DefaultColors> {
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+            .ok()
+            .flatten()
+            .map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            })
+    }
 }
 
-/// Each channel may be 1–4 hex digits; normalize to 8-bit.
-fn parse_channel(s: &str) -> Option<u8> {
-    let s = s.trim();
-    let val = u32::from_str_radix(s, 16).ok()?;
-    let digits = s.len();
-    // Scale full-range (all-F) to 255.
-    let max = (1usize << (4 * digits)) - 1;
-    if max == 0 {
-        return None;
+#[cfg(windows)]
+mod imp {
+    use super::DefaultColors;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    struct Cache<T> {
+        attempted: bool,
+        value: Option<T>,
     }
-    Some(((val * 255) / max as u32) as u8)
+
+    impl<T> Default for Cache<T> {
+        fn default() -> Self {
+            Self {
+                attempted: false,
+                value: None,
+            }
+        }
+    }
+
+    impl<T: Copy> Cache<T> {
+        fn get_or_init_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
+            if !self.attempted {
+                self.value = init();
+                self.attempted = true;
+            }
+            self.value
+        }
+    }
+
+    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColors>> {
+        static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(Cache::default()))
+    }
+
+    pub(super) fn default_colors() -> Option<DefaultColors> {
+        let cache = default_colors_cache();
+        let mut cache = cache.lock().ok()?;
+        cache.get_or_init_with(query_default_colors)
+    }
+
+    pub(super) fn set_default_colors_from_startup_probe(
+        colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
+        if let Ok(mut cache) = default_colors_cache().lock() {
+            cache.value = colors.map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            });
+            cache.attempted = true;
+        }
+    }
+
+    pub(super) fn requery_default_colors() {}
+
+    fn query_default_colors() -> Option<DefaultColors> {
+        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
+            .ok()
+            .flatten()
+            .map(|colors| DefaultColors {
+                fg: colors.fg,
+                bg: colors.bg,
+            })
+    }
 }
+
+#[cfg(not(any(all(unix, not(test)), windows)))]
+mod imp {
+    use super::DefaultColors;
+
+    pub(super) fn default_colors() -> Option<DefaultColors> {
+        None
+    }
+
+    #[cfg(any(unix, windows))]
+    pub(super) fn set_default_colors_from_startup_probe(
+        _colors: Option<crate::terminal_probe::DefaultColors>,
+    ) {
+    }
+
+    pub(super) fn requery_default_colors() {}
+}
+
+/// The subset of Xterm colors that are usually consistent across terminals.
+fn xterm_fixed_colors() -> impl Iterator<Item = (usize, (u8, u8, u8))> {
+    XTERM_COLORS.into_iter().enumerate().skip(16)
+}
+
+// Xterm colors; derived from https://ss64.com/bash/syntax-colors.html
+pub const XTERM_COLORS: [(u8, u8, u8); 256] = [
+    // The first 16 colors vary based on terminal theme, so these are likely not the actual colors
+    // that are displayed when using these indices.
+    (0, 0, 0),       //   0 Black (SYSTEM)
+    (128, 0, 0),     //   1 Maroon (SYSTEM)
+    (0, 128, 0),     //   2 Green (SYSTEM)
+    (128, 128, 0),   //   3 Olive (SYSTEM)
+    (0, 0, 128),     //   4 Navy (SYSTEM)
+    (128, 0, 128),   //   5 Purple (SYSTEM)
+    (0, 128, 128),   //   6 Teal (SYSTEM)
+    (192, 192, 192), //   7 Silver (SYSTEM)
+    (128, 128, 128), //   8 Grey (SYSTEM)
+    (255, 0, 0),     //   9 Red (SYSTEM)
+    (0, 255, 0),     //  10 Lime (SYSTEM)
+    (255, 255, 0),   //  11 Yellow (SYSTEM)
+    (0, 0, 255),     //  12 Blue (SYSTEM)
+    (255, 0, 255),   //  13 Fuchsia (SYSTEM)
+    (0, 255, 255),   //  14 Aqua (SYSTEM)
+    (255, 255, 255), //  15 White (SYSTEM)
+    // The rest of the colors are consistent in most terminals.
+    (0, 0, 0),       //  16 Grey0
+    (0, 0, 95),      //  17 NavyBlue
+    (0, 0, 135),     //  18 DarkBlue
+    (0, 0, 175),     //  19 Blue3
+    (0, 0, 215),     //  20 Blue3
+    (0, 0, 255),     //  21 Blue1
+    (0, 95, 0),      //  22 DarkGreen
+    (0, 95, 95),     //  23 DeepSkyBlue4
+    (0, 95, 135),    //  24 DeepSkyBlue4
+    (0, 95, 175),    //  25 DeepSkyBlue4
+    (0, 95, 215),    //  26 DodgerBlue3
+    (0, 95, 255),    //  27 DodgerBlue2
+    (0, 135, 0),     //  28 Green4
+    (0, 135, 95),    //  29 SpringGreen4
+    (0, 135, 135),   //  30 Turquoise4
+    (0, 135, 175),   //  31 DeepSkyBlue3
+    (0, 135, 215),   //  32 DeepSkyBlue3
+    (0, 135, 255),   //  33 DodgerBlue1
+    (0, 175, 0),     //  34 Green3
+    (0, 175, 95),    //  35 SpringGreen3
+    (0, 175, 135),   //  36 DarkCyan
+    (0, 175, 175),   //  37 LightSeaGreen
+    (0, 175, 215),   //  38 DeepSkyBlue2
+    (0, 175, 255),   //  39 DeepSkyBlue1
+    (0, 215, 0),     //  40 Green3
+    (0, 215, 95),    //  41 SpringGreen3
+    (0, 215, 135),   //  42 SpringGreen2
+    (0, 215, 175),   //  43 Cyan3
+    (0, 215, 215),   //  44 DarkTurquoise
+    (0, 215, 255),   //  45 Turquoise2
+    (0, 255, 0),     //  46 Green1
+    (0, 255, 95),    //  47 SpringGreen2
+    (0, 255, 135),   //  48 SpringGreen1
+    (0, 255, 175),   //  49 MediumSpringGreen
+    (0, 255, 215),   //  50 Cyan2
+    (0, 255, 255),   //  51 Cyan1
+    (95, 0, 0),      //  52 DarkRed
+    (95, 0, 95),     //  53 DeepPink4
+    (95, 0, 135),    //  54 Purple4
+    (95, 0, 175),    //  55 Purple4
+    (95, 0, 215),    //  56 Purple3
+    (95, 0, 255),    //  57 BlueViolet
+    (95, 95, 0),     //  58 Orange4
+    (95, 95, 95),    //  59 Grey37
+    (95, 95, 135),   //  60 MediumPurple4
+    (95, 95, 175),   //  61 SlateBlue3
+    (95, 95, 215),   //  62 SlateBlue3
+    (95, 95, 255),   //  63 RoyalBlue1
+    (95, 135, 0),    //  64 Chartreuse4
+    (95, 135, 95),   //  65 DarkSeaGreen4
+    (95, 135, 135),  //  66 PaleTurquoise4
+    (95, 135, 175),  //  67 SteelBlue
+    (95, 135, 215),  //  68 SteelBlue3
+    (95, 135, 255),  //  69 CornflowerBlue
+    (95, 175, 0),    //  70 Chartreuse3
+    (95, 175, 95),   //  71 DarkSeaGreen4
+    (95, 175, 135),  //  72 CadetBlue
+    (95, 175, 175),  //  73 CadetBlue
+    (95, 175, 215),  //  74 SkyBlue3
+    (95, 175, 255),  //  75 SteelBlue1
+    (95, 215, 0),    //  76 Chartreuse3
+    (95, 215, 95),   //  77 PaleGreen3
+    (95, 215, 135),  //  78 SeaGreen3
+    (95, 215, 175),  //  79 Aquamarine3
+    (95, 215, 215),  //  80 MediumTurquoise
+    (95, 215, 255),  //  81 SteelBlue1
+    (95, 255, 0),    //  82 Chartreuse2
+    (95, 255, 95),   //  83 SeaGreen2
+    (95, 255, 135),  //  84 SeaGreen1
+    (95, 255, 175),  //  85 SeaGreen1
+    (95, 255, 215),  //  86 Aquamarine1
+    (95, 255, 255),  //  87 DarkSlateGray2
+    (135, 0, 0),     //  88 DarkRed
+    (135, 0, 95),    //  89 DeepPink4
+    (135, 0, 135),   //  90 DarkMagenta
+    (135, 0, 175),   //  91 DarkMagenta
+    (135, 0, 215),   //  92 DarkViolet
+    (135, 0, 255),   //  93 Purple
+    (135, 95, 0),    //  94 Orange4
+    (135, 95, 95),   //  95 LightPink4
+    (135, 95, 135),  //  96 Plum4
+    (135, 95, 175),  //  97 MediumPurple3
+    (135, 95, 215),  //  98 MediumPurple3
+    (135, 95, 255),  //  99 SlateBlue1
+    (135, 135, 0),   // 100 Yellow4
+    (135, 135, 95),  // 101 Wheat4
+    (135, 135, 135), // 102 Grey53
+    (135, 135, 175), // 103 LightSlateGrey
+    (135, 135, 215), // 104 MediumPurple
+    (135, 135, 255), // 105 LightSlateBlue
+    (135, 175, 0),   // 106 Yellow4
+    (135, 175, 95),  // 107 DarkOliveGreen3
+    (135, 175, 135), // 108 DarkSeaGreen
+    (135, 175, 175), // 109 LightSkyBlue3
+    (135, 175, 215), // 110 LightSkyBlue3
+    (135, 175, 255), // 111 SkyBlue2
+    (135, 215, 0),   // 112 Chartreuse2
+    (135, 215, 95),  // 113 DarkOliveGreen3
+    (135, 215, 135), // 114 PaleGreen3
+    (135, 215, 175), // 115 DarkSeaGreen3
+    (135, 215, 215), // 116 DarkSlateGray3
+    (135, 215, 255), // 117 SkyBlue1
+    (135, 255, 0),   // 118 Chartreuse1
+    (135, 255, 95),  // 119 LightGreen
+    (135, 255, 135), // 120 LightGreen
+    (135, 255, 175), // 121 PaleGreen1
+    (135, 255, 215), // 122 Aquamarine1
+    (135, 255, 255), // 123 DarkSlateGray1
+    (175, 0, 0),     // 124 Red3
+    (175, 0, 95),    // 125 DeepPink4
+    (175, 0, 135),   // 126 MediumVioletRed
+    (175, 0, 175),   // 127 Magenta3
+    (175, 0, 215),   // 128 DarkViolet
+    (175, 0, 255),   // 129 Purple
+    (175, 95, 0),    // 130 DarkOrange3
+    (175, 95, 95),   // 131 IndianRed
+    (175, 95, 135),  // 132 HotPink3
+    (175, 95, 175),  // 133 MediumOrchid3
+    (175, 95, 215),  // 134 MediumOrchid
+    (175, 95, 255),  // 135 MediumPurple2
+    (175, 135, 0),   // 136 DarkGoldenrod
+    (175, 135, 95),  // 137 LightSalmon3
+    (175, 135, 135), // 138 RosyBrown
+    (175, 135, 175), // 139 Grey63
+    (175, 135, 215), // 140 MediumPurple2
+    (175, 135, 255), // 141 MediumPurple1
+    (175, 175, 0),   // 142 Gold3
+    (175, 175, 95),  // 143 DarkKhaki
+    (175, 175, 135), // 144 NavajoWhite3
+    (175, 175, 175), // 145 Grey69
+    (175, 175, 215), // 146 LightSteelBlue3
+    (175, 175, 255), // 147 LightSteelBlue
+    (175, 215, 0),   // 148 Yellow3
+    (175, 215, 95),  // 149 DarkOliveGreen3
+    (175, 215, 135), // 150 DarkSeaGreen3
+    (175, 215, 175), // 151 DarkSeaGreen2
+    (175, 215, 215), // 152 LightCyan3
+    (175, 215, 255), // 153 LightSkyBlue1
+    (175, 255, 0),   // 154 GreenYellow
+    (175, 255, 95),  // 155 DarkOliveGreen2
+    (175, 255, 135), // 156 PaleGreen1
+    (175, 255, 175), // 157 DarkSeaGreen2
+    (175, 255, 215), // 158 DarkSeaGreen1
+    (175, 255, 255), // 159 PaleTurquoise1
+    (215, 0, 0),     // 160 Red3
+    (215, 0, 95),    // 161 DeepPink3
+    (215, 0, 135),   // 162 DeepPink3
+    (215, 0, 175),   // 163 Magenta3
+    (215, 0, 215),   // 164 Magenta3
+    (215, 0, 255),   // 165 Magenta2
+    (215, 95, 0),    // 166 DarkOrange3
+    (215, 95, 95),   // 167 IndianRed
+    (215, 95, 135),  // 168 HotPink3
+    (215, 95, 175),  // 169 HotPink2
+    (215, 95, 215),  // 170 Orchid
+    (215, 95, 255),  // 171 MediumOrchid1
+    (215, 135, 0),   // 172 Orange3
+    (215, 135, 95),  // 173 LightSalmon3
+    (215, 135, 135), // 174 LightPink3
+    (215, 135, 175), // 175 Pink3
+    (215, 135, 215), // 176 Plum3
+    (215, 135, 255), // 177 Violet
+    (215, 175, 0),   // 178 Gold3
+    (215, 175, 95),  // 179 LightGoldenrod3
+    (215, 175, 135), // 180 Tan
+    (215, 175, 175), // 181 MistyRose3
+    (215, 175, 215), // 182 Thistle3
+    (215, 175, 255), // 183 Plum2
+    (215, 215, 0),   // 184 Yellow3
+    (215, 215, 95),  // 185 Khaki3
+    (215, 215, 135), // 186 LightGoldenrod2
+    (215, 215, 175), // 187 LightYellow3
+    (215, 215, 215), // 188 Grey84
+    (215, 215, 255), // 189 LightSteelBlue1
+    (215, 255, 0),   // 190 Yellow2
+    (215, 255, 95),  // 191 DarkOliveGreen1
+    (215, 255, 135), // 192 DarkOliveGreen1
+    (215, 255, 175), // 193 DarkSeaGreen1
+    (215, 255, 215), // 194 Honeydew2
+    (215, 255, 255), // 195 LightCyan1
+    (255, 0, 0),     // 196 Red1
+    (255, 0, 95),    // 197 DeepPink2
+    (255, 0, 135),   // 198 DeepPink1
+    (255, 0, 175),   // 199 DeepPink1
+    (255, 0, 215),   // 200 Magenta2
+    (255, 0, 255),   // 201 Magenta1
+    (255, 95, 0),    // 202 OrangeRed1
+    (255, 95, 95),   // 203 IndianRed1
+    (255, 95, 135),  // 204 IndianRed1
+    (255, 95, 175),  // 205 HotPink
+    (255, 95, 215),  // 206 HotPink
+    (255, 95, 255),  // 207 MediumOrchid1
+    (255, 135, 0),   // 208 DarkOrange
+    (255, 135, 95),  // 209 Salmon1
+    (255, 135, 135), // 210 LightCoral
+    (255, 135, 175), // 211 PaleVioletRed1
+    (255, 135, 215), // 212 Orchid2
+    (255, 135, 255), // 213 Orchid1
+    (255, 175, 0),   // 214 Orange1
+    (255, 175, 95),  // 215 SandyBrown
+    (255, 175, 135), // 216 LightSalmon1
+    (255, 175, 175), // 217 LightPink1
+    (255, 175, 215), // 218 Pink1
+    (255, 175, 255), // 219 Plum1
+    (255, 215, 0),   // 220 Gold1
+    (255, 215, 95),  // 221 LightGoldenrod2
+    (255, 215, 135), // 222 LightGoldenrod2
+    (255, 215, 175), // 223 NavajoWhite1
+    (255, 215, 215), // 224 MistyRose1
+    (255, 215, 255), // 225 Thistle1
+    (255, 255, 0),   // 226 Yellow1
+    (255, 255, 95),  // 227 LightGoldenrod1
+    (255, 255, 135), // 228 Khaki1
+    (255, 255, 175), // 229 Wheat1
+    (255, 255, 215), // 230 Cornsilk1
+    (255, 255, 255), // 231 Grey100
+    (8, 8, 8),       // 232 Grey3
+    (18, 18, 18),    // 233 Grey7
+    (28, 28, 28),    // 234 Grey11
+    (38, 38, 38),    // 235 Grey15
+    (48, 48, 48),    // 236 Grey19
+    (58, 58, 58),    // 237 Grey23
+    (68, 68, 68),    // 238 Grey27
+    (78, 78, 78),    // 239 Grey30
+    (88, 88, 88),    // 240 Grey35
+    (98, 98, 98),    // 241 Grey39
+    (108, 108, 108), // 242 Grey42
+    (118, 118, 118), // 243 Grey46
+    (128, 128, 128), // 244 Grey50
+    (138, 138, 138), // 245 Grey54
+    (148, 148, 148), // 246 Grey58
+    (158, 158, 158), // 247 Grey62
+    (168, 168, 168), // 248 Grey66
+    (178, 178, 178), // 249 Grey70
+    (188, 188, 188), // 250 Grey74
+    (198, 198, 198), // 251 Grey78
+    (208, 208, 208), // 252 Grey82
+    (218, 218, 218), // 253 Grey85
+    (228, 228, 228), // 254 Grey89
+    (238, 238, 238), // 255 Grey93
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
-    fn parses_4_digit_rgb_reply() {
-        // ESC ] 11 ; rgb:0000/0000/0000 BEL
-        let reply = b"\x1b]11;rgb:aaaa/bbbb/cccc\x07";
-        assert_eq!(parse_color_reply(reply), Some((170, 187, 204)));
+    fn best_color_uses_truecolor_without_quantization() {
+        assert_eq!(
+            best_color_for_color_level((12, 34, 56), StdoutColorLevel::TrueColor),
+            rgb_color((12, 34, 56))
+        );
     }
 
     #[test]
-    fn parses_2_digit_rgb_reply() {
-        let reply = b"\x1b]11;rgb:aa/bb/cc\x07";
-        assert_eq!(parse_color_reply(reply), Some((170, 187, 204)));
+    fn best_color_resets_for_ansi16() {
+        assert_eq!(
+            best_color_for_color_level((12, 34, 56), StdoutColorLevel::Ansi16),
+            Color::Reset
+        );
+    }
+
+    #[test]
+    fn windows_terminal_wt_session_promotes_to_truecolor() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::Unknown,
+                /*has_wt_session*/ true,
+                /*has_force_color_override*/ false,
+            ),
+            StdoutColorLevel::TrueColor
+        );
+    }
+
+    #[test]
+    fn windows_terminal_name_promotes_ansi16_to_truecolor() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::WindowsTerminal,
+                /*has_wt_session*/ false,
+                /*has_force_color_override*/ false,
+            ),
+            StdoutColorLevel::TrueColor
+        );
+    }
+
+    #[test]
+    fn force_color_keeps_reported_stdout_level() {
+        assert_eq!(
+            stdout_color_level_for_terminal(
+                StdoutColorLevel::Ansi16,
+                TerminalName::WindowsTerminal,
+                /*has_wt_session*/ true,
+                /*has_force_color_override*/ true,
+            ),
+            StdoutColorLevel::Ansi16
+        );
     }
 }
