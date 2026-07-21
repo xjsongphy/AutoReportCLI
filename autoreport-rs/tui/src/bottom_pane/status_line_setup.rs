@@ -1,0 +1,31 @@
+//! Status-line item vocabulary copied from Codex's `status_line_setup.rs`.
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StatusLineItem {
+    ModelName,
+    ModelWithReasoning,
+    Reasoning,
+    CurrentDir,
+    ProjectRoot,
+    GitBranch,
+    PullRequestNumber,
+    BranchChanges,
+    Status,
+    Permissions,
+    ApprovalMode,
+    ContextRemaining,
+    ContextUsed,
+    FiveHourLimit,
+    WeeklyLimit,
+    CodexVersion,
+    ContextWindowSize,
+    UsedTokens,
+    TotalInputTokens,
+    TotalOutputTokens,
+    SessionId,
+    FastMode,
+    RawOutput,
+    ThreadTitle,
+    WorkspaceHeadline,
+    TaskProgress,
+}
