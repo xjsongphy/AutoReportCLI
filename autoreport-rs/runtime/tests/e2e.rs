@@ -60,6 +60,7 @@ impl LLMProvider for Mock {
             content,
             tool_calls: calls,
             thinking: None,
+            thinking_signature: None,
             usage: Some(Usage::default()),
         })
     }

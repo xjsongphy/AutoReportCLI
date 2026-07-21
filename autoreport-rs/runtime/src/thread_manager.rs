@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 pub struct LoopManager {
     workspace: PathBuf,
+    autoreport_home: PathBuf,
     project_home: PathBuf,
     bus: Bus,
     task_board: TaskBoard,
@@ -59,6 +60,7 @@ impl LoopManager {
         });
         Self {
             workspace: workspace.to_path_buf(),
+            autoreport_home: autoreport_home.to_path_buf(),
             project_home: state_dir,
             bus,
             task_board,
@@ -176,6 +178,18 @@ impl LoopManager {
         }
     }
 
+    /// Cancel and retract a focused turn that has not reached its first tool
+    /// call. The TUI uses this Codex-style boundary to restore the submitted
+    /// text and remove the optimistic user row.
+    pub fn interrupt_and_retract(&self, agent: AgentType) {
+        if let Some(l) = self.loops.get(&agent) {
+            let l = l.clone();
+            tokio::spawn(async move {
+                l.interrupt_and_retract().await;
+            });
+        }
+    }
+
     /// Interrupt every agent (e.g. on Ctrl+C cleanup).
     pub fn interrupt_all(&self) {
         for agent in AgentType::ALL {
@@ -226,14 +240,23 @@ impl LoopManager {
         registry.register(autoreport_tools::apply_patch::make(ctx.clone()));
 
         // Unified shell entrypoint for reading files and running commands.
-        registry.register(autoreport_tools::exec_tool::make(
+        registry.register(autoreport_tools::exec_tool::make_with_environment(
             ctx,
             self.defaults.exec_timeout_secs,
             self.sandbox.clone(),
+            self.autoreport_home.clone(),
         ));
 
         // Manifest.
         registry.register(Arc::new(ManifestTool::new(self.manifest.clone(), agent)));
+
+        // Codex exposes request_user_input to the active thread, including
+        // delegated threads. The shared broker keeps the TUI prompt queue
+        // independent of which agent is focused.
+        registry.register(autoreport_tools::request_user_input::make(
+            self.bus.clone(),
+            agent,
+        ));
 
         // Coordination: Main delegates, sub-agents report back.
         if agent == AgentType::Main {

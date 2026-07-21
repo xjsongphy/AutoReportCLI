@@ -19,6 +19,7 @@ log.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 autoreport-core = { path = "../core" }
+autoreport-process-hardening = { path = "../process-hardening" }
 autoreport-sandboxing = { path = "../sandboxing" }
 autoreport-tui = { path = "../tui" }
 autoreport-runtime = { path = "../runtime" }

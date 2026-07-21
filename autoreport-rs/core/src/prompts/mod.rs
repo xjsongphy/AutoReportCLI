@@ -4,6 +4,7 @@
 //! overrides in `References/agents/` are also read, matching Codex's user and
 //! project instruction layers.
 
+use crate::environment;
 use crate::skills::SkillLoader;
 use crate::types::AgentType;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,10 @@ impl PromptLoader {
             home: home.to_path_buf(),
             workspace: workspace.to_path_buf(),
         }
+    }
+
+    pub fn environment_home(&self) -> &Path {
+        &self.home
     }
 
     /// Project override takes precedence over the global user override.
@@ -94,6 +99,20 @@ impl PromptLoader {
         }
         parts.join("\n\n")
     }
+
+    /// Add the live machine/tool readiness section to the prompt assembled by
+    /// the normal Codex-style instruction layers.
+    pub fn build_system_prompt_with_environment(
+        &self,
+        agent: AgentType,
+        skills: &SkillLoader,
+        workspace: &Path,
+    ) -> String {
+        let mut prompt = self.build_system_prompt(agent, skills, workspace);
+        prompt.push_str("\n\n");
+        prompt.push_str(&environment::render_context(&self.home));
+        prompt
+    }
 }
 
 /// codex `current_time_reminder` context fragment (verbatim body format):
@@ -132,6 +151,19 @@ mod tests {
         assert!(second.contains("second prompt"));
         assert!(!second.contains("first prompt"));
 
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    #[test]
+    fn environment_context_is_appended_to_the_agent_prompt() {
+        let workspace = std::env::temp_dir().join(format!("prompts-env-{}", stamp()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let loader = PromptLoader::new(&workspace, &workspace);
+        let skills = SkillLoader::new(&workspace, &workspace);
+        let prompt =
+            loader.build_system_prompt_with_environment(AgentType::Main, &skills, &workspace);
+        assert!(prompt.contains("## Local Environment"));
+        assert!(prompt.contains("Python:"));
         std::fs::remove_dir_all(&workspace).ok();
     }
 

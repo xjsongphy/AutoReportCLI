@@ -10,6 +10,7 @@ use crate::registry::{Tool, ToolExecutionContext, ToolOutput, arg_str};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ pub struct ExecTool {
     timeout: Duration,
     shell: Arc<CodexShell>,
     sandbox: autoreport_sandboxing::SandboxSpec,
+    environment_home: Option<PathBuf>,
 }
 
 impl ExecTool {
@@ -32,6 +34,7 @@ impl ExecTool {
             timeout: Duration::from_secs(timeout_secs),
             shell: Arc::new(CodexShell::new()),
             sandbox,
+            environment_home: None,
         }
     }
 
@@ -39,6 +42,11 @@ impl ExecTool {
     /// opt-out selected by the caller, mirroring Codex's permission profile.
     pub fn with_sandbox(mut self, sandbox: autoreport_sandboxing::SandboxSpec) -> Self {
         self.sandbox = sandbox;
+        self
+    }
+
+    pub fn with_environment_home(mut self, home: PathBuf) -> Self {
+        self.environment_home = Some(home);
         self
     }
 }
@@ -49,13 +57,13 @@ impl Tool for ExecTool {
         "exec"
     }
     fn description(&self) -> &str {
-        "Run a shell command in the project root via the detected user shell. The OS sandbox restricts writes to this agent's assigned directory."
+        "Run a shell command in the project root via the detected user shell. By default, commands automatically use the globally selected Python environment recorded in ~/.autoreport/environment.toml: `/env` selects a detected conda/virtualenv/pyenv/PATH environment, a custom executable, or the AutoReport-managed global venv; its bin directory is prepended to PATH, so use `python`, `python3`, pip, and installed tools without manually activating or specifying an interpreter. To use another environment, invoke its absolute executable path or explicitly override the command environment. The OS sandbox restricts writes to this agent's assigned directory."
     }
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Full shell command line, e.g. `python3 analyze.py && rg result Data/Processed`."},
+                "command": {"type": "string", "description": "Full shell command line. The `/env`-selected AutoReport Python environment is the default; do not add conda/venv activation or an explicit Python path unless using another environment. Example: `python analyze.py && rg result Data/Processed`."},
                 "command_description": {"type": "string", "description": "Short human description of what this does."},
                 "sandbox_permissions": {"type": "string", "enum": ["use_default", "require_escalated"], "description": "Use `require_escalated` only when the command needs to run outside the normal sandbox; it requires user approval."},
                 "justification": {"type": "string", "description": "User-facing explanation required with `require_escalated`."}
@@ -104,6 +112,14 @@ impl Tool for ExecTool {
         } else {
             self.sandbox.clone()
         };
+        let environment = self
+            .environment_home
+            .as_deref()
+            .and_then(autoreport_core::environment::selected_python_process_environment);
+        let selected_python = self
+            .environment_home
+            .as_deref()
+            .and_then(autoreport_core::environment::selected_python_environment);
         let output = match self
             .shell
             .run(
@@ -111,7 +127,7 @@ impl Tool for ExecTool {
                 &command,
                 self.timeout,
                 None,
-                &HashMap::new(),
+                environment.as_ref().unwrap_or(&HashMap::new()),
                 Some(&sandbox),
             )
             .await
@@ -128,6 +144,13 @@ impl Tool for ExecTool {
             "shell": self.shell.detected_shell().name(),
             "allowed_write_dir": self.ctx.allowed_write_dir().map(|p| p.display().to_string()),
             "sandbox": sandbox.mode.as_kebab(),
+            "python_environment": selected_python.map(|python| json!({
+                "label": python.label,
+                "source": python.source,
+                "executable": python.executable.display().to_string(),
+                "package_manager": python.package_manager,
+                "selection": "global ~/.autoreport/environment.toml; PATH is automatically prepended"
+            })).unwrap_or(Value::Null),
         }))
     }
 }
@@ -140,4 +163,18 @@ pub fn make(
 ) -> Arc<dyn Tool> {
     let sandbox = sandbox.with_writable_root(ctx.allowed_write_dir());
     Arc::new(ExecTool::new(ctx, timeout_secs).with_sandbox(sandbox))
+}
+
+pub fn make_with_environment(
+    ctx: FsCtx,
+    timeout_secs: u64,
+    sandbox: autoreport_sandboxing::SandboxSpec,
+    home: PathBuf,
+) -> Arc<dyn Tool> {
+    let sandbox = sandbox.with_writable_root(ctx.allowed_write_dir());
+    Arc::new(
+        ExecTool::new(ctx, timeout_secs)
+            .with_sandbox(sandbox)
+            .with_environment_home(home),
+    )
 }

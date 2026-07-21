@@ -7,7 +7,8 @@
 //!   format at call time (`items_to_messages`).
 //! - **Message queue** is codex's session discipline: an `Op` channel consumed
 //!   by a single processor task (one turn at a time); a new user input
-//!   interrupts the active turn and is then processed.
+//!   is queued behind the active turn; explicit interrupt requests use the
+//!   cancellation token directly.
 //! - **Persistence**: every produced item is appended to a project-scoped
 //!   codex-format rollout file (`$AUTOREPORT_HOME/workspaces/<workspace-id>/sessions/YYYY/MM/DD/...`);
 //!   on startup the latest matching rollout for the agent is resumed.
@@ -31,10 +32,63 @@ use autoreport_rollout::{ResponseItem, RolloutRecorder};
 use autoreport_tools::manifest::ManifestStore;
 use autoreport_tools::{ToolExecutionContext, ToolRegistry};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, mpsc};
+
+const RETRACT_LAST_USER_MARKER: &str = "__autoreport_retract_last_user__";
+
+/// Maximum approximate tokens of prior user messages to retain across a
+/// compaction. Mirrors codex `compact::COMPACT_USER_MESSAGE_MAX_TOKENS`
+/// (`codex-rs/core/src/compact.rs`).
+const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+/// codex `compact::build_compacted_history_with_limit`: walk the prior user
+/// messages newest-first, keeping each that fits in the remaining token budget
+/// and truncating the middle of the boundary message to the remainder; older
+/// user messages are dropped. The selected messages are restored to original
+/// order, then the compaction summary is appended as the final item so it is
+/// the last thing the model reads.
+fn build_compacted_history(user_messages: &[ResponseItem], summary: &str) -> Vec<ResponseItem> {
+    let max_tokens = COMPACT_USER_MESSAGE_MAX_TOKENS;
+    let mut selected: Vec<String> = Vec::new();
+    if max_tokens > 0 {
+        let mut remaining = max_tokens;
+        for msg in user_messages.iter().rev() {
+            if remaining == 0 {
+                break;
+            }
+            let text = msg.text().unwrap_or_default();
+            let tokens = autoreport_utils_string::approx_token_count(&text);
+            if tokens <= remaining {
+                selected.push(text);
+                remaining = remaining.saturating_sub(tokens);
+            } else {
+                // codex `truncate_text(_, TruncationPolicy::Tokens(remaining))`
+                // == `truncate_middle_with_token_budget(_, remaining).0`.
+                let (truncated, _) =
+                    autoreport_utils_string::truncate_middle_with_token_budget(&text, remaining);
+                selected.push(truncated);
+                break;
+            }
+        }
+        selected.reverse();
+    }
+
+    let mut history: Vec<ResponseItem> = Vec::with_capacity(selected.len() + 1);
+    for text in &selected {
+        history.push(ResponseItem::user_message(text));
+    }
+    // The project renders `Compaction` as a trailing `role:"user"` context note
+    // in `items_to_messages` (history.rs), matching codex's summary-as-last-
+    // user-message ordering.
+    history.push(ResponseItem::Compaction {
+        encrypted_content: summary.to_string(),
+    });
+    history
+}
 
 /// Result of a turn-end guard check.
 enum GuardOutcome {
@@ -78,6 +132,13 @@ pub struct AgentLoop {
     op_rx: Arc<Mutex<mpsc::Receiver<Op>>>,
     /// Cancellation token for the currently-running turn (codex interrupt).
     current_turn: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    /// Turn-local steer input, adapted from Codex's `InputQueue::Steer`.
+    /// Ordinary TUI follow-ups remain in the TUI queue; this path is for
+    /// callers that explicitly target the active turn.
+    pending_steers: Arc<Mutex<VecDeque<(String, MessageSource)>>>,
+    /// Pre-tool Ctrl-C intent. Separate from the cancellation token because
+    /// the processor may observe cancellation after recording the user item.
+    retract_requested: Arc<Mutex<bool>>,
     /// Set when this agent calls `respond` during the current turn — the
     /// sub-report guard requires it before a Main-dispatched turn may end.
     turn_reported: Arc<AtomicBool>,
@@ -128,6 +189,8 @@ impl AgentLoop {
             op_tx,
             op_rx: Arc::new(Mutex::new(op_rx)),
             current_turn: Arc::new(Mutex::new(None)),
+            pending_steers: Arc::new(Mutex::new(VecDeque::new())),
+            retract_requested: Arc::new(Mutex::new(false)),
             turn_reported: Arc::new(AtomicBool::new(false)),
             recorder: Arc::new(Mutex::new(None)),
             conversation_id: Arc::new(Mutex::new(conversation_id)),
@@ -158,7 +221,7 @@ impl AgentLoop {
         };
         match rollout::read(&path) {
             Ok(entries) => {
-                let items = rollout::items(&entries);
+                let items = normalize_retracted_items(rollout::items(&entries));
                 if !items.is_empty() {
                     log::info!(
                         "{}: resumed {} items from {}",
@@ -186,12 +249,11 @@ impl AgentLoop {
         let agent = self.agent;
         let bus = self.bus.clone();
         let submit = self.op_tx.clone();
-        let cancel = self.current_turn.clone();
         tokio::spawn(async move {
             let mut rx = bus.subscribe();
             loop {
                 match rx.recv().await {
-                    Ok(msg) => forward_message(agent, &msg, &submit, &cancel).await,
+                    Ok(msg) => forward_message(agent, &msg, &submit).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }
@@ -217,6 +279,9 @@ impl AgentLoop {
                             // "set token ⇔ live turn" breaks).
                             self.cancel_current_turn().await;
                             self.clear_turn_token().await;
+                            if self.take_retract_request().await {
+                                self.remove_last_user_and_record_retraction().await;
+                            }
                             self.bus.publish(BusMessage::Error {
                                 agent_type: Some(self.agent),
                                 message: format!("{e:?}"),
@@ -229,16 +294,12 @@ impl AgentLoop {
         });
     }
 
-    /// Address a user message to this agent (codex session: a new user input
-    /// interrupts any active turn, then is processed).
+    /// Address a user message to this agent. The single session processor
+    /// naturally queues it behind an active turn; explicit interrupt is a
+    /// separate operation, matching Codex's input queue boundary.
     pub fn submit(&self, content: String, source: MessageSource) {
         let op_tx = self.op_tx.clone();
-        let cancel = self.current_turn.clone();
         tokio::spawn(async move {
-            // New user input interrupts the active turn (codex semantics).
-            if let Some(token) = cancel.lock().await.as_ref() {
-                token.cancel();
-            }
             let _ = op_tx.send(Op::UserInput { content, source }).await;
         });
     }
@@ -246,6 +307,35 @@ impl AgentLoop {
     /// Interrupt the currently-running turn.
     pub async fn interrupt(&self) {
         self.cancel_current_turn().await;
+        self.pending_steers.lock().await.clear();
+    }
+
+    pub async fn interrupt_and_retract(&self) {
+        // Follow-ups are kept in the TUI queue, so never leave a retract
+        // request behind that could consume a later unrelated runtime op.
+        if self.current_turn.lock().await.is_some() {
+            *self.retract_requested.lock().await = true;
+            self.cancel_current_turn().await;
+        }
+        self.pending_steers.lock().await.clear();
+    }
+
+    /// Inject additional input into the active regular turn. This is the
+    /// local equivalent of Codex `Session::steer_input`: it is accepted only
+    /// while a turn is active and is consumed before the next Responses/
+    /// Messages request. The provider stream itself is not interrupted.
+    pub async fn steer_input(&self, content: String, source: MessageSource) -> Result<(), String> {
+        if content.trim().is_empty() {
+            return Err("steer input cannot be empty".into());
+        }
+        if self.current_turn.lock().await.is_none() {
+            return Err("no active turn".into());
+        }
+        self.pending_steers
+            .lock()
+            .await
+            .push_back((content, source));
+        Ok(())
     }
 
     async fn cancel_current_turn(&self) {
@@ -378,6 +468,9 @@ impl AgentLoop {
     }
 
     async fn process_turn(&self, content: &str, source: MessageSource) -> anyhow::Result<()> {
+        if self.take_retract_request().await {
+            return Ok(());
+        }
         // Install the cancellation handle before publishing Thinking. The
         // UI/test may interrupt immediately after observing that status.
         let turn_token = tokio_util::sync::CancellationToken::new();
@@ -410,6 +503,10 @@ impl AgentLoop {
                 .run_completion_cycle(&turn_token, &skill_injection)
                 .await?;
             if interrupted {
+                if self.take_retract_request().await {
+                    self.remove_last_user_and_record_retraction().await;
+                    break;
+                }
                 self.record(ResponseItem::user_message(
                     "[interrupted by user — stop what you are doing and wait for the next instruction.]",
                 ))
@@ -420,6 +517,14 @@ impl AgentLoop {
                     streaming: false,
                 });
                 break;
+            }
+
+            // A steer can arrive in the small boundary window after the
+            // provider returned its final item. Keep the turn open and feed it
+            // through the next completion cycle instead of stranding it for a
+            // later turn.
+            if self.has_pending_steers().await {
+                continue;
             }
 
             // Loop guards (AutoReport report protocol): sub must `respond`
@@ -438,6 +543,28 @@ impl AgentLoop {
             }
         }
 
+        // A non-streaming AgentResponse is the turn boundary consumed by the
+        // TUI (and by callers waiting for a completed answer).  Emit it only
+        // after the whole completion cycle, including every tool call and
+        // guard retry, has finished.  Emitting this marker from
+        // `stream_completion` would make a tool-using turn look complete
+        // between the model response and the tool result, allowing queued
+        // input to overtake the active turn.
+        if self.take_retract_request().await {
+            self.remove_last_user_and_record_retraction().await;
+        }
+
+        self.bus.publish(BusMessage::AgentResponse {
+            agent_type: self.agent,
+            content: String::new(),
+            streaming: false,
+        });
+        self.bus.publish(BusMessage::AgentReasoning {
+            agent_type: self.agent,
+            content: String::new(),
+            streaming: false,
+        });
+
         self.current_turn.lock().await.take();
         self.status.set(AgentStatus::Idle);
         self.bus.publish(BusMessage::StatusChange {
@@ -445,6 +572,36 @@ impl AgentLoop {
             status: AgentStatus::Idle,
         });
         Ok(())
+    }
+
+    async fn take_retract_request(&self) -> bool {
+        let mut requested = self.retract_requested.lock().await;
+        std::mem::take(&mut *requested)
+    }
+
+    async fn remove_last_user_and_record_retraction(&self) {
+        let removed = {
+            let mut history = self.history.lock().await;
+            history
+                .iter()
+                .rposition(|item| {
+                    matches!(
+                        item,
+                        ResponseItem::Message { role, .. } if role == "user"
+                    )
+                })
+                .map(|index| history.remove(index))
+        };
+        if removed.is_some() {
+            // Rollouts are append-only. The marker lets resume normalization
+            // remove the optimistic user item without rewriting a live file.
+            let marker = ResponseItem::Compaction {
+                encrypted_content: RETRACT_LAST_USER_MARKER.to_string(),
+            };
+            if let Err(error) = self.append_to_rollout(&marker).await {
+                log::warn!("{}: recording retraction: {error}", self.agent);
+            }
+        }
     }
 
     /// One completion cycle: stream a response, run any tool calls, repeat
@@ -457,11 +614,18 @@ impl AgentLoop {
         skill_injection: &str,
     ) -> anyhow::Result<bool> {
         let mut iterations: u32 = 0;
+        // A few OpenAI-compatible gateways can terminate a reasoning turn
+        // before emitting the visible assistant message. Give the model one
+        // Codex-style continuation opportunity; reasoning remains protocol
+        // state and is never inserted into the visible transcript.
+        let mut reasoning_only_retries: u8 = 0;
         loop {
             self.maybe_compact().await;
             if turn_token.is_cancelled() {
                 return Ok(true);
             }
+
+            self.record_pending_steers().await;
 
             let messages = self.build_request(skill_injection).await;
             let defs = self.tools.definitions();
@@ -476,6 +640,33 @@ impl AgentLoop {
                         return Err(e);
                     }
                 };
+
+            log::debug!(
+                "{} provider turn result: content_chars={}, reasoning_chars={}, tool_calls={}, interrupted={}",
+                self.agent,
+                content.as_deref().map_or(0, str::len),
+                reasoning.as_deref().map_or(0, str::len),
+                tool_calls.len(),
+                intr,
+            );
+            if !intr && content.is_none() && tool_calls.is_empty() && reasoning.is_some() {
+                if reasoning_only_retries == 0 {
+                    reasoning_only_retries = 1;
+                    self.record(ResponseItem::user_message(
+                        "Continue with the final answer now. Do not stop at internal reasoning; provide the visible response or call the appropriate tool.",
+                    ))
+                    .await;
+                    continue;
+                }
+                self.bus.publish(BusMessage::SystemNotice {
+                    agent_type: Some(self.agent),
+                    content: "provider returned reasoning but no final text".into(),
+                });
+                log::warn!(
+                    "{} provider returned reasoning without assistant text or tool calls",
+                    self.agent
+                );
+            }
 
             if intr {
                 if let Some(r) = reasoning {
@@ -502,6 +693,9 @@ impl AgentLoop {
                 }
             }
             if tool_calls.is_empty() {
+                if self.has_pending_steers().await {
+                    continue;
+                }
                 return Ok(false);
             }
             for call in &tool_calls {
@@ -551,6 +745,22 @@ impl AgentLoop {
                 // recorded so it is visible on resume and as an audit marker.
                 return Ok(false);
             }
+        }
+    }
+
+    async fn has_pending_steers(&self) -> bool {
+        !self.pending_steers.lock().await.is_empty()
+    }
+
+    async fn record_pending_steers(&self) {
+        let pending = self
+            .pending_steers
+            .lock()
+            .await
+            .drain(..)
+            .collect::<Vec<_>>();
+        for (content, _source) in pending {
+            self.record(ResponseItem::user_message(content)).await;
         }
     }
 
@@ -663,9 +873,11 @@ impl AgentLoop {
     /// `BeforeLastUserMessage` placement) so the model sees the full SKILL.md
     /// context adjacent to the request that triggered it.
     async fn build_request(&self, skill_injection: &str) -> Vec<Message> {
-        let instructions =
-            self.prompts
-                .build_system_prompt(self.agent, &self.skills, &self.workspace);
+        let instructions = self.prompts.build_system_prompt_with_environment(
+            self.agent,
+            &self.skills,
+            &self.workspace,
+        );
         let items = self.history.lock().await.clone();
         let mut out = Vec::with_capacity(items.len() + 2);
         out.push(Message::system(instructions));
@@ -744,16 +956,6 @@ impl AgentLoop {
                 }
             }
         }
-        self.bus.publish(BusMessage::AgentResponse {
-            agent_type: self.agent,
-            content: String::new(),
-            streaming: false,
-        });
-        self.bus.publish(BusMessage::AgentReasoning {
-            agent_type: self.agent,
-            content: String::new(),
-            streaming: false,
-        });
         Ok((
             if content.is_empty() {
                 None
@@ -876,6 +1078,7 @@ impl AgentLoop {
             agent_type: self.agent,
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
+            call_id: call.id.clone(),
         });
         let out = tokio::select! {
             biased;
@@ -897,6 +1100,7 @@ impl AgentLoop {
             tool_name: call.name.clone(),
             result: result_value,
             error: out.error.clone(),
+            call_id: call.id.clone(),
         });
         for path in extract_paths(&call.name, &call.arguments, &out.result) {
             self.manifest.record(self.agent, path);
@@ -915,6 +1119,7 @@ impl AgentLoop {
             tool_name: call.name.clone(),
             result: Value::String(denial.clone()),
             error: Some(denial.clone()),
+            call_id: call.id.clone(),
         });
         self.record(ResponseItem::function_call_output(&call.id, denial))
             .await;
@@ -930,12 +1135,16 @@ impl AgentLoop {
     }
 
     async fn estimated_tokens(&self) -> usize {
+        // Use the vendored codex token estimate (`bytes / APPROX_BYTES_PER_TOKEN`,
+        // matching codex's `approx_token_count`) rather than a `chars / 3` rule
+        // of thumb, so the compaction threshold tracks the same budget codex
+        // uses to decide when to compact.
         let h = self.history.lock().await;
-        let chars: usize = h
+        let bytes: usize = h
             .iter()
             .map(|i| i.text().map(|t| t.len()).unwrap_or(0))
             .sum();
-        chars / 3
+        autoreport_utils_string::approx_tokens_from_byte_count(bytes) as usize
     }
 
     async fn compact_internal(&self) {
@@ -948,44 +1157,37 @@ impl AgentLoop {
             return;
         }
 
-        // Preserve every prior user message across compaction so the task
-        // brief survives (codex `compact::collect_user_messages`). Keep the
-        // last couple of non-user items as the live working context; the L1
-        // `ensure_call_outputs_present` normalize pass covers any tool_call
-        // whose output landed outside this window.
+        // codex `compact::collect_user_messages`: only prior user messages
+        // survive compaction. No `FunctionCall`/`FunctionCallOutput`/assistant
+        // turns are retained — a partial tail can orphan a tool result (dropping
+        // its matching `FunctionCall`) and emit a `role:"tool"` message with no
+        // preceding tool_use, which providers reject with HTTP 400. The summary
+        // captures the working context instead.
         let user_msgs: Vec<ResponseItem> = snapshot
             .iter()
             .filter(|i| matches!(i, ResponseItem::Message { role, .. } if role.as_str() == "user"))
             .cloned()
             .collect();
-        let recent: Vec<ResponseItem> = snapshot
-            .iter()
-            .rev()
-            .filter(|i| !matches!(i, ResponseItem::Message { role, .. } if role.as_str() == "user"))
-            .take(2)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .cloned()
-            .collect();
 
         let summary = self.compact_summary(&snapshot).await;
 
+        // codex `compact::build_compacted_history`: keep the most recent user
+        // messages that fit in the budget (truncating the boundary message),
+        // then append the compaction summary as the final item.
+        let new_history = build_compacted_history(&user_msgs, &summary);
+
         *self.history.lock().await = Vec::new();
-        self.record(ResponseItem::Compaction {
-            encrypted_content: summary,
-        })
-        .await;
-        for item in user_msgs {
+        for item in new_history {
             self.record(item).await;
         }
-        for item in recent {
-            self.record(item).await;
-        }
-        self.bus.publish(BusMessage::AgentResponse {
-            agent_type: self.agent,
-            content: "[context compacted]".into(),
-            streaming: false,
+        // Compaction is an internal history transition, not the end of the
+        // active turn.  A final AgentResponse marker here would make the TUI
+        // drain queued input while the same turn is still about to call the
+        // provider again.  Keep the notice visible without crossing the turn
+        // boundary.
+        self.bus.publish(BusMessage::SystemNotice {
+            agent_type: Some(self.agent),
+            content: "context compacted".into(),
         });
     }
 
@@ -1043,12 +1245,27 @@ impl AgentLoop {
     }
 }
 
-async fn forward_message(
-    agent: AgentType,
-    msg: &BusMessage,
-    op_tx: &mpsc::Sender<Op>,
-    cancel: &Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
-) {
+fn normalize_retracted_items(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    let mut normalized = Vec::with_capacity(items.len());
+    for item in items {
+        if matches!(
+            &item,
+            ResponseItem::Compaction { encrypted_content }
+                if encrypted_content == RETRACT_LAST_USER_MARKER
+        ) {
+            if let Some(index) = normalized.iter().rposition(
+                |item| matches!(item, ResponseItem::Message { role, .. } if role == "user"),
+            ) {
+                normalized.remove(index);
+            }
+        } else {
+            normalized.push(item);
+        }
+    }
+    normalized
+}
+
+async fn forward_message(agent: AgentType, msg: &BusMessage, op_tx: &mpsc::Sender<Op>) {
     let op = match msg {
         BusMessage::UserMessage {
             agent_type,
@@ -1061,10 +1278,9 @@ async fn forward_message(
         },
         _ => return,
     };
-    // New input interrupts the active turn (codex semantics), then queues.
-    if let Some(token) = cancel.lock().await.as_ref() {
-        token.cancel();
-    }
+    // The processor receives one operation at a time, so a message received
+    // during a turn remains queued until the current turn reaches its normal
+    // boundary. Interrupt remains an explicit user action.
     let _ = op_tx.send(op).await;
 }
 
@@ -1102,6 +1318,89 @@ mod internal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_compacted_history_appends_summary_last_and_preserves_recent_user_msgs() {
+        let user_msgs = vec![
+            ResponseItem::user_message("first task brief"),
+            ResponseItem::user_message("second user message"),
+            ResponseItem::user_message("latest user message"),
+        ];
+        let out = build_compacted_history(&user_msgs, "the summary");
+        // All fit within the 20k budget → all retained in original order, then
+        // the compaction summary appended LAST (codex ordering).
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].text().unwrap(), "first task brief");
+        assert_eq!(out[1].text().unwrap(), "second user message");
+        assert_eq!(out[2].text().unwrap(), "latest user message");
+        assert!(matches!(
+            out.last(),
+            Some(ResponseItem::Compaction { encrypted_content })
+                if encrypted_content == "the summary"
+        ));
+    }
+
+    #[test]
+    fn build_compacted_history_drops_oldest_when_budget_exceeded() {
+        // Each char is ~1/4 token, so make messages large enough to exceed the
+        // 20k-token budget and force truncation of the newest + drop of older.
+        let big = "x".repeat(80_000); // ~20_000 tokens each
+        let user_msgs = vec![
+            ResponseItem::user_message(big.clone()), // oldest -> dropped
+            ResponseItem::user_message(big.clone()), // middle -> dropped
+            ResponseItem::user_message("small recent".to_string()), // newest -> kept
+        ];
+        let out = build_compacted_history(&user_msgs, "sum");
+        // Summary is always last.
+        assert!(matches!(out.last(), Some(ResponseItem::Compaction { .. })));
+        // The small recent message survives; the two oversized ones do not fit
+        // alongside it (budget exhausted by the newest large message gets
+        // truncated, leaving no room for older ones).
+        let texts: Vec<_> = out
+            .iter()
+            .filter_map(|i| match i {
+                ResponseItem::Message { role, .. } if role == "user" => i.text(),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("small recent")),
+            "newest small message must survive: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn retraction_tombstone_removes_only_the_latest_user_item() {
+        let items = normalize_retracted_items(vec![
+            ResponseItem::user_message("keep"),
+            ResponseItem::assistant_message("answer"),
+            ResponseItem::user_message("cancel me"),
+            ResponseItem::Compaction {
+                encrypted_content: RETRACT_LAST_USER_MARKER.into(),
+            },
+        ]);
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0],
+            ResponseItem::Message { role, .. } if role == "user"
+        ));
+        assert!(matches!(
+            &items[1],
+            ResponseItem::Message { role, .. } if role == "assistant"
+        ));
+    }
+
+    #[test]
+    fn retraction_marker_is_not_sent_as_compaction_context() {
+        let messages = items_to_messages(&[
+            ResponseItem::user_message("keep"),
+            ResponseItem::Compaction {
+                encrypted_content: RETRACT_LAST_USER_MARKER.into(),
+            },
+        ]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "keep");
+    }
 
     #[test]
     fn items_to_messages_folds_tool_calls() {
@@ -1168,6 +1467,25 @@ mod tests {
             .expect("assistant message should carry the paired thinking");
         assert_eq!(assistant.thinking.as_deref(), Some("pondering"));
         assert_eq!(assistant.thinking_signature.as_deref(), Some("SIG-1234"));
+    }
+
+    #[test]
+    fn items_to_messages_preserves_empty_signed_reasoning() {
+        let items = vec![
+            ResponseItem::user_message("continue"),
+            ResponseItem::reasoning_signed("", "SIG-EMPTY-SUMMARY"),
+            ResponseItem::assistant_message("the answer"),
+        ];
+        let msgs = items_to_messages(&items);
+        let assistant = msgs
+            .iter()
+            .find(|m| m.role == "assistant" && m.thinking_signature.is_some())
+            .expect("assistant message should carry the encrypted reasoning");
+        assert_eq!(assistant.thinking.as_deref(), Some(""));
+        assert_eq!(
+            assistant.thinking_signature.as_deref(),
+            Some("SIG-EMPTY-SUMMARY")
+        );
     }
 
     #[test]

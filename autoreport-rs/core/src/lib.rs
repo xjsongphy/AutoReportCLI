@@ -3,6 +3,7 @@
 pub mod bundled;
 pub mod bus;
 pub mod config;
+pub mod environment;
 pub mod exec_policy;
 pub use autoreport_protocol::policy;
 pub mod prompts;
