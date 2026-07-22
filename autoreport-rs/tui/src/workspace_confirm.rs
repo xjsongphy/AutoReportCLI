@@ -50,8 +50,10 @@ impl WorkspaceScreen {
         let area = f.area();
 
         let mut column = ColumnRenderable::new();
+        // Codex's composer / user-prompt glyph is `›`; keep prompt-style rows
+        // consistent with it instead of a bare `>`.
         column.push(Line::from(vec![
-            "> ".into(),
+            "› ".into(),
             "You are in ".bold(),
             self.workspace.display().to_string().into(),
         ]));
@@ -176,7 +178,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("> You are in /tmp/project"));
+        assert!(rendered.contains("› You are in /tmp/project"));
         assert!(rendered.contains("› 1. Yes, continue"));
         assert!(rendered.contains("  2. No, quit"));
         assert!(rendered.contains("Press Enter to continue"));

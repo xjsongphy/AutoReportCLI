@@ -198,7 +198,7 @@ impl EnvironmentScreen {
                     Line::from("Enter an executable path (for example /opt/venv/bin/python):"),
                     Line::from(""),
                     Line::from(vec![
-                        Span::raw("> "),
+                        Span::raw("› "),
                         Span::styled(&self.custom_path, Style::default().fg(Color::Yellow)),
                     ]),
                 ];

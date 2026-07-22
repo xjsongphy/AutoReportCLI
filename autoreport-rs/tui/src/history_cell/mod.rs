@@ -25,6 +25,7 @@ mod request_user_input;
 mod separators;
 mod session;
 pub(crate) use session::SessionHeaderHistoryCell;
+pub(crate) use messages::split_reasoning_summary_parts;
 
 /// AutoReport stores all agent events in one vector; Codex displays the
 /// currently selected thread. Apply that same boundary when building lines.
@@ -33,6 +34,7 @@ pub(crate) fn belongs_to_agent(cell: &Cell, focused: autoreport_core::types::Age
         Cell::User { _agent, .. } => *_agent == focused,
         Cell::AgentMessage { agent, .. }
         | Cell::AgentMarkdown { agent, .. }
+        | Cell::Reasoning { agent, .. }
         | Cell::ToolGroup { agent, .. }
         | Cell::Collab { agent, .. }
         | Cell::TurnSeparator { agent, .. }
@@ -92,6 +94,17 @@ impl HistoryCell for Cell {
                 .split('\n')
                 .map(|line| Line::from(line.to_string()))
                 .collect(),
+            Cell::Reasoning {
+                text,
+                transcript_only,
+                ..
+            } => {
+                if *transcript_only {
+                    Vec::new()
+                } else {
+                    text.split('\n').map(|line| Line::from(line.to_string())).collect()
+                }
+            }
             Cell::Collab { title, details, .. } => {
                 let mut lines = vec![Line::from(
                     title
@@ -176,6 +189,16 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
         }
         Cell::AgentMarkdown { text, .. } => {
             out.extend(messages::AgentMarkdownCell { text: text.clone() }.display_lines(width_u16));
+        }
+        Cell::Reasoning {
+            text,
+            transcript_only,
+            ..
+        } => {
+            out.extend(
+                messages::ReasoningSummaryCell::new(text.clone(), *transcript_only)
+                    .display_lines(width_u16),
+            );
         }
         Cell::AgentMessage {
             text,

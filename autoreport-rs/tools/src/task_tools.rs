@@ -464,6 +464,12 @@ impl Tool for SendToAgentTool {
             source: MessageSource::MainAgent,
             message_id: dispatch_id,
         });
+        // Surface codex's `Waiting for <agent>` collaborator row for the
+        // blocking path; the sub's `Report` (reply / blocked) ends the wait.
+        self.bus.publish(BusMessage::Waiting {
+            target_agent: agent,
+            task_id: task_id.clone(),
+        });
 
         match wait_for_report(&mut rx, &self.board, agent, &task_id, self.timeout_secs).await {
             WaitOutcome::Report {

@@ -5,11 +5,12 @@ use crate::bottom_pane::status_line_setup::StatusLineItem;
 use crate::bottom_pane::status_line_style::status_line_from_segments;
 use crate::bottom_pane::{ApprovalOverlay, RequestUserInputOverlay};
 use crate::style::accent_style;
+use autoreport_core::types::{AgentStatus, AgentType};
 use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListState, Paragraph};
 
 const MENTION_LIMIT: usize = 8;
 const SLASH_LIMIT: usize = 8;
@@ -33,6 +34,12 @@ impl Tui {
             self.draw_slash_popup(f, popup_bounds);
         } else if self.mention.is_some() {
             self.draw_mention_popup(f, popup_bounds);
+        }
+
+        // Codex's `/agent` selection popup. Drawn above the composer like the
+        // completion popups; it owns navigation while open.
+        if self.agent_picker.is_some() {
+            self.draw_agent_picker(f, popup_bounds);
         }
 
         if !self.pending_approvals.is_empty() {
@@ -164,5 +171,84 @@ impl Tui {
         }
         let para = Paragraph::new(lines);
         f.render_widget(para, popup_area);
+    }
+
+    /// `/agent` picker popup, the fixed-roster equivalent of codex's
+    /// `ListSelectionView`. Each row mirrors codex's shape
+    /// (`{n}. {•} {name}  {description}`): the status dot comes from
+    /// `agent_picker_status_dot_spans`, the label from
+    /// `format_agent_picker_item_name`, and the selected row uses codex's `›`
+    /// highlight symbol.
+    fn draw_agent_picker(&self, f: &mut Frame<'_>, anchor: Rect) {
+        let Some(picker) = self.agent_picker.as_ref() else {
+            return;
+        };
+        let roster = AgentType::ALL;
+        let rows = roster.len() as u16;
+        // rows + top/bottom border + subtitle footer.
+        let desired_height = rows + 2 + 1;
+        let height = desired_height.min(anchor.height);
+        let width = 52u16.min(anchor.width);
+        let popup_area = Rect {
+            x: anchor.x + (anchor.width.saturating_sub(width)) / 2,
+            y: anchor.y + (anchor.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup_area);
+
+        let items: Vec<Line<'static>> = roster
+            .iter()
+            .enumerate()
+            .map(|(index, agent)| {
+                let status = self
+                    .statuses
+                    .get(agent)
+                    .copied()
+                    .unwrap_or(AgentStatus::Idle);
+                let is_active = matches!(
+                    status,
+                    AgentStatus::Thinking
+                        | AgentStatus::RunningTool
+                        | AgentStatus::Queued
+                        | AgentStatus::DebugMode
+                );
+                let mut spans = vec![Span::raw(format!("{}. ", index + 1))];
+                spans.extend(crate::multi_agents::agent_picker_status_dot_spans(is_active));
+                spans.push(Span::raw(crate::multi_agents::format_agent_picker_item_name(*agent)));
+                spans.push(Span::raw(format!("  [{}]", status_label(status))));
+                Line::from(spans)
+            })
+            .collect();
+
+        let title = Span::styled(" Agents ", accent_style());
+        let subtitle = format!("  {}", crate::multi_agents::picker_subtitle());
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .title(title)
+            .title_bottom(
+                Line::from(subtitle)
+                    .style(Style::default().add_modifier(Modifier::DIM))
+                    .alignment(Alignment::Left),
+            );
+        let list = List::new(items)
+            .block(block)
+            .highlight_symbol("› ")
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        let mut state = ListState::default();
+        state.select(Some(picker.selected));
+        f.render_stateful_widget(list, popup_area, &mut state);
+    }
+}
+
+/// Compact human-readable label for an `AgentStatus` row in the picker.
+fn status_label(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Idle => "idle",
+        AgentStatus::Thinking => "thinking",
+        AgentStatus::RunningTool => "running tool",
+        AgentStatus::Queued => "queued",
+        AgentStatus::Error => "error",
+        AgentStatus::DebugMode => "debug",
     }
 }

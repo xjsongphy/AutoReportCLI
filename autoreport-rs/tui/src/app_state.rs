@@ -32,6 +32,14 @@ pub(crate) enum Cell {
         agent: AgentType,
         text: String,
     },
+    /// Codex `ReasoningSummaryCell` equivalent: the finalized model reasoning
+    /// summary, rendered as dimmed italic markdown. Live reasoning still drives
+    /// the thinking spinner; this cell is the transcript scrollback entry.
+    Reasoning {
+        agent: AgentType,
+        text: String,
+        transcript_only: bool,
+    },
     ToolGroup {
         agent: AgentType,
         items: Vec<ToolEntry>,
@@ -98,6 +106,15 @@ pub(crate) enum Overlay {
     Api(ConfigScreen),
     Models(ModelScreen),
     Environment(EnvironmentScreen),
+}
+
+/// `/agent` picker popup state. The roster is the fixed `AgentType::ALL` set,
+/// so only the highlighted row needs tracking — mirroring codex's
+/// `ListSelectionView` selected index. `selected` is an index into
+/// `AgentType::ALL`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentPickerState {
+    pub(crate) selected: usize,
 }
 
 impl Overlay {
