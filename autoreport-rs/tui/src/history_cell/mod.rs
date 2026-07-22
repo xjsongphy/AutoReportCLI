@@ -187,6 +187,21 @@ pub(crate) fn render_history_lines_for_agent(
         .collect()
 }
 
+/// Hyperlink-aware counterpart of [`render_history_lines_for_agent`]: same
+/// cells/order, but each cell contributes its `display_hyperlink_lines` so web
+/// URLs can be marked as OSC 8 links over the rendered transcript area.
+pub(crate) fn render_history_hyperlink_lines_for_agent(
+    cells: &[Cell],
+    focused: autoreport_core::types::AgentType,
+    width: u16,
+) -> Vec<HyperlinkLine> {
+    cells
+        .iter()
+        .filter(|cell| belongs_to_agent(cell, focused))
+        .flat_map(|cell| cell.display_hyperlink_lines(width))
+        .collect()
+}
+
 pub(crate) fn render_raw_history_lines_for_agent(
     cells: &[Cell],
     focused: autoreport_core::types::AgentType,

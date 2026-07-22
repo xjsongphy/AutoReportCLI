@@ -134,6 +134,15 @@ impl HistoryCell for AgentMarkdownCell {
             .map(|line| Line::from(line.to_string()))
             .collect()
     }
+
+    /// Annotate web URLs in the rendered markdown as OSC 8 terminal hyperlinks
+    /// (clickable in capable terminals). Mirrors Codex's `WebHyperlinkHistoryCell`.
+    fn display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        crate::terminal_hyperlinks::annotate_web_urls(HistoryCell::display_lines(self, width))
+    }
 }
 
 impl Renderable for AgentMarkdownCell {
@@ -273,4 +282,33 @@ pub(crate) fn split_reasoning_summary_parts(reasoning_parts: &[String]) -> (Stri
     }
 
     (leading_empty_part_header.unwrap_or_default(), content)
+}
+
+#[cfg(test)]
+mod hyperlink_tests {
+    use super::*;
+    use crate::history_cell::HistoryCell;
+
+    #[test]
+    fn agent_markdown_annotates_web_urls_as_hyperlinks() {
+        let cell = AgentMarkdownCell {
+            text: "see https://example.com/x for details".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let found = lines
+            .iter()
+            .flat_map(|l| l.hyperlinks.iter())
+            .any(|h| h.destination == "https://example.com/x");
+        assert!(found, "URL should be annotated as a hyperlink destination");
+    }
+
+    #[test]
+    fn agent_markdown_without_urls_has_no_hyperlinks() {
+        let cell = AgentMarkdownCell {
+            text: "plain text without any link".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let any = lines.iter().any(|l| !l.hyperlinks.is_empty());
+        assert!(!any, "no URL → no hyperlink annotations");
+    }
 }

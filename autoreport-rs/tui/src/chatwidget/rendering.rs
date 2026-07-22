@@ -52,6 +52,7 @@ impl Tui {
     fn codex_chat_renderable(&self, width: u16) -> FlexRenderable<'_> {
         let transcript = TranscriptAreaRenderable {
             lines: self.transcript_lines(width),
+            hyperlink_lines: self.transcript_hyperlink_lines(width),
             scroll: self.scroll,
         };
         let mut flex = FlexRenderable::new();
@@ -112,6 +113,30 @@ impl Tui {
         lines
     }
 
+    /// Hyperlink-aware counterpart of [`transcript_lines`] in the same
+    /// header + cell order, so `mark_buffer_hyperlinks` can annotate OSC 8
+    /// links over the rendered transcript area.
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        use crate::history_cell::{HistoryCell, SessionHeaderHistoryCell};
+        let model = if self.focused == autoreport_core::types::AgentType::Main {
+            self.main_model.clone()
+        } else {
+            self.sub_model.clone()
+        };
+        let header = SessionHeaderHistoryCell::new(model, self.workspace.clone());
+        let mut lines = header.display_hyperlink_lines(width);
+        // Raw-output mode drops styling/links; otherwise carry the per-cell
+        // hyperlink annotations (assistant markdown URLs get annotated).
+        if !self.raw_output {
+            lines.extend(crate::history_cell::render_history_hyperlink_lines_for_agent(
+                &self.history,
+                self.focused,
+                width,
+            ));
+        }
+        lines
+    }
+
     /// Codex's status row shows the active operation below the animated
     /// header. The local bus already owns the authoritative pending tool
     /// entry, so derive the same short detail text from that entry instead of
@@ -143,6 +168,9 @@ impl Tui {
 /// Codex's transcript area reserves one breathing row and scrolls the rendered tail into view.
 struct TranscriptAreaRenderable {
     lines: Vec<Line<'static>>,
+    /// Parallel to `lines`: each row's hyperlink annotations, used to mark
+    /// OSC 8 links over the rendered area after the Paragraph draws.
+    hyperlink_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     scroll: usize,
 }
 
@@ -159,6 +187,15 @@ impl Renderable for TranscriptAreaRenderable {
         paragraph
             .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
             .render(area, buf);
+        // Mark web URLs as OSC 8 terminal hyperlinks over the transcript area.
+        // `mark_buffer_hyperlinks` re-wraps each line to locate URL cells and
+        // honors the same scroll offset used above.
+        crate::terminal_hyperlinks::mark_buffer_hyperlinks(
+            buf,
+            area,
+            &self.hyperlink_lines,
+            scroll,
+        );
     }
 
     fn desired_height(&self, width: u16) -> u16 {
