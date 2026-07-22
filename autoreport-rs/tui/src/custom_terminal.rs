@@ -119,6 +119,25 @@ impl Frame<'_> {
         widget.render_ref(area, self.buffer);
     }
 
+    /// Render a [`ratatui::widgets::Widget`] to the current buffer. Compat
+    /// shim mirroring `ratatui::Frame::render_widget` so the existing draw path
+    /// (which uses `Widget`-based rendering) works unchanged on this custom
+    /// Frame. Not in upstream codex (their callers use `WidgetRef`).
+    pub fn render_widget<W: ratatui::widgets::Widget>(&mut self, widget: W, area: Rect) {
+        widget.render(area, self.buffer);
+    }
+
+    /// Render a [`ratatui::widgets::StatefulWidget`] to the current buffer.
+    /// Compat shim mirroring `ratatui::Frame::render_stateful_widget`.
+    pub fn render_stateful_widget<W: ratatui::widgets::StatefulWidget>(
+        &mut self,
+        widget: W,
+        area: Rect,
+        state: &mut W::State,
+    ) {
+        widget.render(area, self.buffer, state);
+    }
+
     /// After drawing this frame, make the cursor visible and put it at the specified (x, y)
     /// coordinates. If this method is not called, the cursor will be hidden.
     ///
@@ -241,7 +260,10 @@ where
                 /*width*/ 0,
                 /*height*/ 0,
             ),
-            last_known_screen_size: screen_size,
+            // Start at ZERO so the first `autoresize` detects a change and
+            // sizes the buffers via `set_viewport_area` (codex's app calls
+            // set_viewport_area externally; we rely on autoresize instead).
+            last_known_screen_size: Size::ZERO,
             last_known_cursor_pos: cursor_pos,
             visible_history_rows: 0,
         }
@@ -281,6 +303,15 @@ where
         &self.buffers[1 - self.current]
     }
 
+    /// Test-only accessor for the most recently rendered buffer. `try_draw`
+    /// swaps buffers after flushing, so the previous buffer holds the last
+    /// frame — letting render tests assert on a clean cell grid (the custom
+    /// terminal's byte-stream flush otherwise skips unstyled space cells).
+    #[cfg(test)]
+    pub(crate) fn rendered_buffer(&self) -> &Buffer {
+        self.previous_buffer()
+    }
+
     /// Gets the previous buffer as a mutable reference.
     fn previous_buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[1 - self.current]
@@ -313,6 +344,16 @@ where
     /// of the screen.
     pub fn resize(&mut self, screen_size: Size) -> io::Result<()> {
         self.last_known_screen_size = screen_size;
+        // codex's app computes the viewport externally and calls
+        // `set_viewport_area`; our full-screen TUI uses the whole backend size,
+        // so resize the buffers + viewport here to keep `autoresize` sufficient.
+        let area = Rect::new(
+            self.viewport_area.x,
+            self.viewport_area.y,
+            screen_size.width,
+            screen_size.height,
+        );
+        self.set_viewport_area(area);
         Ok(())
     }
 
@@ -851,21 +892,9 @@ mod tests {
             Ok(())
         }
 
-        fn scroll_region_up(
-            &mut self,
-            _region: std::ops::Range<u16>,
-            _scroll_by: u16,
-        ) -> io::Result<()> {
-            Ok(())
-        }
-
-        fn scroll_region_down(
-            &mut self,
-            _region: std::ops::Range<u16>,
-            _scroll_by: u16,
-        ) -> io::Result<()> {
-            Ok(())
-        }
+        // NOTE: codex's forked ratatui Backend trait had `scroll_region_up` /
+        // `scroll_region_down`; stock ratatui 0.29 does not, so they are omitted
+        // here (custom_terminal never calls them on the backend).
 
         fn size(&self) -> io::Result<Size> {
             Ok(self.size)

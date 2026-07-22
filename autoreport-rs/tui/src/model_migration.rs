@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
-use ratatui::{Frame, Terminal};
+use crate::custom_terminal::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 

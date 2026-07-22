@@ -11,7 +11,9 @@ pub(crate) mod bottom_pane;
 pub(crate) mod chatwidget;
 pub(crate) mod clipboard_copy;
 pub mod color;
-pub(crate) mod custom_terminal;
+pub mod custom_terminal;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod config_update;
 pub mod diff_render;
 pub mod environment_setup;

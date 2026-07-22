@@ -6,7 +6,7 @@ use crate::bottom_pane::status_line_style::status_line_from_segments;
 use crate::bottom_pane::{ApprovalOverlay, RequestUserInputOverlay};
 use crate::style::accent_style;
 use autoreport_core::types::{AgentStatus, AgentType};
-use ratatui::Frame;
+use crate::custom_terminal::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

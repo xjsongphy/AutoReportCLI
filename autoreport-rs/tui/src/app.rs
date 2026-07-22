@@ -29,7 +29,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
+use crate::custom_terminal::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -151,7 +151,7 @@ impl Tui {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
-        let mut terminal = Terminal::new(backend)?;
+        let mut terminal = Terminal::with_options(backend)?;
 
         // Codex probes the terminal palette before its event stream owns stdin.
         // Keep that ordering so OSC 10/11 replies cannot be mistaken for input,

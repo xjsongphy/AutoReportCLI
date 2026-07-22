@@ -1,7 +1,7 @@
 //! Approval overlay adapted from Codex's bottom-pane approval surface.
 
 use crate::app_state::PendingApproval;
-use ratatui::Frame;
+use crate::custom_terminal::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
