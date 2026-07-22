@@ -2,7 +2,103 @@
 
 use super::*;
 use crate::motion::{MotionMode, ReducedMotionIndicator, activity_indicator};
-use crate::wrapping::adaptive_wrap_line;
+use crate::wrapping::{adaptive_wrap_line, adaptive_wrap_lines, RtOptions};
+use ratatui::text::Text;
+
+/// Plain, un-annotated lines. Ported verbatim from Codex's `base.rs`.
+#[derive(Debug)]
+#[allow(dead_code)] // constructed once R5 builds cells from transcript items
+pub(crate) struct PlainHistoryCell {
+    pub(super) lines: Vec<Line<'static>>,
+}
+
+impl PlainHistoryCell {
+    pub(crate) fn new(lines: Vec<Line<'static>>) -> Self {
+        Self { lines }
+    }
+}
+
+impl HistoryCell for PlainHistoryCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.lines.clone()
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.lines.clone())
+    }
+}
+
+/// Like `PlainHistoryCell` but web URLs in the lines are annotated as OSC 8
+/// terminal hyperlinks (clickable in capable terminals). Ported from Codex.
+#[derive(Debug)]
+#[allow(dead_code)] // constructed once R5 wires assistant-message cells with URLs
+pub(crate) struct WebHyperlinkHistoryCell {
+    lines: Vec<Line<'static>>,
+}
+
+impl WebHyperlinkHistoryCell {
+    pub(crate) fn new(lines: Vec<Line<'static>>) -> Self {
+        Self { lines }
+    }
+}
+
+impl HistoryCell for WebHyperlinkHistoryCell {
+    fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+        self.lines.clone()
+    }
+
+    fn display_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
+        crate::terminal_hyperlinks::annotate_web_urls(self.lines.clone())
+    }
+
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.lines.clone())
+    }
+}
+
+/// Wraps a `Text` block with an initial and subsequent prefix per wrapped row.
+/// Ported verbatim from Codex's `base.rs`.
+#[derive(Debug)]
+#[allow(dead_code)] // constructed once R5 wires prefixed transcript blocks
+pub(crate) struct PrefixedWrappedHistoryCell {
+    text: Text<'static>,
+    initial_prefix: Line<'static>,
+    subsequent_prefix: Line<'static>,
+}
+
+impl PrefixedWrappedHistoryCell {
+    pub(crate) fn new(
+        text: impl Into<Text<'static>>,
+        initial_prefix: impl Into<Line<'static>>,
+        subsequent_prefix: impl Into<Line<'static>>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            initial_prefix: initial_prefix.into(),
+            subsequent_prefix: subsequent_prefix.into(),
+        }
+    }
+}
+
+impl HistoryCell for PrefixedWrappedHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let opts = RtOptions::new(width.max(1) as usize)
+            .initial_indent(self.initial_prefix.clone())
+            .subsequent_indent(self.subsequent_prefix.clone());
+        adaptive_wrap_lines(&self.text, opts)
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.text.clone().lines)
+    }
+}
 
 pub(crate) fn pending_tool_bullet(item: &crate::app_state::ToolEntry) -> Span<'static> {
     activity_indicator(

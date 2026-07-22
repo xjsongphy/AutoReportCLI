@@ -43,6 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 diffy = "0.4"
+derive_more = { version = "2", features = ["is_variant"] }
 dirs = "5"
 dunce = "1"
 encoding_rs = "0.8"

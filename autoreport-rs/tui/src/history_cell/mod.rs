@@ -26,6 +26,24 @@ mod separators;
 mod session;
 pub(crate) use session::SessionHeaderHistoryCell;
 pub(crate) use messages::split_reasoning_summary_parts;
+pub(crate) use crate::terminal_hyperlinks::HyperlinkLine;
+
+/// Strip styling from lines, keeping only their text content. Ported from
+/// Codex's `history_cell::plain_lines`.
+#[allow(dead_code)] // used by PlainHistoryCell/WebHyperlinkHistoryCell once R5 constructs them
+pub(crate) fn plain_lines(lines: impl IntoIterator<Item = Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>();
+            Line::from(text)
+        })
+        .collect()
+}
 
 /// AutoReport stores all agent events in one vector; Codex displays the
 /// currently selected thread. Apply that same boundary when building lines.
@@ -45,8 +63,25 @@ pub(crate) fn belongs_to_agent(cell: &Cell, focused: autoreport_core::types::Age
 }
 
 /// Width-aware history cell contract from Codex's transcript renderer.
+#[allow(dead_code)] // hyperlink methods used once R5 marks the transcript buffer
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
+
+    /// Hyperlink-aware lines for terminals that support OSC 8. Cells without
+    /// web URLs fall back to plain lines (no link annotations). Ported from
+    /// Codex's `HistoryCell::display_hyperlink_lines`.
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width))
+    }
+
+    /// Hyperlink lines used when writing the transcript to disk/export.
+    /// Defaults to the display hyperlinks (Codex parity).
+    fn transcript_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
 
     /// Copy-friendly source lines, matching Codex's raw scrollback mode.
     /// Cells that do not have a separate source representation fall back to
