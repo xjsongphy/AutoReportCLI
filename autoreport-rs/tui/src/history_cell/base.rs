@@ -184,3 +184,83 @@ pub(crate) fn display_generic_tool_call(
     }
     lines
 }
+
+/// Composes multiple cells with a blank row between non-empty parts.
+/// Ported verbatim from Codex's `base.rs::CompositeHistoryCell`.
+#[derive(Debug)]
+#[allow(dead_code)] // constructed once composable transcript cells are wired
+pub(crate) struct CompositeHistoryCell {
+    pub(super) parts: Vec<Box<dyn HistoryCell>>,
+}
+
+impl CompositeHistoryCell {
+    pub(crate) fn new(parts: Vec<Box<dyn HistoryCell>>) -> Self {
+        Self { parts }
+    }
+}
+
+impl HistoryCell for CompositeHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let mut first = true;
+        for part in &self.parts {
+            let mut lines = part.display_lines(width);
+            if !lines.is_empty() {
+                if !first {
+                    out.push(Line::from(""));
+                }
+                out.append(&mut lines);
+                first = false;
+            }
+        }
+        out
+    }
+
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        let mut out = Vec::new();
+        let mut first = true;
+        for part in &self.parts {
+            let mut lines = part.display_hyperlink_lines(width);
+            if !lines.is_empty() {
+                if !first {
+                    out.push(HyperlinkLine::from(""));
+                }
+                out.append(&mut lines);
+                first = false;
+            }
+        }
+        out
+    }
+
+    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        let mut out = Vec::new();
+        let mut first = true;
+        for part in &self.parts {
+            let mut lines = part.transcript_hyperlink_lines(width);
+            if !lines.is_empty() {
+                if !first {
+                    out.push(HyperlinkLine::from(""));
+                }
+                out.append(&mut lines);
+                first = false;
+            }
+        }
+        out
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let mut first = true;
+        for part in &self.parts {
+            let mut lines = part.raw_lines();
+            if !lines.is_empty() {
+                if !first {
+                    out.push(Line::from(""));
+                }
+                out.append(&mut lines);
+                first = false;
+            }
+        }
+        out
+    }
+}
