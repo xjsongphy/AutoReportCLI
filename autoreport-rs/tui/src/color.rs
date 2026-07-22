@@ -1,13 +1,13 @@
 //! Ported verbatim from codex `tui/src/color.rs`. Works on raw `(u8, u8, u8)`
 //! tuples (the terminal's reported RGB), independent of ratatui's `Color`.
 
-pub fn is_light(bg: (u8, u8, u8)) -> bool {
+pub(crate) fn is_light(bg: (u8, u8, u8)) -> bool {
     let (r, g, b) = bg;
     let y = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
     y > 128.0
 }
 
-pub fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
+pub(crate) fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
     let r = (fg.0 as f32 * alpha + bg.0 as f32 * (1.0 - alpha)) as u8;
     let g = (fg.1 as f32 * alpha + bg.1 as f32 * (1.0 - alpha)) as u8;
     let b = (fg.2 as f32 * alpha + bg.2 as f32 * (1.0 - alpha)) as u8;
@@ -16,7 +16,7 @@ pub fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
 
 /// Returns the perceptual color distance between two RGB colors.
 /// Uses the CIE76 formula (Euclidean distance in Lab space approximation).
-pub fn perceptual_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+pub(crate) fn perceptual_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
     // Convert sRGB to linear RGB
     fn srgb_to_linear(c: u8) -> f32 {
         let c = c as f32 / 255.0;
