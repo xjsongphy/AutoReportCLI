@@ -138,10 +138,13 @@ fn apply_env_overrides(settings: &mut Settings) {
     }
 }
 
-/// Post-parse normalization. The approval policy is honored as-written: `Never`
-/// (the default) runs everything without asking; the other codex variants route
-/// the `exec` tool through the interactive approval flow in `execute_tool_call`.
-/// We only mirror `context_window` into the per-agent defaults here.
+/// Post-parse normalization. The approval policy is honored as-written:
+/// `OnRequest` (the default) runs safe commands silently and only prompts for
+/// commands classified as dangerous; `Never` forbids dangerous commands
+/// without asking; `untrusted`/`granular` offer finer control. All non-`Never`
+/// variants route the `exec` tool through the interactive approval flow in
+/// `execute_tool_call`. We only mirror `context_window` into the per-agent
+/// defaults here.
 fn normalize(settings: &mut Settings) {
     let _ = AskForApproval::Never; // keep the import meaningful for future validation
     // Mirror the top-level user-facing `context_window` into the per-agent
@@ -400,11 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn default_approval_policy_is_never() {
+    fn default_approval_policy_is_on_request() {
         let settings = Settings::default();
         assert_eq!(
             settings.agents.approval_policy,
-            crate::policy::AskForApproval::Never
+            crate::policy::AskForApproval::OnRequest
         );
     }
 

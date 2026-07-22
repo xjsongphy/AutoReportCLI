@@ -1017,15 +1017,20 @@ impl AgentLoop {
                     let argv: Vec<String> =
                         command.split_whitespace().map(str::to_string).collect();
                     let summary = summarize_command(&argv);
-                    let rx = self.bus.register_approval(&call.id).await;
-                    self.bus.publish(BusMessage::ApprovalRequest {
+                    let payload = autoreport_core::types::ApprovalRequestPayload {
                         agent_type: self.agent,
                         call_id: call.id.clone(),
                         command: command.clone(),
                         cwd: None,
                         summary,
                         reason,
-                    });
+                    };
+                    // Register first so the payload is the non-lossy source of
+                    // truth even if the broadcast below lags or has no receiver
+                    // yet; then publish for instant TUI delivery.
+                    let rx = self.bus.register_approval(payload.clone()).await;
+                    self.bus
+                        .publish(BusMessage::ApprovalRequest { payload });
                     match tokio::select! {
                         biased;
                         _ = turn_token.cancelled() => Err(()),
