@@ -1,14 +1,11 @@
 //! OpenAI-compatible Chat Completions provider. Works for OpenAI, DeepSeek,
 //! OpenRouter, and any custom OpenAI-style endpoint.
 
-use crate::provider::sse::sse_frame_end;
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 
 pub struct OpenAICompatProvider {
     client: reqwest::Client,
@@ -309,163 +306,21 @@ fn extract_text_content(value: Option<&Value>) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Accumulate tool-call fragments by index while streaming.
-#[derive(Default)]
-struct ToolAccum {
-    id: String,
-    name: String,
-    args: String,
-}
-
 async fn run_stream(
     resp: reqwest::Response,
     tx: tokio::sync::mpsc::Sender<Result<LLMStreamChunk>>,
 ) -> Result<()> {
-    let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
-    let mut tool_acc: BTreeMap<u64, ToolAccum> = BTreeMap::new();
-    // `build_body` sets `stream_options.include_usage`, so the terminal chunk
-    // carries a top-level `usage` object (prompt_tokens / completion_tokens).
-    // Capture it here so streamed turns report real token usage like Anthropic.
-    let mut usage: Option<Usage> = None;
-
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some((idx, delimiter_len)) = sse_frame_end(&buf) {
-            let frame: String = buf.drain(..idx + delimiter_len).collect();
-            for line in frame.lines() {
-                let Some(payload) = line.strip_prefix("data:").map(str::trim_start) else {
-                    continue;
-                };
-                let payload = payload.trim();
-                if payload == "[DONE]" {
-                    continue;
-                }
-                let Ok(ev) = serde_json::from_str::<Value>(payload) else {
-                    continue;
-                };
-                if let Some(err) = ev.get("error") {
-                    let msg = err
-                        .get("message")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("stream error")
-                        .to_string();
-                    let _ = tx.send(Err(anyhow!(msg))).await;
-                    // Stop processing: otherwise the trailing `done: true` chunk
-                    // below would mask this error from the consumer.
-                    return Ok(());
-                }
-                if let Some(u) = ev.get("usage") {
-                    usage = Some(Usage {
-                        input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-                        output_tokens: u
-                            .get("completion_tokens")
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0),
-                    });
-                }
-                if let Some(stop_reason) = ev
-                    .pointer("/choices/0/finish_reason")
-                    .and_then(|value| value.as_str())
-                {
-                    log::debug!("openai-compatible stream finish_reason={stop_reason}");
-                }
-                let delta = match ev.pointer("/choices/0/delta") {
-                    Some(d) => d.clone(),
-                    None => continue,
-                };
-                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                    if !content.is_empty() {
-                        let _ = tx
-                            .send(Ok(LLMStreamChunk {
-                                delta: Some(content.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await;
-                    }
-                }
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-                    if !reasoning.is_empty() {
-                        let _ = tx
-                            .send(Ok(LLMStreamChunk {
-                                delta: None,
-                                thinking_delta: Some(reasoning.to_string()),
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await;
-                    }
-                }
-                if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-                    for c in calls {
-                        let index = c.get("index").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let entry = tool_acc.entry(index).or_default();
-                        if let Some(id) = c.get("id").and_then(|x| x.as_str()) {
-                            entry.id = id.to_string();
-                        }
-                        if let Some(name) = c.pointer("/function/name").and_then(|x| x.as_str()) {
-                            entry.name = name.to_string();
-                        }
-                        if let Some(args) =
-                            c.pointer("/function/arguments").and_then(|x| x.as_str())
-                        {
-                            entry.args.push_str(args);
-                        }
-                    }
-                }
-                if let Some(refusal) = delta.get("refusal").and_then(|c| c.as_str()) {
-                    if !refusal.is_empty() {
-                        let _ = tx
-                            .send(Ok(LLMStreamChunk {
-                                delta: Some(refusal.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await;
-                    }
-                }
-            }
-        }
-    }
-
-    let tool_calls: Vec<ToolCall> = tool_acc
-        .into_values()
-        .map(|a| ToolCall {
-            id: a.id,
-            name: a.name,
-            arguments: if a.args.trim().is_empty() {
-                Value::Object(Default::default())
-            } else {
-                serde_json::from_str(&a.args).unwrap_or_else(|_| Value::Object(Default::default()))
-            },
-        })
-        .collect();
-
-    let _ = tx
-        .send(Ok(LLMStreamChunk {
-            delta: None,
-            thinking_delta: None,
-            thinking_signature: None,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            done: true,
-            usage,
-        }))
-        .await;
-    Ok(())
+    // The Chat Completions event parser lives in the `openai_chat` protocol
+    // module; this provider only supplies the transport (HTTP body → byte
+    // stream) and the protocol instance. Frame splitting is shared by
+    // `drive_stream` (codex-alignment: framing once, per-protocol parsing
+    // isolated).
+    crate::provider::sse_protocol::drive_stream(
+        resp.bytes_stream(),
+        tx,
+        crate::provider::protocols::OpenAIChatProtocol::new(),
+    )
+    .await
 }
 
 #[cfg(test)]

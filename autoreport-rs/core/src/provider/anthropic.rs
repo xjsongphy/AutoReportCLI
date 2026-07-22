@@ -1,12 +1,10 @@
 //! Anthropic Messages API provider (native, streaming SSE).
 
-use crate::provider::sse::sse_frame_end;
 use crate::provider::trait_def::LLMProvider;
 use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, ToolDef, Usage};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::StreamExt;
 use serde_json::{Value, json};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -312,17 +310,6 @@ fn parse_final(v: &Value) -> LLMResponse {
     }
 }
 
-/// Track per-block state while consuming the SSE stream.
-struct ThinkingAcc {
-    text: String,
-    signature: String,
-}
-
-struct BlockState {
-    tool: Option<(String, String, String)>, // (id, name, accumulated input json)
-    thinking: Option<ThinkingAcc>,
-}
-
 async fn run_stream(
     resp: reqwest::Response,
     tx: tokio::sync::mpsc::Sender<Result<LLMStreamChunk>>,
@@ -331,251 +318,23 @@ async fn run_stream(
 }
 
 async fn run_stream_bytes<S, E>(
-    mut stream: S,
+    stream: S,
     tx: tokio::sync::mpsc::Sender<Result<LLMStreamChunk>>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = std::result::Result<Bytes, E>> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let mut buf = String::new();
-    let mut current: Option<BlockState> = None;
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
-    let mut usage: Option<Usage> = None;
-
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-
-        // SSE frames separated by blank lines; process complete ones.
-        while let Some((idx, delimiter_len)) = sse_frame_end(&buf) {
-            let frame: String = buf.drain(..idx + delimiter_len).collect();
-            for line in frame.lines() {
-                let Some(payload) = line.strip_prefix("data:").map(str::trim_start) else {
-                    continue;
-                };
-                if payload.trim() == "[DONE]" {
-                    continue;
-                }
-                let Ok(ev) = serde_json::from_str::<Value>(payload) else {
-                    continue;
-                };
-                let event_type = ev.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                match event_type {
-                    "content_block_start" => {
-                        let block = ev.pointer("/content_block").cloned().unwrap_or(Value::Null);
-                        match block.get("type").and_then(|t| t.as_str()) {
-                            Some("text") => {
-                                current = Some(BlockState {
-                                    tool: None,
-                                    thinking: None,
-                                })
-                            }
-                            Some("tool_use") => {
-                                let id = block
-                                    .get("id")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let name = block
-                                    .get("name")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                current = Some(BlockState {
-                                    tool: Some((id, name, String::new())),
-                                    thinking: None,
-                                });
-                            }
-                            Some("thinking") => {
-                                // Extended-thinking block: text streams via
-                                // `thinking_delta`, signature via `signature_delta`.
-                                // Both must be echoed back to continue the turn.
-                                current = Some(BlockState {
-                                    tool: None,
-                                    thinking: Some(ThinkingAcc {
-                                        text: String::new(),
-                                        signature: String::new(),
-                                    }),
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                    "content_block_delta" => {
-                        let delta = ev.get("delta").cloned().unwrap_or(Value::Null);
-                        match delta.get("type").and_then(|t| t.as_str()) {
-                            Some("text_delta") => {
-                                if let Some(t) = delta.get("text").and_then(|x| x.as_str()) {
-                                    let _ = tx
-                                        .send(Ok(LLMStreamChunk {
-                                            delta: Some(t.to_string()),
-                                            thinking_delta: None,
-                                            thinking_signature: None,
-                                            tool_calls: None,
-                                            done: false,
-                                            usage: None,
-                                        }))
-                                        .await;
-                                }
-                            }
-                            Some("input_json_delta") => {
-                                if let (Some(s), Some((_, _, acc))) = (
-                                    delta.get("partial_json").and_then(|x| x.as_str()),
-                                    current.as_mut().and_then(|c| c.tool.as_mut()),
-                                ) {
-                                    acc.push_str(s);
-                                }
-                            }
-                            Some("thinking_delta") => {
-                                if let Some(t) = delta.get("thinking").and_then(|x| x.as_str()) {
-                                    if let Some(acc) =
-                                        current.as_mut().and_then(|c| c.thinking.as_mut())
-                                    {
-                                        acc.text.push_str(t);
-                                    }
-                                    let _ = tx
-                                        .send(Ok(LLMStreamChunk {
-                                            delta: None,
-                                            thinking_delta: Some(t.to_string()),
-                                            thinking_signature: None,
-                                            tool_calls: None,
-                                            done: false,
-                                            usage: None,
-                                        }))
-                                        .await;
-                                }
-                            }
-                            Some("signature_delta") => {
-                                // Anthropic delivers the thinking block's
-                                // signature as a separate delta; accumulate it
-                                // and emit once at content_block_stop.
-                                if let Some(sig) = delta.get("signature").and_then(|x| x.as_str()) {
-                                    if let Some(acc) =
-                                        current.as_mut().and_then(|c| c.thinking.as_mut())
-                                    {
-                                        acc.signature.push_str(sig);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    "content_block_stop" => {
-                        if let Some(state) = current.take() {
-                            if let Some((id, name, json_str)) = state.tool {
-                                let args = if json_str.trim().is_empty() {
-                                    Value::Object(Default::default())
-                                } else {
-                                    // A parse failure usually means the tool
-                                    // arguments were truncated mid-stream
-                                    // (max_tokens). Fall back to an empty object
-                                    // so the tool surfaces a clean "missing
-                                    // argument" error instead of executing with
-                                    // null arguments.
-                                    serde_json::from_str(&json_str).unwrap_or_else(|e| {
-                                        log::warn!(
-                                            "anthropic tool `{name}` args parse failed ({e}); \
-                                             likely truncated"
-                                        );
-                                        Value::Object(Default::default())
-                                    })
-                                };
-                                tool_calls.push(ToolCall {
-                                    id,
-                                    name,
-                                    arguments: args,
-                                });
-                            }
-                            // Emit the accumulated thinking signature once
-                            // the thinking block closes, so the agent loop can
-                            // store it and echo it back on the next turn.
-                            if let Some(acc) = state.thinking {
-                                if !acc.signature.is_empty() {
-                                    let _ = tx
-                                        .send(Ok(LLMStreamChunk {
-                                            delta: None,
-                                            thinking_delta: None,
-                                            thinking_signature: Some(acc.signature),
-                                            tool_calls: None,
-                                            done: false,
-                                            usage: None,
-                                        }))
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                    "message_start" => {
-                        // Anthropic streams input_tokens here (on /message/usage);
-                        // message_delta only carries output_tokens. Without this,
-                        // every streamed turn reports input_tokens = 0.
-                        if let Some(u) = ev.pointer("/message/usage") {
-                            usage = Some(Usage {
-                                input_tokens: u
-                                    .get("input_tokens")
-                                    .and_then(|x| x.as_u64())
-                                    .unwrap_or(0),
-                                output_tokens: u
-                                    .get("output_tokens")
-                                    .and_then(|x| x.as_u64())
-                                    .unwrap_or(0),
-                            });
-                        }
-                    }
-                    "message_delta" => {
-                        // message_delta carries the final output_tokens (and
-                        // stop_reason). Preserve input_tokens from message_start.
-                        if let Some(stop_reason) = ev
-                            .pointer("/delta/stop_reason")
-                            .and_then(|value| value.as_str())
-                        {
-                            log::debug!("anthropic stream stop_reason={stop_reason}");
-                        }
-                        let in_tok = usage.as_ref().map(|u| u.input_tokens).unwrap_or(0);
-                        if let Some(u) = ev.pointer("/usage") {
-                            usage = Some(Usage {
-                                input_tokens: in_tok,
-                                output_tokens: u
-                                    .get("output_tokens")
-                                    .and_then(|x| x.as_u64())
-                                    .unwrap_or(0),
-                            });
-                        }
-                    }
-                    "message_stop" => {}
-                    "error" => {
-                        let msg = ev
-                            .pointer("/error/message")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("anthropic stream error")
-                            .to_string();
-                        let _ = tx.send(Err(anyhow!(msg))).await;
-                        // Stop processing so the trailing `done: true` chunk
-                        // below does not mask this error from the consumer.
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    let _ = tx
-        .send(Ok(LLMStreamChunk {
-            delta: None,
-            thinking_delta: None,
-            thinking_signature: None,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            done: true,
-            usage,
-        }))
-        .await;
-    Ok(())
+    // The Anthropic Messages event parser lives in the `anthropic` protocol
+    // module; this provider supplies only the transport. Frame splitting is
+    // shared by `drive_stream` (codex-alignment: framing once, per-protocol
+    // parsing isolated).
+    crate::provider::sse_protocol::drive_stream(
+        stream,
+        tx,
+        crate::provider::protocols::AnthropicProtocol::new(),
+    )
+    .await
 }
 
 /// Return the next SSE event boundary, accepting both LF and CRLF framing.
