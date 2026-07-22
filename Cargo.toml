@@ -2,6 +2,7 @@
 members = [
     "autoreport-rs/cli",
     "autoreport-rs/core",
+    "autoreport-rs/execpolicy",
     "autoreport-rs/protocol",
     "autoreport-rs/rollout",
     "autoreport-rs/runtime",
@@ -67,6 +68,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 shlex = "1"
+# Starlark interpreter for the exec-policy rule language (vendored codex
+# execpolicy crate uses the same version + `default-features = false` to keep
+# the build slim — matches codex-rs/Cargo.toml).
+starlark = { version = "0.14.2", default-features = false }
+multimap = "0.10"
+pretty_assertions = "1"
+tempfile = "3"
 toml = "0.8"
 sha2 = "0.10"
 supports-color = "3.0.2"
