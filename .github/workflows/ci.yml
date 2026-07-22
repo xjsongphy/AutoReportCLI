@@ -45,4 +45,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
       - name: Test
-        run: cargo test --workspace
+        # The four sandbox crates are tested natively on their own OS in the
+        # linux-sandbox / macos-sandbox / windows-sandbox workflows; exclude
+        # them here to avoid the overlap. They still compile (core/cli/runtime
+        # depend on autoreport-sandboxing) — we just skip their test binaries.
+        run: >
+          cargo test --workspace
+          --exclude autoreport-sandboxing
+          --exclude autoreport-bwrap
+          --exclude autoreport-linux-sandbox
+          --exclude autoreport-windows-sandbox

@@ -7,6 +7,47 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Per-category runtime metric totals for one turn (count + wall duration).
+/// Mirrors codex's `RuntimeMetricTotals` (also present in the `otel` crate).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMetricTotals {
+    pub count: u64,
+    pub duration_ms: u64,
+}
+
+impl RuntimeMetricTotals {
+    pub fn is_empty(self) -> bool {
+        self.count == 0 && self.duration_ms == 0
+    }
+
+    pub fn record(&mut self, duration_ms: u64) {
+        self.count = self.count.saturating_add(1);
+        self.duration_ms = self.duration_ms.saturating_add(duration_ms);
+    }
+}
+
+/// Per-turn runtime metrics shown on the turn-end separator. Faithful to
+/// codex's `RuntimeMetricsSummary`; the runtime fills `tool_calls` and
+/// `api_calls` (the categories it instruments), the rest stay default/zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMetricsSummary {
+    pub tool_calls: RuntimeMetricTotals,
+    pub api_calls: RuntimeMetricTotals,
+    pub streaming_events: RuntimeMetricTotals,
+    pub websocket_calls: RuntimeMetricTotals,
+    pub websocket_events: RuntimeMetricTotals,
+}
+
+impl RuntimeMetricsSummary {
+    pub fn is_empty(self) -> bool {
+        self.tool_calls.is_empty()
+            && self.api_calls.is_empty()
+            && self.streaming_events.is_empty()
+            && self.websocket_calls.is_empty()
+            && self.websocket_events.is_empty()
+    }
+}
+
 /// The agents that participate in a report run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -206,6 +247,10 @@ pub enum BusMessage {
     StatusChange {
         agent_type: AgentType,
         status: AgentStatus,
+        /// Per-turn runtime metrics, attached when a turn ends (status → Idle)
+        /// so the TUI can show tool/inference counts+duration on the turn
+        /// separator. `None` outside turn-end transitions.
+        runtime_metrics: Option<RuntimeMetricsSummary>,
     },
     /// Sub-agent's explicit report on a Main-dispatched task — the single
     /// reply channel. `SendToAgent` (Main side) subscribes to resolve its

@@ -160,8 +160,13 @@ impl HistoryCell for Cell {
             }
             Cell::ToolGroup { .. } | Cell::System { .. } => self.display_lines(u16::MAX),
             Cell::TurnSeparator {
-                elapsed_seconds, ..
-            } => separators::FinalMessageSeparator::new(*elapsed_seconds).raw_lines(),
+                elapsed_seconds,
+                runtime_metrics,
+                ..
+            } => {
+                separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
+                    .raw_lines()
+            }
             Cell::PlanUpdate {
                 explanation, steps, ..
             } => plans::raw_lines(explanation, steps),
@@ -281,10 +286,13 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
             }
         }
         Cell::TurnSeparator {
-            elapsed_seconds, ..
+            elapsed_seconds,
+            runtime_metrics,
+            ..
         } => {
             out.extend(
-                separators::FinalMessageSeparator::new(*elapsed_seconds).display_lines(width_u16),
+                separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
+                    .display_lines(width_u16),
             );
         }
         Cell::PlanUpdate {
@@ -522,6 +530,7 @@ mod tests {
         let lines = Cell::TurnSeparator {
             agent: AgentType::Main,
             elapsed_seconds: Some(61),
+            runtime_metrics: None,
         }
         .display_lines(80);
         let text = lines

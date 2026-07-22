@@ -132,6 +132,12 @@ pub struct AgentLoop {
     op_rx: Arc<Mutex<mpsc::Receiver<Op>>>,
     /// Cancellation token for the currently-running turn (codex interrupt).
     current_turn: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    /// Per-turn runtime metrics accumulator (tool/inference count+duration).
+    /// Reset at turn start, snapshotted into the turn-end StatusChange so the
+    /// TUI separator can show "Local tools: N calls (Xs) • Inference: …".
+    /// Lightweight local counter (session stays fixed-agent; not codex's
+    /// SessionTelemetry, which is tied to its app-server session model).
+    turn_metrics: Arc<Mutex<autoreport_core::types::RuntimeMetricsSummary>>,
     /// Turn-local steer input, adapted from Codex's `InputQueue::Steer`.
     /// Ordinary TUI follow-ups remain in the TUI queue; this path is for
     /// callers that explicitly target the active turn.
@@ -189,6 +195,9 @@ impl AgentLoop {
             op_tx,
             op_rx: Arc::new(Mutex::new(op_rx)),
             current_turn: Arc::new(Mutex::new(None)),
+            turn_metrics: Arc::new(Mutex::new(
+                autoreport_core::types::RuntimeMetricsSummary::default(),
+            )),
             pending_steers: Arc::new(Mutex::new(VecDeque::new())),
             retract_requested: Arc::new(Mutex::new(false)),
             turn_reported: Arc::new(AtomicBool::new(false)),
@@ -348,6 +357,16 @@ impl AgentLoop {
         self.current_turn.lock().await.take();
     }
 
+    /// Record one tool-call's wall duration into the per-turn accumulator.
+    async fn record_tool(&self, duration_ms: u64) {
+        self.turn_metrics.lock().await.tool_calls.record(duration_ms);
+    }
+
+    /// Record one inference (streaming completion) call's wall duration.
+    async fn record_api(&self, duration_ms: u64) {
+        self.turn_metrics.lock().await.api_calls.record(duration_ms);
+    }
+
     /// Wait until the processor has observed cancellation and cleared the
     /// turn token. Context mutations must not race an in-flight turn: a late
     /// response/tool result would otherwise be appended to the newly-cleared
@@ -401,6 +420,7 @@ impl AgentLoop {
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: AgentStatus::Idle,
+            runtime_metrics: None,
         });
     }
 
@@ -418,6 +438,7 @@ impl AgentLoop {
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: s,
+            runtime_metrics: None,
         });
     }
 
@@ -567,9 +588,18 @@ impl AgentLoop {
 
         self.current_turn.lock().await.take();
         self.status.set(AgentStatus::Idle);
+        // Snapshot per-turn runtime metrics (tool/inference count+duration)
+        // and attach to the turn-end transition; reset for the next turn.
+        let runtime_metrics = {
+            let mut m = self.turn_metrics.lock().await;
+            let snapshot = *m;
+            *m = autoreport_core::types::RuntimeMetricsSummary::default();
+            (!snapshot.is_empty()).then_some(snapshot)
+        };
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: AgentStatus::Idle,
+            runtime_metrics,
         });
         Ok(())
     }
@@ -629,8 +659,11 @@ impl AgentLoop {
 
             let messages = self.build_request(skill_injection).await;
             let defs = self.tools.definitions();
+            let api_start = std::time::Instant::now();
+            let stream_result = self.stream_completion(&messages, &defs, turn_token).await;
+            self.record_api(api_start.elapsed().as_millis() as u64).await;
             let (content, reasoning, reasoning_sig, tool_calls, _usage, intr) =
-                match self.stream_completion(&messages, &defs, turn_token).await {
+                match stream_result {
                     Ok(v) => v,
                     Err(e) => {
                         // Surface the failure instead of silently treating it
@@ -726,7 +759,9 @@ impl AgentLoop {
             // advertise parallel safety and avoids races between calls such as
             // apply_patch followed by exec/read.
             for call in &tool_calls {
+                let tool_start = std::time::Instant::now();
                 self.execute_tool_call(call, &turn_token).await;
+                self.record_tool(tool_start.elapsed().as_millis() as u64).await;
             }
             self.set_status(AgentStatus::Thinking);
 
@@ -1156,6 +1191,7 @@ impl AgentLoop {
         self.bus.publish(BusMessage::StatusChange {
             agent_type: self.agent,
             status: AgentStatus::Thinking,
+            runtime_metrics: None,
         });
         let snapshot: Vec<ResponseItem> = self.history.lock().await.clone();
         if snapshot.len() < 4 {

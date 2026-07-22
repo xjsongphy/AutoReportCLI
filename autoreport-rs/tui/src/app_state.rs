@@ -50,10 +50,12 @@ pub(crate) enum Cell {
         title: ratatui::text::Line<'static>,
         details: Vec<ratatui::text::Line<'static>>,
     },
-    /// Codex's final-message separator with the completed turn duration.
+    /// Codex's final-message separator with the completed turn duration and
+    /// per-turn runtime metrics (tool/inference counts+duration).
     TurnSeparator {
         agent: AgentType,
         elapsed_seconds: Option<u64>,
+        runtime_metrics: Option<autoreport_core::types::RuntimeMetricsSummary>,
     },
     /// Source-backed Codex-style checkbox plan snapshot.
     PlanUpdate {

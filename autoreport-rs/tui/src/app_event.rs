@@ -157,6 +157,9 @@ impl Tui {
                         self.history.push(Cell::TurnSeparator {
                             agent: agent_type,
                             elapsed_seconds,
+                            // Filled retroactively when the Idle StatusChange
+                            // arrives with per-turn runtime_metrics.
+                            runtime_metrics: None,
                         });
                     }
                     self.set_status_from_bus(agent_type, autoreport_core::types::AgentStatus::Idle);
@@ -300,7 +303,11 @@ impl Tui {
                     });
                 }
             }
-            BusMessage::StatusChange { agent_type, status } => {
+            BusMessage::StatusChange {
+                agent_type,
+                status,
+                runtime_metrics,
+            } => {
                 if !matches!(
                     status,
                     autoreport_core::types::AgentStatus::Thinking
@@ -311,6 +318,26 @@ impl Tui {
                     self.suppress_until_idle.remove(&agent_type);
                 }
                 self.set_status_from_bus(agent_type, status);
+                // The TurnSeparator is emitted on the final AgentResponse; the
+                // per-turn metrics arrive on this Idle transition, so attach
+                // them to that agent's most recent separator retroactively.
+                if matches!(status, autoreport_core::types::AgentStatus::Idle)
+                    && let Some(metrics) = runtime_metrics
+                {
+                    for cell in self.history.iter_mut().rev() {
+                        if let Cell::TurnSeparator {
+                            agent,
+                            runtime_metrics: slot,
+                            ..
+                        } = cell
+                            && *agent == agent_type
+                            && slot.is_none()
+                        {
+                            *slot = Some(metrics);
+                            break;
+                        }
+                    }
+                }
             }
             BusMessage::TaskUpdate { .. } => {
                 // Codex's interaction history is emitted from the actual
