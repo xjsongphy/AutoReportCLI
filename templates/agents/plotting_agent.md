@@ -90,12 +90,8 @@ Any `[✗]` → fix the script → re-run → re-check.
 - Labels: Axes with units in parentheses
 - Color: viridis/plasma/cividis (colorblind-friendly)
 - Math: Use LaTeX rendering for all formulas and symbols
-- **Negative signs**: Always include `plt.rcParams['axes.unicode_minus'] = False` in every plotting script.
 
-**Issue reporting**: Use `respond` for:
-- `missing_data`: Analysis results missing (state what is missing)
-- Use `respond` for:
-- `quality`: Plot specifications unclear (state what is unclear)
+**Issue reporting**: Use `respond` for `missing_data` (analysis results missing) or `quality` (plot specifications unclear); state what is missing or unclear.
 
 ## Quality
 
@@ -105,10 +101,3 @@ Any `[✗]` → fix the script → re-run → re-check.
 - Resolution 300+ DPI
 - Manifest updated with figure descriptions
 - All self-checks passed before reporting completion
-
-**Output conciseness**:
-- Don't echo input data in chat responses
-- Image files contain full visualizations
-- Chat summary: brief description of what was plotted, plus the self-check results (using the checklist format)
-- Do not use Markdown tables in chat unless the user explicitly asks
-- Prefer short bullets over dense explanation when listing outputs or observations

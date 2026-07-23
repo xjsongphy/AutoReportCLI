@@ -45,10 +45,7 @@ Workflow is conditional on the requested outcome, not automatic for every messag
 - Update manifest with file descriptions
 - `analysis.md` — Methods, formulas, assumptions
 
-**Issue reporting**: Use `respond` for:
-- `missing_data`: Theory formulas missing, data files empty/unreadable (state what is missing)
-- Use `respond` for:
-- `quality`: Analysis method unclear, theory insufficient for current data (state what quality problem exists)
+**Issue reporting**: Use `respond` for `missing_data` (theory formulas missing or data empty/unreadable) or `quality` (the analysis method is unclear or theory is insufficient); state what is missing or wrong.
 
 ## Self-check protocol
 
@@ -81,11 +78,3 @@ Any `[✗]` → fix → re-check.
 - Errors and uncertainties calculated
 - Each result compared with theoretical prediction
 - Manifest updated with file descriptions and relationships
-
-**Output conciseness**:
-- Don't echo input data in chat responses
-- Processed data files contain full details
-- Chat summary: key results and conclusions only (1-2 paragraphs max)
-- Reference input data by description: "Using the power curve data from ..."
-- Do not use Markdown tables in chat unless the user explicitly asks
-- If multiple results must be listed, use short bullets, not a table
