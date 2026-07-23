@@ -3,6 +3,7 @@ members = [
     "autoreport-rs/cli",
     "autoreport-rs/core",
     "autoreport-rs/async-utils",
+    "autoreport-rs/extension-items",
     "autoreport-rs/execpolicy",
     "autoreport-rs/protocol",
     "autoreport-rs/rollout",
@@ -34,6 +35,7 @@ rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
+autoreport-utils-absolute-path = { path = "autoreport-rs/utils/absolute-path" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-trait = "0.1"
@@ -81,7 +83,10 @@ toml = "0.8"
 sha2 = "0.10"
 supports-color = "3.0.2"
 seccompiler = "0.5.0"
+proc-macro2 = "1"
+quote = "1"
 shellexpand = "3"
+syn = { version = "2", features = ["full", "extra-traits"] }
 strum = "0.27"
 strum_macros = "0.28"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
