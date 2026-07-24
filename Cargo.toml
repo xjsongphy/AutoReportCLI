@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "autoreport-rs/app-server-protocol",
+    "autoreport-rs/app-server-transport",
     "autoreport-rs/codex-protocol",
     "autoreport-rs/cli",
     "autoreport-rs/core",
@@ -55,12 +56,15 @@ autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
+autoreport-app-server-transport = { path = "autoreport-rs/app-server-transport" }
 autoreport-uds = { path = "autoreport-rs/uds" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-io = "2.6.0"
 async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["ws", "http1", "tokio"] }
 base64 = "0.22"
+constant_time_eq = "0.3"
 bytes = "1"
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -115,6 +119,8 @@ multimap = "0.10"
 pretty_assertions = "1"
 tempfile = "3"
 toml = "0.8"
+jsonwebtoken = "9.3"
+owo-colors = { version = "4", features = ["supports-colors"] }
 sha2 = "0.10"
 supports-color = "3.0.2"
 seccompiler = "0.5.0"
@@ -128,8 +134,10 @@ serde_with = { version = "3", features = ["macros", "base64"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 textwrap = "0.16"
 thiserror = "1"
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 tokio-util = "0.7"
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"

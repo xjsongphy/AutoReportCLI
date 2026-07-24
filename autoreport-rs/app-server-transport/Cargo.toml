@@ -1,0 +1,31 @@
+[package]
+name = "autoreport-app-server-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_app_server_transport"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-app-server-protocol = { workspace = true }
+autoreport-uds = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-home-dir = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+constant_time_eq = { workspace = true }
+futures = { workspace = true }
+jsonwebtoken = { workspace = true }
+owo-colors = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
