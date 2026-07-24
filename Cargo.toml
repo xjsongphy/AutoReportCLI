@@ -58,6 +58,7 @@ autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 autoreport-uds = { path = "autoreport-rs/uds" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
+async-io = "2.6.0"
 async-trait = "0.1"
 base64 = "0.22"
 bytes = "1"
@@ -136,6 +137,7 @@ tracing = "0.1"
 ts-rs = { version = "11", features = ["uuid-impl", "serde-json-impl", "no-serde-warnings"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 url = "2"
+uds_windows = "1.1.0"
 urlencoding = "2.1"
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
 unicode-width = "0.2"
