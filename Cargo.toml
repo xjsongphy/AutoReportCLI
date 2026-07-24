@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "autoreport-rs/app-server-protocol",
     "autoreport-rs/codex-protocol",
     "autoreport-rs/cli",
     "autoreport-rs/core",
@@ -52,6 +53,7 @@ autoreport-utils-path-uri = { path = "autoreport-rs/utils/path-uri" }
 autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
+autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-trait = "0.1"
@@ -69,6 +71,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 lru = "0.12"
 mime_guess = "2.0"
 quick-xml = { version = "0.41", features = ["serialize"] }
+inventory = "0.3"
+rmcp = { version = "1.8", default-features = false }
 sha1 = "0.10"
 sys-locale = "0.3"
 wildmatch = "2"
