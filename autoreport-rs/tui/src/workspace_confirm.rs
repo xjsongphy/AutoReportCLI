@@ -5,12 +5,12 @@
 //! show the directory plainly and require an explicit choice before
 //! continuing.
 
+use crate::custom_terminal::{Frame, Terminal};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
-use crate::custom_terminal::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 

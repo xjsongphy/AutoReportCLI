@@ -58,10 +58,7 @@ impl SseProtocol for OpenAIChatProtocol {
         }
         if let Some(u) = ev.get("usage") {
             self.usage = Some(Usage {
-                input_tokens: u
-                    .get("prompt_tokens")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0),
+                input_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
                 output_tokens: u
                     .get("completion_tokens")
                     .and_then(|x| x.as_u64())

@@ -60,11 +60,13 @@ impl HistoryCell for FinalMessageSeparator {
             label
         };
         let used_width = UnicodeWidthStr::width(label.as_str());
-        vec![Line::from(format!(
-            "{label}{}",
-            "─".repeat(usize::from(width).saturating_sub(used_width))
-        ))
-        .dim()]
+        vec![
+            Line::from(format!(
+                "{label}{}",
+                "─".repeat(usize::from(width).saturating_sub(used_width))
+            ))
+            .dim(),
+        ]
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -133,11 +135,7 @@ fn format_duration_ms(duration_ms: u64) -> String {
 }
 
 fn pluralize(count: u64, singular: &'static str, plural: &'static str) -> &'static str {
-    if count == 1 {
-        singular
-    } else {
-        plural
-    }
+    if count == 1 { singular } else { plural }
 }
 
 #[cfg(test)]

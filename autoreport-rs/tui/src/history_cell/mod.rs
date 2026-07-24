@@ -24,9 +24,9 @@ mod plans;
 mod request_user_input;
 mod separators;
 mod session;
-pub(crate) use session::SessionHeaderHistoryCell;
-pub(crate) use messages::split_reasoning_summary_parts;
 pub(crate) use crate::terminal_hyperlinks::HyperlinkLine;
+pub(crate) use messages::split_reasoning_summary_parts;
+pub(crate) use session::SessionHeaderHistoryCell;
 
 /// Strip styling from lines, keeping only their text content. Ported from
 /// Codex's `history_cell::plain_lines`.
@@ -70,7 +70,10 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync {
     /// Hyperlink-aware lines for terminals that support OSC 8. Cells without
     /// web URLs fall back to plain lines (no link annotations). Ported from
     /// Codex's `HistoryCell::display_hyperlink_lines`.
-    fn display_hyperlink_lines(&self, width: u16) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+    fn display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width))
     }
 
@@ -137,7 +140,9 @@ impl HistoryCell for Cell {
                 if *transcript_only {
                     Vec::new()
                 } else {
-                    text.split('\n').map(|line| Line::from(line.to_string())).collect()
+                    text.split('\n')
+                        .map(|line| Line::from(line.to_string()))
+                        .collect()
                 }
             }
             Cell::Collab { title, details, .. } => {
@@ -163,10 +168,8 @@ impl HistoryCell for Cell {
                 elapsed_seconds,
                 runtime_metrics,
                 ..
-            } => {
-                separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
-                    .raw_lines()
-            }
+            } => separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
+                .raw_lines(),
             Cell::PlanUpdate {
                 explanation, steps, ..
             } => plans::raw_lines(explanation, steps),

@@ -311,7 +311,6 @@ fn parse_function_call(item: &Value) -> ToolCall {
     }
 }
 
-
 #[async_trait]
 impl LLMProvider for OpenAIResponsesProvider {
     fn id(&self) -> &str {

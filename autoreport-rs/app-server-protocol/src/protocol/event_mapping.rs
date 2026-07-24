@@ -357,8 +357,11 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::AgentMessageContentDelta(event) => {
-            let autoreport_codex_protocol::protocol::AgentMessageContentDeltaEvent { item_id, delta, .. } =
-                event;
+            let autoreport_codex_protocol::protocol::AgentMessageContentDeltaEvent {
+                item_id,
+                delta,
+                ..
+            } = event;
             ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
                 thread_id,
                 turn_id,
@@ -577,7 +580,9 @@ mod tests {
                     reasoning_effort: None,
                     agents_states: [(
                         receiver_id,
-                        CollabAgentState::from(autoreport_codex_protocol::protocol::AgentStatus::NotFound),
+                        CollabAgentState::from(
+                            autoreport_codex_protocol::protocol::AgentStatus::NotFound,
+                        ),
                     )]
                     .into_iter()
                     .collect(),

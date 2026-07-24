@@ -1,5 +1,6 @@
 //! Python and local-tool environment setup, shared by startup and `/env`.
 
+use crate::custom_terminal::{Frame, Terminal};
 use autoreport_core::environment::{
     EnvironmentConfig, PythonCandidate, PythonConfig, config_for_candidate, config_for_custom,
     detect_python_environments, ensure_python_environment, managed_venv_path,
@@ -10,7 +11,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use crate::custom_terminal::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 

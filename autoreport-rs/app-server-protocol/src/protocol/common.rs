@@ -3830,14 +3830,15 @@ mod tests {
                     service_tier: None,
                     effort: None,
                     summary: None,
-                    collaboration_mode: autoreport_codex_protocol::config_types::CollaborationMode {
-                        mode: autoreport_codex_protocol::config_types::ModeKind::Default,
-                        settings: autoreport_codex_protocol::config_types::Settings {
-                            model: "gpt-5.4".to_string(),
-                            reasoning_effort: None,
-                            developer_instructions: None,
+                    collaboration_mode:
+                        autoreport_codex_protocol::config_types::CollaborationMode {
+                            mode: autoreport_codex_protocol::config_types::ModeKind::Default,
+                            settings: autoreport_codex_protocol::config_types::Settings {
+                                model: "gpt-5.4".to_string(),
+                                reasoning_effort: None,
+                                developer_instructions: None,
+                            },
                         },
-                    },
                     multi_agent_mode: Default::default(),
                     personality: None,
                 },

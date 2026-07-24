@@ -497,8 +497,10 @@ impl Renderable for ChatComposer {
             )
             .then_some("  failing reverse-i-search: ")
             .unwrap_or("  reverse-i-search: ");
-            let mut spans =
-                vec![Span::raw(prefix).dim(), Span::raw(self.history_search_query().to_string()).dim()];
+            let mut spans = vec![
+                Span::raw(prefix).dim(),
+                Span::raw(self.history_search_query().to_string()).dim(),
+            ];
             match status {
                 Some(super::history_search::HistorySearchStatus::Searching) => {
                     spans.push(Span::raw("  (searching)").dim());
@@ -856,9 +858,11 @@ mod tests {
         composer.begin_history_search();
         composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert_eq!(composer.text(), "cargo build");
-        composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        composer
+            .handle_history_search_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(composer.text(), "cargo test");
-        composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        composer
+            .handle_history_search_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert_eq!(composer.text(), "cargo build");
     }
 

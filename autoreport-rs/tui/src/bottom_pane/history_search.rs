@@ -92,22 +92,22 @@ impl HistorySearchSession {
 
 /// Case-insensitive substring search in `direction`, starting just before/after
 /// `from` (exclusive of `from`). Mirrors Codex's match predicate.
-fn find_match(
-    history: &[String],
-    query: &str,
-    from: usize,
-    direction: Direction,
-) -> Option<usize> {
+fn find_match(history: &[String], query: &str, from: usize, direction: Direction) -> Option<usize> {
     if query.is_empty() {
         return None;
     }
     let needle = query.to_lowercase();
     match direction {
-        Direction::Older => (0..from)
-            .rev()
-            .find(|&i| history.get(i).is_some_and(|h| h.to_lowercase().contains(&needle))),
-        Direction::Newer => (from..history.len())
-            .find(|&i| history.get(i).is_some_and(|h| h.to_lowercase().contains(&needle))),
+        Direction::Older => (0..from).rev().find(|&i| {
+            history
+                .get(i)
+                .is_some_and(|h| h.to_lowercase().contains(&needle))
+        }),
+        Direction::Newer => (from..history.len()).find(|&i| {
+            history
+                .get(i)
+                .is_some_and(|h| h.to_lowercase().contains(&needle))
+        }),
     }
 }
 
@@ -279,7 +279,13 @@ mod tests {
         let mut text = String::new();
         let mut cursor = 0;
         // 'g' → matches "git status" (index 2, the latest g-entry)
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('g'), KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(text, "git status");
         assert_eq!(session.status(), HistorySearchStatus::Match);
         assert_eq!(session.match_index, Some(2));
@@ -291,12 +297,30 @@ mod tests {
         let mut session = HistorySearchSession::new(String::new(), 0);
         let mut text = String::new();
         let mut cursor = 0;
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('c'), KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
         assert_eq!(text, "cargo build");
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
         assert_eq!(text, "cargo test");
         // No older "c" match → failing status, text retained.
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
         assert_eq!(session.status(), HistorySearchStatus::NoMatch);
         assert_eq!(text, "cargo test");
     }
@@ -307,10 +331,28 @@ mod tests {
         let mut session = HistorySearchSession::new(String::new(), 0);
         let mut text = String::new();
         let mut cursor = 0;
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('c'), KeyModifiers::NONE));
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
         assert_eq!(text, "cargo test");
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
         assert_eq!(text, "cargo build");
         assert_eq!(session.status(), HistorySearchStatus::Match);
     }
@@ -322,10 +364,28 @@ mod tests {
         let mut text = String::new();
         let mut cursor = 0;
         // No query yet → Idle → Enter does not accept.
-        let out = handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Enter, KeyModifiers::NONE));
+        let out = handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert_eq!(out, SearchKeyOutcome::Continue);
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('g'), KeyModifiers::NONE));
-        let out = handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Enter, KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
+        let out = handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert_eq!(out, SearchKeyOutcome::Accept);
     }
 
@@ -335,9 +395,21 @@ mod tests {
         let mut session = HistorySearchSession::new("draft text".to_string(), 10);
         let mut text = String::new();
         let mut cursor = 0;
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('g'), KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('g'), KeyModifiers::NONE),
+        );
         assert_eq!(text, "git status");
-        let out = handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Esc, KeyModifiers::NONE));
+        let out = handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Esc, KeyModifiers::NONE),
+        );
         assert_eq!(out, SearchKeyOutcome::Cancel);
         assert_eq!(text, "draft text");
         assert_eq!(cursor, 10);
@@ -349,11 +421,29 @@ mod tests {
         let mut session = HistorySearchSession::new(String::new(), 0);
         let mut text = String::new();
         let mut cursor = 0;
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('c'), KeyModifiers::NONE));
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Char('a'), KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('a'), KeyModifiers::NONE),
+        );
         // "ca" still matches "cargo build" (latest)
         assert_eq!(text, "cargo build");
-        handle_search_key(&history, &mut session, &mut text, &mut cursor, key(KeyCode::Backspace, KeyModifiers::NONE));
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+        );
         assert_eq!(session.query(), "c");
     }
 }

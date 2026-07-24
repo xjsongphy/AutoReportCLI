@@ -4,12 +4,12 @@
 //! `run_fullscreen` (first-run wizard, standalone loop) and the `/config`
 //! overlay (driven by `tui.rs`).
 
+use crate::custom_terminal::Frame;
+use crate::custom_terminal::Terminal;
 use autoreport_core::config::schema::{ProviderConfig, Settings};
 use autoreport_core::config::{resolve_api_key, save_settings};
 use autoreport_core::sync::PresetProvider;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
-use crate::custom_terminal::Frame;
-use crate::custom_terminal::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -1120,9 +1120,9 @@ impl ConfigScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autoreport_core::config::{needs_api_config, save_settings};
     use crate::custom_terminal::Terminal;
     use crate::test_support::WritableTestBackend;
+    use autoreport_core::config::{needs_api_config, save_settings};
 
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();

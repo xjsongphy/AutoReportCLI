@@ -304,9 +304,7 @@ pub enum BusMessage {
     /// the source of truth, so the TUI can reconcile its display queue after a
     /// broadcast lag (or a request registered before it subscribed) without
     /// dropping or deadlocking a request. See [`crate::bus::Bus::pending_approvals`].
-    ApprovalRequest {
-        payload: ApprovalRequestPayload,
-    },
+    ApprovalRequest { payload: ApprovalRequestPayload },
     /// Codex `request_user_input` prompt. The answer is delivered through the
     /// broker on [`crate::bus::Bus`], while this broadcast is consumed by the
     /// TUI (or a future app-server client).

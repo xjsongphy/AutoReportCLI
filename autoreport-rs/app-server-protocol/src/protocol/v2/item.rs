@@ -11,12 +11,6 @@ use super::shared::v2_enum_from_core;
 use crate::protocol::item_builders::command_actions_for_path_uri;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::item_builders::review_output_text;
-use autoreport_experimental_api_macros::ExperimentalApi;
-use autoreport_extension_items::ExtensionItem;
-pub use autoreport_extension_items::image_generation::ImageGenerationItem;
-pub use autoreport_extension_items::sleep::SleepItem;
-pub use autoreport_extension_items::web_search::WebSearchAction;
-pub use autoreport_extension_items::web_search::WebSearchItem;
 use autoreport_codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use autoreport_codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
 use autoreport_codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
@@ -41,6 +35,12 @@ use autoreport_codex_protocol::protocol::GuardianUserAuthorization as CoreGuardi
 use autoreport_codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use autoreport_codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use autoreport_codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use autoreport_experimental_api_macros::ExperimentalApi;
+use autoreport_extension_items::ExtensionItem;
+pub use autoreport_extension_items::image_generation::ImageGenerationItem;
+pub use autoreport_extension_items::sleep::SleepItem;
+pub use autoreport_extension_items::web_search::WebSearchAction;
+pub use autoreport_extension_items::web_search::WebSearchItem;
 use autoreport_shell_command::parse_command::shlex_join;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::LegacyAppPathString;
@@ -1557,7 +1557,9 @@ pub enum DynamicToolCallOutputContentItem {
 impl From<autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
     for DynamicToolCallOutputContentItem
 {
-    fn from(item: autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
+    fn from(
+        item: autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem,
+    ) -> Self {
         match item {
             autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
                 Self::InputText { text }

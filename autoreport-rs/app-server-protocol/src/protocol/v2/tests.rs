@@ -2677,9 +2677,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         process_id: Some("pid-1".to_string()),
         command: vec!["echo".to_string(), "done".to_string()],
         cwd: PathUri::from_abs_path(&test_path_buf("/tmp").abs()),
-        parsed_cmd: vec![autoreport_codex_protocol::parse_command::ParsedCommand::Unknown {
-            cmd: "echo done".to_string(),
-        }],
+        parsed_cmd: vec![
+            autoreport_codex_protocol::parse_command::ParsedCommand::Unknown {
+                cmd: "echo done".to_string(),
+            },
+        ],
         source: CoreExecCommandSource::Agent,
         interaction_input: None,
         status: CoreCommandExecutionStatus::Completed,

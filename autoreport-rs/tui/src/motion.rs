@@ -128,7 +128,8 @@ mod tests {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
 
         let mut source_files = Vec::new();
-        collect_rust_files(&src_dir, &mut source_files).expect("failed to collect TUI source files");
+        collect_rust_files(&src_dir, &mut source_files)
+            .expect("failed to collect TUI source files");
 
         let mut violations = Vec::new();
         for path in source_files {

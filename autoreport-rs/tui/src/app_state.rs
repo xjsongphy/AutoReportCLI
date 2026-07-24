@@ -1,11 +1,11 @@
 //! State owned by the terminal application.
 
 use crate::config_update::{ConfigScreen, Outcome};
+use crate::custom_terminal::Frame;
 use crate::environment_setup::EnvironmentScreen;
 use crate::model_migration::ModelScreen;
 use autoreport_core::request_user_input::{RequestUserInputAnswer, RequestUserInputQuestion};
 use autoreport_core::types::{AgentType, TaskStatus};
-use crate::custom_terminal::Frame;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::AtomicBool};

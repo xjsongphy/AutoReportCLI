@@ -359,7 +359,11 @@ impl AgentLoop {
 
     /// Record one tool-call's wall duration into the per-turn accumulator.
     async fn record_tool(&self, duration_ms: u64) {
-        self.turn_metrics.lock().await.tool_calls.record(duration_ms);
+        self.turn_metrics
+            .lock()
+            .await
+            .tool_calls
+            .record(duration_ms);
     }
 
     /// Record one inference (streaming completion) call's wall duration.
@@ -661,18 +665,19 @@ impl AgentLoop {
             let defs = self.tools.definitions();
             let api_start = std::time::Instant::now();
             let stream_result = self.stream_completion(&messages, &defs, turn_token).await;
-            self.record_api(api_start.elapsed().as_millis() as u64).await;
-            let (content, reasoning, reasoning_sig, tool_calls, _usage, intr) =
-                match stream_result {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // Surface the failure instead of silently treating it
-                        // as an empty completed turn — the user must learn that
-                        // the model call failed (auth/rate-limit/network).
-                        log::warn!("{} stream_completion: {e}", self.agent);
-                        return Err(e);
-                    }
-                };
+            self.record_api(api_start.elapsed().as_millis() as u64)
+                .await;
+            let (content, reasoning, reasoning_sig, tool_calls, _usage, intr) = match stream_result
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    // Surface the failure instead of silently treating it
+                    // as an empty completed turn — the user must learn that
+                    // the model call failed (auth/rate-limit/network).
+                    log::warn!("{} stream_completion: {e}", self.agent);
+                    return Err(e);
+                }
+            };
 
             log::debug!(
                 "{} provider turn result: content_chars={}, reasoning_chars={}, tool_calls={}, interrupted={}",
@@ -761,7 +766,8 @@ impl AgentLoop {
             for call in &tool_calls {
                 let tool_start = std::time::Instant::now();
                 self.execute_tool_call(call, &turn_token).await;
-                self.record_tool(tool_start.elapsed().as_millis() as u64).await;
+                self.record_tool(tool_start.elapsed().as_millis() as u64)
+                    .await;
             }
             self.set_status(AgentStatus::Thinking);
 
@@ -1064,8 +1070,7 @@ impl AgentLoop {
                     // truth even if the broadcast below lags or has no receiver
                     // yet; then publish for instant TUI delivery.
                     let rx = self.bus.register_approval(payload.clone()).await;
-                    self.bus
-                        .publish(BusMessage::ApprovalRequest { payload });
+                    self.bus.publish(BusMessage::ApprovalRequest { payload });
                     match tokio::select! {
                         biased;
                         _ = turn_token.cancelled() => Err(()),

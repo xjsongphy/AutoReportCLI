@@ -1,7 +1,7 @@
 //! Small transcript pager ported from Codex's `pager_overlay` surface.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::custom_terminal::Frame;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};

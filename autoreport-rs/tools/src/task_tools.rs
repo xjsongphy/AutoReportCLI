@@ -591,7 +591,9 @@ async fn wait_for_report(
                         content,
                     };
                 }
-                BusMessage::StatusChange { agent_type, status, .. } if agent_type == target => {
+                BusMessage::StatusChange {
+                    agent_type, status, ..
+                } if agent_type == target => {
                     match status {
                         AgentStatus::Thinking | AgentStatus::RunningTool => {
                             // Busy: pause the idle clock (push beyond wall cap).

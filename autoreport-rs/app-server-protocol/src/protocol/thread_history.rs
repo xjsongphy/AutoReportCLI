@@ -26,7 +26,6 @@ use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
-use autoreport_extension_items::image_generation::ImageGenerationItem;
 use autoreport_codex_protocol::items::parse_hook_prompt_message;
 use autoreport_codex_protocol::models::MessagePhase;
 use autoreport_codex_protocol::protocol::AgentReasoningEvent;
@@ -61,6 +60,7 @@ use autoreport_codex_protocol::protocol::WebSearchBeginEvent;
 use autoreport_codex_protocol::protocol::WebSearchEndEvent;
 #[cfg(test)]
 use autoreport_codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
+use autoreport_extension_items::image_generation::ImageGenerationItem;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
@@ -1045,7 +1045,10 @@ impl ThreadHistoryBuilder {
         self.upsert_item_in_current_turn(item);
     }
 
-    fn handle_collab_close_end(&mut self, payload: &autoreport_codex_protocol::protocol::CollabCloseEndEvent) {
+    fn handle_collab_close_end(
+        &mut self,
+        payload: &autoreport_codex_protocol::protocol::CollabCloseEndEvent,
+    ) {
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
             _ => CollabAgentToolCallStatus::Completed,
@@ -1584,8 +1587,6 @@ impl From<&PendingTurn> for Turn {
 mod tests {
     use super::*;
     use crate::protocol::v2::CommandExecutionSource;
-    use autoreport_extension_items::ExtensionItem as CoreExtensionItem;
-    use autoreport_extension_items::sleep::SleepItem as CoreSleepItem;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use autoreport_codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
@@ -1625,6 +1626,8 @@ mod tests {
     use autoreport_codex_protocol::protocol::UserMessageEvent;
     use autoreport_codex_protocol::protocol::WebSearchBeginEvent;
     use autoreport_codex_protocol::protocol::WebSearchEndEvent;
+    use autoreport_extension_items::ExtensionItem as CoreExtensionItem;
+    use autoreport_extension_items::sleep::SleepItem as CoreSleepItem;
     use autoreport_utils_absolute_path::test_support::PathBufExt;
     use autoreport_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -3049,7 +3052,9 @@ mod tests {
                 completed_at_ms: Some(1_042),
                 status: GuardianAssessmentStatus::Denied,
                 risk_level: Some(autoreport_codex_protocol::protocol::GuardianRiskLevel::High),
-                user_authorization: Some(autoreport_codex_protocol::protocol::GuardianUserAuthorization::Low),
+                user_authorization: Some(
+                    autoreport_codex_protocol::protocol::GuardianUserAuthorization::Low,
+                ),
                 rationale: Some("Would delete user data.".into()),
                 decision_source: Some(
                     autoreport_codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
@@ -3753,18 +3758,21 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             }),
-            EventMsg::CollabAgentSpawnEnd(autoreport_codex_protocol::protocol::CollabAgentSpawnEndEvent {
-                call_id: "spawn-1".into(),
-                completed_at_ms: 0,
-                sender_thread_id,
-                new_thread_id: Some(spawned_thread_id),
-                new_agent_nickname: Some("Scout".into()),
-                new_agent_role: Some("explorer".into()),
-                prompt: "inspect the repo".into(),
-                model: "gpt-5.4-mini".into(),
-                reasoning_effort: autoreport_codex_protocol::openai_models::ReasoningEffort::Medium,
-                status: AgentStatus::Running,
-            }),
+            EventMsg::CollabAgentSpawnEnd(
+                autoreport_codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                    call_id: "spawn-1".into(),
+                    completed_at_ms: 0,
+                    sender_thread_id,
+                    new_thread_id: Some(spawned_thread_id),
+                    new_agent_nickname: Some("Scout".into()),
+                    new_agent_role: Some("explorer".into()),
+                    prompt: "inspect the repo".into(),
+                    model: "gpt-5.4-mini".into(),
+                    reasoning_effort:
+                        autoreport_codex_protocol::openai_models::ReasoningEffort::Medium,
+                    status: AgentStatus::Running,
+                },
+            ),
         ];
 
         let items = events
@@ -3784,7 +3792,9 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
-                reasoning_effort: Some(autoreport_codex_protocol::openai_models::ReasoningEffort::Medium),
+                reasoning_effort: Some(
+                    autoreport_codex_protocol::openai_models::ReasoningEffort::Medium
+                ),
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -4079,13 +4089,14 @@ mod tests {
 
     #[test]
     fn canonical_hook_prompt_completion_updates_turn_history() {
-        let hook_prompt = CoreTurnItem::HookPrompt(autoreport_codex_protocol::items::HookPromptItem {
-            id: "hook-prompt-1".into(),
-            fragments: vec![CoreHookPromptFragment::from_single_hook(
-                "Retry with tests.",
-                "hook-run-1",
-            )],
-        });
+        let hook_prompt =
+            CoreTurnItem::HookPrompt(autoreport_codex_protocol::items::HookPromptItem {
+                id: "hook-prompt-1".into(),
+                fragments: vec![CoreHookPromptFragment::from_single_hook(
+                    "Retry with tests.",
+                    "hook-run-1",
+                )],
+            });
         let expected_item = ThreadItem::from(hook_prompt.clone());
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
@@ -4119,7 +4130,9 @@ mod tests {
                 collaboration_mode_kind: Default::default(),
             })),
             RolloutItem::ResponseItem(autoreport_codex_protocol::models::ResponseItem::Message {
-                id: Some(autoreport_codex_protocol::ResponseItemId::with_suffix("msg", "1")),
+                id: Some(autoreport_codex_protocol::ResponseItemId::with_suffix(
+                    "msg", "1",
+                )),
                 role: "user".into(),
                 content: vec![autoreport_codex_protocol::models::ContentItem::InputText {
                     text: "plain text".into(),

@@ -4,9 +4,9 @@ use crate::app::Tui;
 use crate::bottom_pane::status_line_setup::StatusLineItem;
 use crate::bottom_pane::status_line_style::status_line_from_segments;
 use crate::bottom_pane::{ApprovalOverlay, RequestUserInputOverlay};
+use crate::custom_terminal::Frame;
 use crate::style::accent_style;
 use autoreport_core::types::{AgentStatus, AgentType};
-use crate::custom_terminal::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -214,8 +214,12 @@ impl Tui {
                         | AgentStatus::DebugMode
                 );
                 let mut spans = vec![Span::raw(format!("{}. ", index + 1))];
-                spans.extend(crate::multi_agents::agent_picker_status_dot_spans(is_active));
-                spans.push(Span::raw(crate::multi_agents::format_agent_picker_item_name(*agent)));
+                spans.extend(crate::multi_agents::agent_picker_status_dot_spans(
+                    is_active,
+                ));
+                spans.push(Span::raw(
+                    crate::multi_agents::format_agent_picker_item_name(*agent),
+                ));
                 spans.push(Span::raw(format!("  [{}]", status_label(status))));
                 Line::from(spans)
             })

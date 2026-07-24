@@ -5,12 +5,12 @@
 //! runs the codex-style TUI.
 
 use anyhow::Result;
+use autoreport_tui::custom_terminal::Terminal;
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use autoreport_tui::custom_terminal::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::PathBuf;

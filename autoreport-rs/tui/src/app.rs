@@ -5,13 +5,14 @@
 //! bus to render their streamed output.
 
 use crate::app_state::{
-    AgentPickerState, Cell, Mention, Overlay, PendingApproval, PendingSubmission,
-    PendingUserInput, SysKind, ToolEntry,
+    AgentPickerState, Cell, Mention, Overlay, PendingApproval, PendingSubmission, PendingUserInput,
+    SysKind, ToolEntry,
 };
 use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::bottom_pane::{ChatComposer, PendingInputPreview};
 use crate::clipboard_copy::ClipboardLease;
 use crate::config_update::ConfigScreen;
+use crate::custom_terminal::Terminal;
 use crate::environment_setup::EnvironmentScreen;
 use crate::file_search::FileIndex;
 use crate::frame_requester::FrameRequester;
@@ -29,7 +30,6 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crate::custom_terminal::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;

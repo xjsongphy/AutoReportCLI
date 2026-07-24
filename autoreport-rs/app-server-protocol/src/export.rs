@@ -2379,8 +2379,10 @@ mod tests {
     }
 
     fn schema_root() -> Result<PathBuf> {
-        let typescript_index = codex_utils_cargo_bin::find_resource!("schema/typescript/index.ts")
-            .context("resolve TypeScript schema index.ts")?;
+        // Codex uses `codex_utils_cargo_bin::find_resource!`; we resolve the
+        // crate source dir from the compile-time manifest dir instead.
+        let typescript_index =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/typescript/index.ts");
         let schema_root = typescript_index
             .parent()
             .and_then(|parent| parent.parent())

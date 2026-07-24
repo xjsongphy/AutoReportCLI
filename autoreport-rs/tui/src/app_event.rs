@@ -4,8 +4,8 @@ use crate::app::Tui;
 use crate::app_state::{Cell, Overlay, PendingApproval, PendingUserInput, SysKind, ToolEntry};
 use crate::config_update::Outcome;
 use autoreport_core::config::save_settings;
-use autoreport_core::types::{BusMessage, MessageSource};
 use autoreport_core::types::ApprovalRequestPayload;
+use autoreport_core::types::{BusMessage, MessageSource};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -701,9 +701,8 @@ impl Tui {
             }
             let roster = autoreport_core::types::AgentType::ALL;
             let len = roster.len();
-            let shift = |idx: usize, delta: i32| {
-                (idx as i32 + delta).rem_euclid(len as i32) as usize
-            };
+            let shift =
+                |idx: usize, delta: i32| (idx as i32 + delta).rem_euclid(len as i32) as usize;
             let action = match key.code {
                 KeyCode::Esc => Some(PickerAction::Close),
                 KeyCode::Enter => Some(PickerAction::Accept(
@@ -724,7 +723,8 @@ impl Tui {
                         && c.is_ascii_digit()
                         && c.to_digit(10).filter(|d| *d as usize <= len).is_some() =>
                 {
-                    c.to_digit(10).map(|d| PickerAction::Accept((d - 1) as usize))
+                    c.to_digit(10)
+                        .map(|d| PickerAction::Accept((d - 1) as usize))
                 }
                 _ => Some(PickerAction::Swallow),
             };

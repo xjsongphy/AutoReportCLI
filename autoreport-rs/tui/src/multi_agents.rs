@@ -21,7 +21,11 @@ pub(crate) type CollabEvent = (Line<'static>, Vec<Line<'static>>);
 /// working" (Thinking / RunningTool / Queued / DebugMode) — green when busy,
 /// dim when idle.
 pub(crate) fn agent_picker_status_dot_spans(is_active: bool) -> Vec<Span<'static>> {
-    let dot = if is_active { "•".green() } else { "•".dim() };
+    let dot = if is_active {
+        "•".green()
+    } else {
+        "•".dim()
+    };
     vec![dot, " ".into()]
 }
 
@@ -166,12 +170,18 @@ mod tests {
 
     #[test]
     fn picker_name_keeps_codex_main_default_marker() {
-        assert_eq!(format_agent_picker_item_name(AgentType::Main), "Main [default]");
+        assert_eq!(
+            format_agent_picker_item_name(AgentType::Main),
+            "Main [default]"
+        );
         assert_eq!(
             format_agent_picker_item_name(AgentType::DataAnalysis),
             "Data Analysis"
         );
-        assert_eq!(format_agent_picker_item_name(AgentType::Plotting), "Plotting");
+        assert_eq!(
+            format_agent_picker_item_name(AgentType::Plotting),
+            "Plotting"
+        );
     }
 
     #[test]
@@ -183,8 +193,12 @@ mod tests {
 
     #[test]
     fn blocked_report_renders_codex_style_title_and_tree() {
-        let (title, details) =
-            report_blocked(AgentType::Theory, "missing_data", "need dataset", "/Data/Raw");
+        let (title, details) = report_blocked(
+            AgentType::Theory,
+            "missing_data",
+            "need dataset",
+            "/Data/Raw",
+        );
         assert_eq!(line_text(&title), "• Blocked by Theory (missing_data)");
         assert_eq!(
             details.iter().map(|d| line_text(d)).collect::<Vec<_>>(),

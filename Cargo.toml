@@ -76,6 +76,7 @@ quick-xml = { version = "0.41", features = ["serialize"] }
 inventory = "0.3"
 rmcp = { version = "1.8", default-features = false }
 sha1 = "0.10"
+similar = "2.7.0"
 sys-locale = "0.3"
 wildmatch = "2"
 derive_more = { version = "2", features = ["is_variant"] }
@@ -87,6 +88,7 @@ futures = "0.3"
 futures-util = "0.3"
 globset = "0.4"
 hex = "0.4"
+http = "1.3.1"
 ignore = "0.4"
 libc = "0.2"
 once_cell = "1"

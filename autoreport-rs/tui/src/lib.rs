@@ -11,10 +11,8 @@ pub(crate) mod bottom_pane;
 pub(crate) mod chatwidget;
 pub(crate) mod clipboard_copy;
 pub mod color;
-pub mod custom_terminal;
-#[cfg(test)]
-pub(crate) mod test_support;
 pub mod config_update;
+pub mod custom_terminal;
 pub mod diff_render;
 pub mod environment_setup;
 pub mod file_search;
@@ -36,8 +34,10 @@ pub(crate) mod selection_list;
 pub(crate) mod shimmer;
 pub mod slash_command;
 pub(crate) mod style;
-pub mod terminal_palette;
 pub(crate) mod terminal_hyperlinks;
+pub mod terminal_palette;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod utils_string;
 pub mod workspace_confirm;
 pub mod wrapping;

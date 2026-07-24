@@ -10,12 +10,12 @@
 //! codex's core wrapper adds on top of the starlark policy.
 
 use crate::policy::{AskForApproval, GranularApprovalConfig};
-use autoreport_execpolicy::blocking_append_allow_prefix_rule;
 use autoreport_execpolicy::Decision;
 use autoreport_execpolicy::MatchOptions;
 use autoreport_execpolicy::Policy;
 use autoreport_execpolicy::PolicyParser;
 use autoreport_execpolicy::RuleMatch;
+use autoreport_execpolicy::blocking_append_allow_prefix_rule;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -120,7 +120,8 @@ impl ExecPolicyManager {
         // dangerous/safe-command classification layered with the approval
         // policy + escalation flag (codex core adds the same fallback in
         // `create_exec_approval_requirement_for_command`).
-        let fallback = |command: &[String]| unmatched_decision(command, approval_policy, requests_escalation);
+        let fallback =
+            |command: &[String]| unmatched_decision(command, approval_policy, requests_escalation);
         let evaluation = state.policy.check_multiple_with_options(
             commands.iter(),
             &fallback,
@@ -304,7 +305,10 @@ fn load_policy(workspace: &Path) -> Result<Policy, String> {
         .map_err(|err| format!("failed to read execpolicy rules {}: {err}", dir.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "rules"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "rules")
+        })
         .collect::<Vec<_>>();
     paths.sort();
     let mut combined = Policy::empty();
@@ -549,8 +553,11 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
         let workspace = tempfile::tempdir().expect("workspace");
         let rules_dir = workspace.path().join(RULES_DIR);
         fs::create_dir_all(&rules_dir).expect("rules dir");
-        fs::write(rules_dir.join(DEFAULT_RULES_FILE), "this is not starlark ((((")
-            .expect("write rule");
+        fs::write(
+            rules_dir.join(DEFAULT_RULES_FILE),
+            "this is not starlark ((((",
+        )
+        .expect("write rule");
         // A parse failure must not panic; load returns an empty policy.
         let manager = ExecPolicyManager::load(workspace.path()).expect("load fallback");
         assert!(matches!(

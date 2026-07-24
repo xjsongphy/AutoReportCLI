@@ -79,7 +79,10 @@ impl Bus {
         // blocking forever. Mirrors codex `session::insert_pending_approval` +
         // the caller's collision `warn!`.
         if let Some(pos) = pending.iter().position(|e| e.call_id == payload.call_id) {
-            log::warn!("overwriting existing pending approval for call_id: {}", payload.call_id);
+            log::warn!(
+                "overwriting existing pending approval for call_id: {}",
+                payload.call_id
+            );
             pending[pos] = PendingApproval {
                 call_id: payload.call_id.clone(),
                 tx: Some(tx),

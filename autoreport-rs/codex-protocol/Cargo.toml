@@ -40,3 +40,9 @@ quick-xml = { workspace = true }
 icu_decimal = { workspace = true }
 icu_locale_core = { workspace = true }
 icu_provider = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+http = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

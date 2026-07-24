@@ -25,10 +25,7 @@ struct FunctionAccum {
 /// Keep function calls in the order in which Responses emitted them. A sorted
 /// map would make parallel calls appear in lexicographic id order, which is not
 /// the provider's output order and can change tool side effects.
-fn call_entry<'a>(
-    calls: &'a mut Vec<(String, FunctionAccum)>,
-    key: &str,
-) -> &'a mut FunctionAccum {
+fn call_entry<'a>(calls: &'a mut Vec<(String, FunctionAccum)>, key: &str) -> &'a mut FunctionAccum {
     let index = calls
         .iter()
         .position(|(existing, _)| existing == key)
@@ -360,9 +357,7 @@ impl SseProtocol for OpenAIResponsesProtocol {
                                 .into_iter()
                                 .flatten()
                                 .filter_map(|part| match part.get("type").and_then(Value::as_str) {
-                                    Some("output_text") => {
-                                        part.get("text").and_then(Value::as_str)
-                                    }
+                                    Some("output_text") => part.get("text").and_then(Value::as_str),
                                     Some("refusal") => part.get("refusal").and_then(Value::as_str),
                                     _ => None,
                                 })

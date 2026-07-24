@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::motion::{MotionMode, ReducedMotionIndicator, activity_indicator};
-use crate::wrapping::{adaptive_wrap_line, adaptive_wrap_lines, RtOptions};
+use crate::wrapping::{RtOptions, adaptive_wrap_line, adaptive_wrap_lines};
 use ratatui::text::Text;
 
 /// Plain, un-annotated lines. Ported verbatim from Codex's `base.rs`.

@@ -1,5 +1,4 @@
 use crate::protocol::common::AuthMode;
-use autoreport_experimental_api_macros::ExperimentalApi;
 use autoreport_codex_protocol::account::PlanType;
 use autoreport_codex_protocol::account::ProviderAccount;
 use autoreport_codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
@@ -7,6 +6,7 @@ use autoreport_codex_protocol::protocol::RateLimitReachedType as CoreRateLimitRe
 use autoreport_codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use autoreport_codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use autoreport_codex_protocol::protocol::SpendControlLimitSnapshot as CoreSpendControlLimitSnapshot;
+use autoreport_experimental_api_macros::ExperimentalApi;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;

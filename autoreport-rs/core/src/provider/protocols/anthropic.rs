@@ -53,7 +53,12 @@ impl SseProtocol for AnthropicProtocol {
             "content_block_start" => {
                 let block = ev.pointer("/content_block").cloned().unwrap_or(Value::Null);
                 match block.get("type").and_then(|t| t.as_str()) {
-                    Some("text") => self.current = Some(BlockState { tool: None, thinking: None }),
+                    Some("text") => {
+                        self.current = Some(BlockState {
+                            tool: None,
+                            thinking: None,
+                        })
+                    }
                     Some("tool_use") => {
                         let id = block
                             .get("id")
@@ -177,14 +182,8 @@ impl SseProtocol for AnthropicProtocol {
                 // streamed turn reports input_tokens = 0.
                 if let Some(u) = ev.pointer("/message/usage") {
                     self.usage = Some(Usage {
-                        input_tokens: u
-                            .get("input_tokens")
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0),
-                        output_tokens: u
-                            .get("output_tokens")
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0),
+                        input_tokens: u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+                        output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
                     });
                 }
             }
@@ -201,10 +200,7 @@ impl SseProtocol for AnthropicProtocol {
                 if let Some(u) = ev.pointer("/usage") {
                     self.usage = Some(Usage {
                         input_tokens: in_tok,
-                        output_tokens: u
-                            .get("output_tokens")
-                            .and_then(|x| x.as_u64())
-                            .unwrap_or(0),
+                        output_tokens: u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
                     });
                 }
             }

@@ -116,7 +116,10 @@ impl Tui {
     /// Hyperlink-aware counterpart of [`transcript_lines`] in the same
     /// header + cell order, so `mark_buffer_hyperlinks` can annotate OSC 8
     /// links over the rendered transcript area.
-    fn transcript_hyperlink_lines(&self, width: u16) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+    fn transcript_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         use crate::history_cell::{HistoryCell, SessionHeaderHistoryCell};
         let model = if self.focused == autoreport_core::types::AgentType::Main {
             self.main_model.clone()
@@ -128,11 +131,13 @@ impl Tui {
         // Raw-output mode drops styling/links; otherwise carry the per-cell
         // hyperlink annotations (assistant markdown URLs get annotated).
         if !self.raw_output {
-            lines.extend(crate::history_cell::render_history_hyperlink_lines_for_agent(
-                &self.history,
-                self.focused,
-                width,
-            ));
+            lines.extend(
+                crate::history_cell::render_history_hyperlink_lines_for_agent(
+                    &self.history,
+                    self.focused,
+                    width,
+                ),
+            );
         }
         lines
     }
