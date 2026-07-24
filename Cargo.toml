@@ -4,6 +4,7 @@ members = [
     "autoreport-rs/core",
     "autoreport-rs/async-utils",
     "autoreport-rs/extension-items",
+    "autoreport-rs/experimental-api-macros",
     "autoreport-rs/execpolicy",
     "autoreport-rs/protocol",
     "autoreport-rs/rollout",
