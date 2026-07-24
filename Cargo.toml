@@ -28,6 +28,7 @@ members = [
     "autoreport-rs/bwrap",
     "autoreport-rs/utils/pty",
     "autoreport-rs/utils/string",
+    "autoreport-rs/uds",
     "autoreport-rs/otel",
     "autoreport-rs/windows-sandbox",
 ]
@@ -54,6 +55,7 @@ autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
+autoreport-uds = { path = "autoreport-rs/uds" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-trait = "0.1"
