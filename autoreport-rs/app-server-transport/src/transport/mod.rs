@@ -48,16 +48,14 @@ const APP_SERVER_STARTUP_LOCK_FILE_NAME: &str = "app-server-startup.lock";
 
 pub fn app_server_control_socket_path(home: &Path) -> std::io::Result<AbsolutePathBuf> {
     AbsolutePathBuf::from_absolute_path(
-        home
-            .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        home.join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
             .join(APP_SERVER_CONTROL_SOCKET_FILE_NAME),
     )
 }
 
 pub fn app_server_startup_lock_path(home: &Path) -> std::io::Result<AbsolutePathBuf> {
     AbsolutePathBuf::from_absolute_path(
-        home
-            .join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
+        home.join(APP_SERVER_CONTROL_SOCKET_DIR_NAME)
             .join(APP_SERVER_STARTUP_LOCK_FILE_NAME),
     )
 }

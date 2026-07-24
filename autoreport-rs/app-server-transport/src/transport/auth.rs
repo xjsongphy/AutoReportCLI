@@ -1,10 +1,10 @@
 use anyhow::Context;
+use autoreport_utils_absolute_path::AbsolutePathBuf;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use clap::Args;
 use clap::ValueEnum;
-use autoreport_utils_absolute_path::AbsolutePathBuf;
 use constant_time_eq::constant_time_eq_32;
 use jsonwebtoken::Algorithm;
 use jsonwebtoken::DecodingKey;
