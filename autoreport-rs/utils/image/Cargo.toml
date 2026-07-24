@@ -1,0 +1,18 @@
+[package]
+name = "autoreport-utils-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_image"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-utils-cache = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+mime_guess = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "rt", "rt-multi-thread", "macros"] }

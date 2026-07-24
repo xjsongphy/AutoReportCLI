@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "autoreport-rs/codex-protocol",
     "autoreport-rs/cli",
     "autoreport-rs/core",
     "autoreport-rs/async-utils",
@@ -13,6 +14,8 @@ members = [
     "autoreport-rs/tui",
     "autoreport-rs/tools",
     "autoreport-rs/utils/absolute-path",
+    "autoreport-rs/utils/cache",
+    "autoreport-rs/utils/image",
     "autoreport-rs/utils/path-uri",
     "autoreport-rs/sandboxing",
     "autoreport-rs/process-hardening",
@@ -37,6 +40,18 @@ license = "MIT"
 
 [workspace.dependencies]
 autoreport-utils-absolute-path = { path = "autoreport-rs/utils/absolute-path" }
+autoreport-utils-cache = { path = "autoreport-rs/utils/cache" }
+autoreport-utils-image = { path = "autoreport-rs/utils/image" }
+autoreport-async-utils = { path = "autoreport-rs/async-utils" }
+autoreport-execpolicy = { path = "autoreport-rs/execpolicy" }
+autoreport-extension-items = { path = "autoreport-rs/extension-items" }
+autoreport-experimental-api-macros = { path = "autoreport-rs/experimental-api-macros" }
+autoreport-shell-command = { path = "autoreport-rs/shell-command" }
+autoreport-network-proxy = { path = "autoreport-rs/network-proxy" }
+autoreport-utils-path-uri = { path = "autoreport-rs/utils/path-uri" }
+autoreport-utils-string = { path = "autoreport-rs/utils/string" }
+autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
+autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-trait = "0.1"
@@ -47,6 +62,16 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 diffy = "0.4"
+icu_decimal = "2.1"
+icu_locale_core = "2.1"
+icu_provider = { version = "2.1", features = ["sync"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+lru = "0.12"
+mime_guess = "2.0"
+quick-xml = { version = "0.41", features = ["serialize"] }
+sha1 = "0.10"
+sys-locale = "0.3"
+wildmatch = "2"
 derive_more = { version = "2", features = ["is_variant"] }
 dirs = "5"
 dunce = "1"
@@ -90,6 +115,7 @@ shellexpand = "3"
 syn = { version = "2", features = ["full", "extra-traits"] }
 strum = "0.27"
 strum_macros = "0.28"
+serde_with = { version = "3", features = ["macros", "base64"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 textwrap = "0.16"
 thiserror = "1"
@@ -99,11 +125,11 @@ tokio-util = "0.7"
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"
 tracing = "0.1"
-ts-rs = { version = "11", features = ["serde-json-impl", "no-serde-warnings"] }
+ts-rs = { version = "11", features = ["uuid-impl", "serde-json-impl", "no-serde-warnings"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
 url = "2"
 urlencoding = "2.1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
 unicode-width = "0.2"
 which = "6"
 

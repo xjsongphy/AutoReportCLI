@@ -1,0 +1,42 @@
+[package]
+name = "autoreport-codex-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_codex_protocol"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-async-utils = { workspace = true }
+autoreport-execpolicy = { workspace = true }
+autoreport-extension-items = { workspace = true }
+autoreport-network-proxy = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-image = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+autoreport-utils-string = { workspace = true }
+chardetng = { workspace = true }
+chrono = { workspace = true }
+encoding_rs = { workspace = true }
+globset = { workspace = true }
+reqwest = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+sys-locale = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ts-rs = { workspace = true }
+uuid = { workspace = true }
+wildmatch = { workspace = true }
+quick-xml = { workspace = true }
+icu_decimal = { workspace = true }
+icu_locale_core = { workspace = true }
+icu_provider = { workspace = true }
