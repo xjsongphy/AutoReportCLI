@@ -44,6 +44,17 @@ jobs:
       # warning (e.g. provisional dead_code during feature work) as fatal.
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      - name: Build Linux sandbox helper for tools isolation test
+        # The autoreport-tools `isolation` integration test spawns sandboxed
+        # exec, which on Linux needs the autoreport-linux-sandbox binary.
+        # `cargo test --workspace` doesn't place workspace bin targets into
+        # deps/, so build it and point the ExecTool at it via the env var it
+        # already reads (mirrors codex's rust-ci-full-nextest-platform.yml,
+        # which builds codex-linux-sandbox and hands it to the test harness).
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p autoreport-linux-sandbox
+          echo "AUTOREPORT_LINUX_SANDBOX_EXE=${PWD}/target/debug/autoreport-linux-sandbox" >> "$GITHUB_ENV"
       - name: Test
         # The four sandbox crates are tested natively on their own OS in the
         # linux-sandbox / macos-sandbox / windows-sandbox workflows; exclude
