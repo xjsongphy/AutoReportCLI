@@ -23,6 +23,7 @@ opentelemetry_sdk = { version = "0.31.0", features = ["experimental_trace_batch_
 os_info = "3.12.0"
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 serde.workspace = true
+strum_macros.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -32,6 +33,10 @@ thiserror.workspace = true
 autoreport-protocol = { path = "../protocol" }
 autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
 autoreport-utils-string = { path = "../utils/string" }
+autoreport-codex-api = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+eventsource-stream = { workspace = true }
+tokio-tungstenite = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

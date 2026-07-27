@@ -18,7 +18,7 @@ use autoreport_app_server_protocol::ServerResponse;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::request_permissions::RequestPermissionsResponse;
 use autoreport_otel::span_w3c_trace_context;
-use autoreport_protocol::W3cTraceContext;
+use autoreport_codex_protocol::protocol::W3cTraceContext;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;

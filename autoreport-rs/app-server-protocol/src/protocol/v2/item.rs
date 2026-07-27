@@ -11,6 +11,12 @@ use super::shared::v2_enum_from_core;
 use crate::protocol::item_builders::command_actions_for_path_uri;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::item_builders::review_output_text;
+use autoreport_experimental_api_macros::ExperimentalApi;
+use autoreport_extension_items::ExtensionItem;
+pub use autoreport_extension_items::image_generation::ImageGenerationItem;
+pub use autoreport_extension_items::sleep::SleepItem;
+pub use autoreport_extension_items::web_search::WebSearchAction;
+pub use autoreport_extension_items::web_search::WebSearchItem;
 use autoreport_codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use autoreport_codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
 use autoreport_codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
@@ -35,12 +41,6 @@ use autoreport_codex_protocol::protocol::GuardianUserAuthorization as CoreGuardi
 use autoreport_codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use autoreport_codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use autoreport_codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
-use autoreport_experimental_api_macros::ExperimentalApi;
-use autoreport_extension_items::ExtensionItem;
-pub use autoreport_extension_items::image_generation::ImageGenerationItem;
-pub use autoreport_extension_items::sleep::SleepItem;
-pub use autoreport_extension_items::web_search::WebSearchAction;
-pub use autoreport_extension_items::web_search::WebSearchItem;
 use autoreport_shell_command::parse_command::shlex_join;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::LegacyAppPathString;
@@ -94,7 +94,7 @@ impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
                 network_policy_amendment: network_policy_amendment.into(),
             },
             CoreReviewDecision::Abort => Self::Cancel,
-            CoreReviewDecision::Denied => Self::Decline,
+            CoreReviewDecision::Denied { .. } => Self::Decline,
             CoreReviewDecision::TimedOut => Self::Decline,
         }
     }
@@ -269,6 +269,12 @@ pub enum ThreadItem {
     #[ts(rename_all = "camelCase")]
     CommandExecution {
         id: String,
+        /// Trusted first-party plugin id when this command resolves to one plugin script.
+        #[serde(default)]
+        plugin_id: Option<String>,
+        /// Safe plugin-relative path when this command resolves to one plugin script.
+        #[serde(default)]
+        script_path: Option<String>,
         /// The command to be executed.
         command: String,
         /// The command's working directory.
@@ -836,6 +842,8 @@ impl From<CoreTurnItem> for ThreadItem {
             },
             CoreTurnItem::CommandExecution(command) => ThreadItem::CommandExecution {
                 id: command.id,
+                plugin_id: command.plugin_id,
+                script_path: command.script_path,
                 command: shlex_join(&command.command),
                 cwd: command.cwd.clone().into(),
                 process_id: command.process_id,
@@ -1552,14 +1560,14 @@ pub enum DynamicToolCallOutputContentItem {
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
     InputImage { image_url: String },
+    #[serde(rename_all = "camelCase")]
+    InputAudio { audio_url: String },
 }
 
 impl From<autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
     for DynamicToolCallOutputContentItem
 {
-    fn from(
-        item: autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem,
-    ) -> Self {
+    fn from(item: autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
         match item {
             autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
                 Self::InputText { text }
@@ -1567,6 +1575,9 @@ impl From<autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContent
             autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
             } => Self::InputImage { image_url },
+            autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio {
+                audio_url,
+            } => Self::InputAudio { audio_url },
         }
     }
 }
@@ -1579,6 +1590,9 @@ impl From<DynamicToolCallOutputContentItem>
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
             DynamicToolCallOutputContentItem::InputImage { image_url } => {
                 Self::InputImage { image_url }
+            }
+            DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                Self::InputAudio { audio_url }
             }
         }
     }

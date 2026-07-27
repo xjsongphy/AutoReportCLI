@@ -1,10 +1,10 @@
+use autoreport_experimental_api_macros::ExperimentalApi;
 use autoreport_codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
 use autoreport_codex_protocol::config_types::SandboxMode as CoreSandboxMode;
 use autoreport_codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use autoreport_codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use autoreport_codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use autoreport_codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
-use autoreport_experimental_api_macros::ExperimentalApi;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::InstanceType;

@@ -11,6 +11,7 @@ use super::Turn;
 use super::TurnEnvironmentParams;
 use super::TurnItemsView;
 use super::shared::v2_enum_from_core;
+use autoreport_experimental_api_macros::ExperimentalApi;
 pub use autoreport_codex_protocol::capabilities::CapabilityRootLocation;
 pub use autoreport_codex_protocol::capabilities::SelectedCapabilityRoot;
 use autoreport_codex_protocol::config_types::CollaborationMode;
@@ -26,7 +27,6 @@ use autoreport_codex_protocol::openai_models::ReasoningEffort;
 use autoreport_codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use autoreport_codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use autoreport_codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
-use autoreport_experimental_api_macros::ExperimentalApi;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::LegacyAppPathString;
 use autoreport_utils_path_uri::PathUri;
@@ -865,6 +865,9 @@ pub struct ThreadMetadataUpdateParams {
     /// provide a string to replace the stored value.
     #[ts(optional = nullable)]
     pub git_info: Option<ThreadMetadataGitInfoUpdateParams>,
+    /// Patch whether this thread is pinned. Omit to leave the stored value unchanged.
+    #[ts(optional = nullable)]
+    pub is_pinned: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1118,6 +1121,9 @@ pub struct ThreadListParams {
     /// If false or null, only non-archived threads are returned.
     #[ts(optional = nullable)]
     pub archived: Option<bool>,
+    /// Optional pinned filter; when set, only threads matching this value are returned.
+    #[ts(optional = nullable)]
+    pub is_pinned: Option<bool>,
     /// Optional cwd filter or filters; when set, only threads whose session cwd
     /// exactly matches one of these paths are returned.
     #[ts(optional = nullable, type = "string | Array<string> | null")]

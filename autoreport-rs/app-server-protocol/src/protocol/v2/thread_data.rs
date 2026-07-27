@@ -2,11 +2,11 @@ use super::CodexErrorInfo;
 use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
+use autoreport_experimental_api_macros::ExperimentalApi;
 use autoreport_codex_protocol::protocol::SessionSource as CoreSessionSource;
 use autoreport_codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode as CoreThreadHistoryMode;
 use autoreport_codex_protocol::protocol::ThreadSource as CoreThreadSource;
-use autoreport_experimental_api_macros::ExperimentalApi;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
@@ -183,6 +183,9 @@ pub struct Thread {
     pub preview: String,
     /// Whether the thread is ephemeral and should not be materialized on disk.
     pub ephemeral: bool,
+    /// Whether the thread has been pinned by the user.
+    #[serde(default)]
+    pub is_pinned: bool,
     /// Persisted thread history contract selected when this thread was created.
     #[experimental("thread.historyMode")]
     #[serde(default)]

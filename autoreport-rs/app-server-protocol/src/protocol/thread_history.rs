@@ -26,6 +26,7 @@ use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
+use autoreport_extension_items::image_generation::ImageGenerationItem;
 use autoreport_codex_protocol::items::parse_hook_prompt_message;
 use autoreport_codex_protocol::models::MessagePhase;
 use autoreport_codex_protocol::protocol::AgentReasoningEvent;
@@ -60,7 +61,6 @@ use autoreport_codex_protocol::protocol::WebSearchBeginEvent;
 use autoreport_codex_protocol::protocol::WebSearchEndEvent;
 #[cfg(test)]
 use autoreport_codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
-use autoreport_extension_items::image_generation::ImageGenerationItem;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
@@ -272,6 +272,14 @@ impl ThreadHistoryBuilder {
             .as_ref()
             .map(Turn::from)
             .or_else(|| self.turns.last().cloned())
+    }
+
+    /// Returns the id of the active turn without materializing its items.
+    pub fn active_turn_id(&self) -> Option<&str> {
+        self.current_turn
+            .as_ref()
+            .map(|turn| turn.id.as_str())
+            .or_else(|| self.turns.last().map(|turn| turn.id.as_str()))
     }
 
     pub fn turn_snapshot(&self, turn_id: &str) -> Option<Turn> {
@@ -1045,10 +1053,7 @@ impl ThreadHistoryBuilder {
         self.upsert_item_in_current_turn(item);
     }
 
-    fn handle_collab_close_end(
-        &mut self,
-        payload: &autoreport_codex_protocol::protocol::CollabCloseEndEvent,
-    ) {
+    fn handle_collab_close_end(&mut self, payload: &autoreport_codex_protocol::protocol::CollabCloseEndEvent) {
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
             _ => CollabAgentToolCallStatus::Completed,
@@ -1240,8 +1245,16 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_turn_complete(&mut self, payload: &TurnCompleteEvent) {
-        let mark_completed = |turn: &mut PendingTurn| {
-            if matches!(turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
+        let terminal_error = payload.error.as_ref().map(|error| V2TurnError {
+            message: error.message.clone(),
+            codex_error_info: error.codex_error_info.clone().map(Into::into),
+            additional_details: None,
+        });
+        let apply_completion = |turn: &mut PendingTurn| {
+            if let Some(error) = terminal_error.as_ref() {
+                turn.status = TurnStatus::Failed;
+                turn.error = Some(error.clone());
+            } else if matches!(turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
                 turn.status = TurnStatus::Completed;
             }
             turn.completed_at = payload.completed_at;
@@ -1255,7 +1268,7 @@ impl ThreadHistoryBuilder {
             .as_mut()
             .filter(|turn| turn.id == payload.turn_id)
         {
-            let changed_turn = mark_completed(current_turn);
+            let changed_turn = apply_completion(current_turn);
             self.record_changed_turn(changed_turn);
             self.finish_current_turn();
             return;
@@ -1266,7 +1279,10 @@ impl ThreadHistoryBuilder {
             .iter_mut()
             .find(|turn| turn.id == payload.turn_id)
         {
-            if matches!(turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
+            if let Some(error) = terminal_error.as_ref() {
+                turn.status = TurnStatus::Failed;
+                turn.error = Some(error.clone());
+            } else if matches!(turn.status, TurnStatus::Completed | TurnStatus::InProgress) {
                 turn.status = TurnStatus::Completed;
             }
             turn.completed_at = payload.completed_at;
@@ -1278,7 +1294,7 @@ impl ThreadHistoryBuilder {
 
         // If the completion event cannot be matched, apply it to the active turn.
         if let Some(current_turn) = self.current_turn.as_mut() {
-            let changed_turn = mark_completed(current_turn);
+            let changed_turn = apply_completion(current_turn);
             self.record_changed_turn(changed_turn);
             self.finish_current_turn();
         }
@@ -1484,6 +1500,16 @@ impl ThreadHistoryBuilder {
                 detail: payload.local_image_details.get(idx).copied().flatten(),
             });
         }
+        if let Some(audio) = &payload.audio {
+            content.extend(audio.iter().cloned().map(|url| UserInput::Audio { url }));
+        }
+        content.extend(
+            payload
+                .local_audio
+                .iter()
+                .cloned()
+                .map(|path| UserInput::LocalAudio { path }),
+        );
         content
     }
 }
@@ -1501,6 +1527,9 @@ fn convert_dynamic_tool_content_items(
             autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
             } => DynamicToolCallOutputContentItem::InputImage { image_url },
+            autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio {
+                audio_url,
+            } => DynamicToolCallOutputContentItem::InputAudio { audio_url },
         })
         .collect()
 }
@@ -1587,6 +1616,8 @@ impl From<&PendingTurn> for Turn {
 mod tests {
     use super::*;
     use crate::protocol::v2::CommandExecutionSource;
+    use autoreport_extension_items::ExtensionItem as CoreExtensionItem;
+    use autoreport_extension_items::sleep::SleepItem as CoreSleepItem;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use autoreport_codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
@@ -1626,8 +1657,6 @@ mod tests {
     use autoreport_codex_protocol::protocol::UserMessageEvent;
     use autoreport_codex_protocol::protocol::WebSearchBeginEvent;
     use autoreport_codex_protocol::protocol::WebSearchEndEvent;
-    use autoreport_extension_items::ExtensionItem as CoreExtensionItem;
-    use autoreport_extension_items::sleep::SleepItem as CoreSleepItem;
     use autoreport_utils_absolute_path::test_support::PathBufExt;
     use autoreport_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -1812,12 +1841,14 @@ mod tests {
                 thread_id,
                 turn_id: "turn-1".into(),
                 item: entered,
+                started_at_ms: Some(0),
                 completed_at_ms: 0,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
                 turn_id: "turn-1".into(),
                 item: exited,
+                started_at_ms: Some(0),
                 completed_at_ms: 0,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -1854,16 +1885,19 @@ mod tests {
     }
 
     #[test]
-    fn rebuilds_user_message_image_details_from_legacy_events() {
-        let local_path = PathBuf::from("/tmp/local.png");
+    fn rebuilds_user_message_attachments_from_legacy_events() {
+        let local_image_path = PathBuf::from("/tmp/local.png");
+        let local_audio_path = PathBuf::from("/tmp/local.wav");
         let events = vec![RolloutItem::EventMsg(EventMsg::UserMessage(
             UserMessageEvent {
                 client_id: None,
                 message: "inspect these".into(),
                 images: Some(vec!["https://example.com/image.png".into()]),
                 image_details: vec![Some(ImageDetail::Original)],
-                local_images: vec![local_path.clone()],
+                local_images: vec![local_image_path.clone()],
                 local_image_details: vec![Some(ImageDetail::Original)],
+                audio: Some(vec!["https://example.com/audio.mp3".into()]),
+                local_audio: vec![local_audio_path.clone()],
                 text_elements: Vec::new(),
             },
         ))];
@@ -1886,8 +1920,14 @@ mod tests {
                         detail: Some(ImageDetail::Original),
                     },
                     UserInput::LocalImage {
-                        path: local_path,
+                        path: local_image_path,
                         detail: Some(ImageDetail::Original),
+                    },
+                    UserInput::Audio {
+                        url: "https://example.com/audio.mp3".into(),
+                    },
+                    UserInput::LocalAudio {
+                        path: local_audio_path,
                     },
                 ],
             }
@@ -1975,6 +2015,7 @@ mod tests {
                 thread_id,
                 turn_id: turn_id.to_string(),
                 item: sleep_item,
+                started_at_ms: Some(0),
                 completed_at_ms: 1_000,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -2029,6 +2070,7 @@ mod tests {
                         saved_path: Some(saved_path.clone()),
                     },
                 )),
+                started_at_ms: Some(0),
                 completed_at_ms: 1_000,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -2061,11 +2103,13 @@ mod tests {
     }
 
     #[test]
-    fn rebuilds_command_execution_item_from_persisted_completion() {
+    fn preserves_command_plugin_id_across_legacy_upsert() {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
         let command_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
             id: "exec-1".to_string(),
+            plugin_id: Some("sample@openai-curated".to_string()),
+            script_path: Some("scripts/run.py".to_string()),
             process_id: Some("pid-1".to_string()),
             command: vec!["echo".to_string(), "hello world".to_string()],
             cwd: test_path_buf("/tmp").abs().into(),
@@ -2094,7 +2138,30 @@ mod tests {
                 thread_id,
                 turn_id: turn_id.to_string(),
                 item: command_item,
+                started_at_ms: Some(0),
                 completed_at_ms: 1_000,
+            }),
+            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                call_id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
+                process_id: Some("pid-1".to_string()),
+                turn_id: turn_id.to_string(),
+                completed_at_ms: 1_000,
+                command: vec!["echo".to_string(), "hello world".to_string()],
+                cwd: test_path_buf("/tmp").abs().into(),
+                parsed_cmd: vec![ParsedCommand::Unknown {
+                    cmd: "echo hello world".to_string(),
+                }],
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+                stdout: "hello world\n".to_string(),
+                stderr: String::new(),
+                aggregated_output: "hello world\n".to_string(),
+                exit_code: 0,
+                duration: Duration::from_millis(12),
+                formatted_output: "hello world\n".to_string(),
+                status: CoreExecCommandStatus::Completed,
             }),
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
@@ -2118,6 +2185,8 @@ mod tests {
             turns[0].items,
             vec![ThreadItem::CommandExecution {
                 id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
                 command: "echo 'hello world'".to_string(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-1".to_string()),
@@ -2674,6 +2743,8 @@ mod tests {
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-1".into(),
+                plugin_id: None,
+                script_path: None,
                 process_id: Some("pid-1".into()),
                 turn_id: "turn-1".into(),
                 completed_at_ms: 0,
@@ -2737,6 +2808,8 @@ mod tests {
             turns[0].items[2],
             ThreadItem::CommandExecution {
                 id: "exec-1".into(),
+                plugin_id: None,
+                script_path: None,
                 command: "echo 'hello world'".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-1".into()),
@@ -2882,9 +2955,17 @@ mod tests {
                 namespace: Some("codex_app".into()),
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
-                content_items: vec![CoreDynamicToolCallOutputContentItem::InputText {
-                    text: "Ticket is open".into(),
-                }],
+                content_items: vec![
+                    CoreDynamicToolCallOutputContentItem::InputText {
+                        text: "Ticket is open".into(),
+                    },
+                    CoreDynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".into(),
+                    },
+                    CoreDynamicToolCallOutputContentItem::InputAudio {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".into(),
+                    },
+                ],
                 success: true,
                 error: None,
                 duration: Duration::from_millis(42),
@@ -2906,9 +2987,17 @@ mod tests {
                 tool: "lookup_ticket".into(),
                 arguments: serde_json::json!({"id":"ABC-123"}),
                 status: DynamicToolCallStatus::Completed,
-                content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
-                    text: "Ticket is open".into(),
-                }]),
+                content_items: Some(vec![
+                    DynamicToolCallOutputContentItem::InputText {
+                        text: "Ticket is open".into(),
+                    },
+                    DynamicToolCallOutputContentItem::InputImage {
+                        image_url: "data:image/png;base64,AAA".into(),
+                    },
+                    DynamicToolCallOutputContentItem::InputAudio {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".into(),
+                    },
+                ]),
                 success: Some(true),
                 duration_ms: Some(42),
             }
@@ -2935,6 +3024,8 @@ mod tests {
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-declined".into(),
+                plugin_id: None,
+                script_path: None,
                 process_id: Some("pid-2".into()),
                 turn_id: "turn-1".into(),
                 completed_at_ms: 0,
@@ -2980,6 +3071,8 @@ mod tests {
             turns[0].items[1],
             ThreadItem::CommandExecution {
                 id: "exec-declined".into(),
+                plugin_id: None,
+                script_path: None,
                 command: "ls".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-2".into()),
@@ -3028,6 +3121,8 @@ mod tests {
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
+                plugin_id: Some("sample@openai-curated".into()),
+                script_path: Some("scripts/run.py".into()),
                 turn_id: "turn-1".into(),
                 started_at_ms: 1_000,
                 completed_at_ms: None,
@@ -3047,14 +3142,14 @@ mod tests {
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
+                plugin_id: Some("sample@openai-curated".into()),
+                script_path: Some("scripts/run.py".into()),
                 turn_id: "turn-1".into(),
                 started_at_ms: 1_000,
                 completed_at_ms: Some(1_042),
                 status: GuardianAssessmentStatus::Denied,
                 risk_level: Some(autoreport_codex_protocol::protocol::GuardianRiskLevel::High),
-                user_authorization: Some(
-                    autoreport_codex_protocol::protocol::GuardianUserAuthorization::Low,
-                ),
+                user_authorization: Some(autoreport_codex_protocol::protocol::GuardianUserAuthorization::Low),
                 rationale: Some("Would delete user data.".into()),
                 decision_source: Some(
                     autoreport_codex_protocol::protocol::GuardianAssessmentDecisionSource::Agent,
@@ -3080,6 +3175,8 @@ mod tests {
             turns[0].items[1],
             ThreadItem::CommandExecution {
                 id: "guardian-exec".into(),
+                plugin_id: Some("sample@openai-curated".into()),
+                script_path: Some("scripts/run.py".into()),
                 command: "rm -rf /tmp/guardian".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: None,
@@ -3116,6 +3213,8 @@ mod tests {
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: "review-guardian-execve".into(),
                 target_item_id: Some("guardian-execve".into()),
+                plugin_id: Some("sample@openai-curated".into()),
+                script_path: Some("scripts/run.py".into()),
                 turn_id: "turn-1".into(),
                 started_at_ms: 2_000,
                 completed_at_ms: None,
@@ -3146,6 +3245,8 @@ mod tests {
             turns[0].items[1],
             ThreadItem::CommandExecution {
                 id: "guardian-execve".into(),
+                plugin_id: Some("sample@openai-curated".into()),
+                script_path: Some("scripts/run.py".into()),
                 command: "/bin/rm -f /tmp/file.sqlite".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: None,
@@ -3205,6 +3306,8 @@ mod tests {
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-late".into(),
+                plugin_id: None,
+                script_path: None,
                 process_id: Some("pid-42".into()),
                 turn_id: "turn-a".into(),
                 completed_at_ms: 0,
@@ -3248,6 +3351,8 @@ mod tests {
             turns[0].items[1],
             ThreadItem::CommandExecution {
                 id: "exec-late".into(),
+                plugin_id: None,
+                script_path: None,
                 command: "echo done".into(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-42".into()),
@@ -3307,6 +3412,8 @@ mod tests {
             }),
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id: "exec-unknown-turn".into(),
+                plugin_id: None,
+                script_path: None,
                 process_id: Some("pid-42".into()),
                 turn_id: "turn-missing".into(),
                 completed_at_ms: 0,
@@ -3576,6 +3683,106 @@ mod tests {
     }
 
     #[test]
+    fn late_turn_complete_with_embedded_error_preserves_active_turn() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: Some(10),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "first".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-b".into(),
+                trace_id: None,
+                started_at: Some(30),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "second".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                started_at: Some(10),
+                last_agent_message: None,
+                error: Some(ErrorEvent {
+                    message: "Selected model is at capacity. Please try a different model.".into(),
+                    codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                }),
+                completed_at: Some(20),
+                duration_ms: Some(10_000),
+                time_to_first_token_ms: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            build_turns_from_rollout_items(&items),
+            vec![
+                Turn {
+                    id: "turn-a".into(),
+                    items_view: TurnItemsView::Full,
+                    items: vec![ThreadItem::UserMessage {
+                        id: "item-1".into(),
+                        client_id: None,
+                        content: vec![UserInput::Text {
+                            text: "first".into(),
+                            text_elements: Vec::new(),
+                        }],
+                    }],
+                    status: TurnStatus::Failed,
+                    error: Some(TurnError {
+                        message: "Selected model is at capacity. Please try a different model."
+                            .into(),
+                        codex_error_info: Some(
+                            crate::protocol::v2::CodexErrorInfo::ServerOverloaded,
+                        ),
+                        additional_details: None,
+                    }),
+                    started_at: Some(10),
+                    completed_at: Some(20),
+                    duration_ms: Some(10_000),
+                },
+                Turn {
+                    id: "turn-b".into(),
+                    items_view: TurnItemsView::Full,
+                    items: vec![ThreadItem::UserMessage {
+                        id: "item-2".into(),
+                        client_id: None,
+                        content: vec![UserInput::Text {
+                            text: "second".into(),
+                            text_elements: Vec::new(),
+                        }],
+                    }],
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(30),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn late_turn_aborted_does_not_interrupt_active_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
@@ -3758,21 +3965,18 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             }),
-            EventMsg::CollabAgentSpawnEnd(
-                autoreport_codex_protocol::protocol::CollabAgentSpawnEndEvent {
-                    call_id: "spawn-1".into(),
-                    completed_at_ms: 0,
-                    sender_thread_id,
-                    new_thread_id: Some(spawned_thread_id),
-                    new_agent_nickname: Some("Scout".into()),
-                    new_agent_role: Some("explorer".into()),
-                    prompt: "inspect the repo".into(),
-                    model: "gpt-5.4-mini".into(),
-                    reasoning_effort:
-                        autoreport_codex_protocol::openai_models::ReasoningEffort::Medium,
-                    status: AgentStatus::Running,
-                },
-            ),
+            EventMsg::CollabAgentSpawnEnd(autoreport_codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-1".into(),
+                completed_at_ms: 0,
+                sender_thread_id,
+                new_thread_id: Some(spawned_thread_id),
+                new_agent_nickname: Some("Scout".into()),
+                new_agent_role: Some("explorer".into()),
+                prompt: "inspect the repo".into(),
+                model: "gpt-5.4-mini".into(),
+                reasoning_effort: autoreport_codex_protocol::openai_models::ReasoningEffort::Medium,
+                status: AgentStatus::Running,
+            }),
         ];
 
         let items = events
@@ -3792,9 +3996,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
-                reasoning_effort: Some(
-                    autoreport_codex_protocol::openai_models::ReasoningEffort::Medium
-                ),
+                reasoning_effort: Some(autoreport_codex_protocol::openai_models::ReasoningEffort::Medium),
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -4031,6 +4233,69 @@ mod tests {
     }
 
     #[test]
+    fn turn_complete_with_embedded_error_marks_turn_failed() {
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: Some(10),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "retry me".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                started_at: Some(10),
+                last_agent_message: None,
+                error: Some(ErrorEvent {
+                    message: "Selected model is at capacity. Please try a different model.".into(),
+                    codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+                }),
+                completed_at: Some(20),
+                duration_ms: Some(10_000),
+                time_to_first_token_ms: None,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            build_turns_from_rollout_items(&items),
+            vec![Turn {
+                id: "turn-a".into(),
+                items_view: TurnItemsView::Full,
+                items: vec![ThreadItem::UserMessage {
+                    id: "item-1".into(),
+                    client_id: None,
+                    content: vec![UserInput::Text {
+                        text: "retry me".into(),
+                        text_elements: Vec::new(),
+                    }],
+                }],
+                status: TurnStatus::Failed,
+                error: Some(TurnError {
+                    message: "Selected model is at capacity. Please try a different model.".into(),
+                    codex_error_info: Some(crate::protocol::v2::CodexErrorInfo::ServerOverloaded),
+                    additional_details: None,
+                }),
+                started_at: Some(10),
+                completed_at: Some(20),
+                duration_ms: Some(10_000),
+            }]
+        );
+    }
+
+    #[test]
     fn rebuilds_hook_prompt_items_from_rollout_response_items() {
         let hook_prompt = build_hook_prompt_message(&[
             CoreHookPromptFragment::from_single_hook("Retry with tests.", "hook-run-1"),
@@ -4089,14 +4354,13 @@ mod tests {
 
     #[test]
     fn canonical_hook_prompt_completion_updates_turn_history() {
-        let hook_prompt =
-            CoreTurnItem::HookPrompt(autoreport_codex_protocol::items::HookPromptItem {
-                id: "hook-prompt-1".into(),
-                fragments: vec![CoreHookPromptFragment::from_single_hook(
-                    "Retry with tests.",
-                    "hook-run-1",
-                )],
-            });
+        let hook_prompt = CoreTurnItem::HookPrompt(autoreport_codex_protocol::items::HookPromptItem {
+            id: "hook-prompt-1".into(),
+            fragments: vec![CoreHookPromptFragment::from_single_hook(
+                "Retry with tests.",
+                "hook-run-1",
+            )],
+        });
         let expected_item = ThreadItem::from(hook_prompt.clone());
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
@@ -4110,6 +4374,7 @@ mod tests {
             thread_id: ThreadId::new(),
             turn_id: "turn-a".into(),
             item: hook_prompt,
+            started_at_ms: Some(0),
             completed_at_ms: 0,
         }));
 
@@ -4130,9 +4395,7 @@ mod tests {
                 collaboration_mode_kind: Default::default(),
             })),
             RolloutItem::ResponseItem(autoreport_codex_protocol::models::ResponseItem::Message {
-                id: Some(autoreport_codex_protocol::ResponseItemId::with_suffix(
-                    "msg", "1",
-                )),
+                id: Some(autoreport_codex_protocol::ResponseItemId::with_suffix("msg", "1")),
                 role: "user".into(),
                 content: vec![autoreport_codex_protocol::models::ContentItem::InputText {
                     text: "plain text".into(),
