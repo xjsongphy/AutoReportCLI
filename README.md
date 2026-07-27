@@ -13,7 +13,7 @@ English | [中文](README_zh.md)
 </div>
 
 A **codex-style, multi-agent command-line tool** for automatically writing
-physics-experiment reports in LaTeX. It is a Rust rewrite of the
+physics-experiment reports in LaTeX or Typst. It is a Rust rewrite of the
 [AutoReport](../AutoReport) desktop app — no GUI, no MCP, no image recognition.
 The terminal is the interface; the working directory is the project.
 
@@ -55,7 +55,7 @@ single codex-style TUI.
 - **Codex Approval Prompts** — command-execution approvals use the codex keymap (`y` / `a` / `p` / `d` / `Esc` / `n` / `c`)
 - **Persistent Agent Sessions** — each agent keeps its own conversation history and resumes on the next launch
 - **`@` File Mentions** — fuzzy-search workspace files and inject them into prompts directly from the input box
-- **Slash Commands** — `/agent(s)`, `/switch`, `/config`, `/model(s)`, `/env`, `/compact`, `/pager`, `/new`, `/clear`, `/copy`, `/manifest`, `/index`, `/ide`, `/help`, `/quit`
+- **Slash Commands** — `/model`, `/env`
 
 ## Quick Start
 
@@ -100,8 +100,9 @@ If `autoreport` is not in your `PATH`, use the binary path instead:
 /path/to/AutoReportCLI/target/release/autoreport
 ```
 
-On first launch, AutoReportCLI configures the API and models, asks you to
-confirm the workspace, then creates the workspace folders and opens the TUI.
+On first launch, AutoReportCLI configures the API and models, selects the global
+Python environment and the project's report language, asks you to confirm the
+workspace, then creates the workspace folders and opens the TUI.
 Built-in templates and synced presets/skills live in the global AutoReport home.
 
 ## Configuration
@@ -110,9 +111,9 @@ Configure a provider in any of these ways:
 
 - Set an API key environment variable such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, or `GEMINI_API_KEY`
 - Copy `autoreport.config.example.toml` to `$AUTOREPORT_HOME/config.toml` (default:
-  `~/.autoreport/config.toml`), or use `/config`. `AUTOREPORT_HOME` can point to
+  `~/.autoreport/config.toml`), or use `/model`. `AUTOREPORT_HOME` can point to
   another global AutoReport home.
-- Use `/config` to add API entries from presets (presets are additive, so one provider kind can have multiple API keys) and optionally override each entry's alias, then use `/models` to bind main and sub-agent model names only to configured API entries. First launch opens these pages in that order when needed.
+- Use `/model` to configure API entries and bind main/sub-agent model names. Use `/env` to configure Python and the current project's LaTeX/Typst language.
 - Let the first-run full-screen setup page guide you through provider selection and saving
 
 Useful CLI flags:
@@ -130,7 +131,7 @@ Useful CLI flags:
 ├── References/      papers, images, templates, custom skills
 ├── Theory/          theory agent output
 ├── Plots/           plotting figures (Plots/Fig) and scripts (Plots/Scripts)
-├── Tex/             LaTeX sources and compiled PDF
+├── Report/             active LaTeX/Typst sources and compiled PDF
 ├── Outline/         main agent planning output
 └── (no AutoReport metadata files; program state lives in ~/.autoreport/)
 ```
@@ -142,11 +143,12 @@ Global program state follows Codex's home-directory model:
 ├── config.toml
 ├── auth.json         provider credentials (mode 0600 where supported)
 ├── history.jsonl                       append-only conversation history
-├── skills/          global skills and synced skills
-├── external/        synced provider presets
-├── templates/       bundled report templates
+├── environment.toml                    global Python environment
+├── venv/                               AutoReport-managed Python environment (optional)
+├── resources/       language-specific bundled and synced skills/templates/themes
+├── external/providers/  synced provider presets
 ├── agents/          global prompt overrides
-└── workspaces/<id>/                    manifests, rules, and workspace metadata
+└── workspaces/<id>/                    manifests, rules, project.toml, metadata
 ```
 
 ## Development

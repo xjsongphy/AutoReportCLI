@@ -177,7 +177,7 @@ mod tests {
         let list = summarize_command(&["ls".into(), "Plots".into()]);
         assert!(matches!(list[0], ParsedCommand::ListFiles { .. }));
 
-        let search = summarize_command(&["grep".into(), "foo".into(), "Tex".into()]);
+        let search = summarize_command(&["grep".into(), "foo".into(), "Report".into()]);
         assert!(matches!(search[0], ParsedCommand::Search { .. }));
 
         let unknown = summarize_command(&["python".into(), "fit.py".into()]);

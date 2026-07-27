@@ -1,6 +1,6 @@
 //! Dedicated TUI page for binding models to configured APIs.
 //!
-//! API credentials and base URLs live in `/config`; this page owns only the
+//! API credentials and base URLs live in `/model`; this page owns only the
 //! per-agent API selection and model identifier.
 
 use crate::config_update::Outcome;
@@ -265,7 +265,7 @@ impl ModelScreen {
             .collect::<Vec<_>>();
         if items.is_empty() {
             items.push(ListItem::new(Line::styled(
-                "No configured APIs — add one in /config",
+                "No configured APIs — add one in /model",
                 Style::default().fg(Color::Yellow),
             )));
         }
@@ -403,7 +403,7 @@ impl ModelScreen {
             }
             KeyCode::Enter => {
                 let Some(api) = self.selected_api() else {
-                    self.error = Some("no API configured; open /config first".into());
+                    self.error = Some("no API configured; open /model first".into());
                     return None;
                 };
                 self.target_mut().provider = api;

@@ -89,7 +89,7 @@ Any `[✗]` → fix the script → re-run → re-check.
 - Text: English by default. If user requires Chinese, use appropriate Chinese fonts (e.g., SimHei, STSong)
 - Labels: Axes with units in parentheses
 - Color: viridis/plasma/cividis (colorblind-friendly)
-- Math: Use LaTeX rendering for all formulas and symbols
+- Math: use publication-quality mathematical typesetting for all formulas and symbols
 
 **Issue reporting**: Use `respond` for `missing_data` (analysis results missing) or `quality` (plot specifications unclear); state what is missing or unclear.
 

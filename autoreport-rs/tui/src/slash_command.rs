@@ -27,6 +27,10 @@ const COMMANDS: &[SlashCommandItem] = &[
         description: "alias for /agent",
     },
     SlashCommandItem {
+        name: "sessions",
+        description: "list persisted project sessions",
+    },
+    SlashCommandItem {
         name: "switch",
         description: "focus an agent",
     },
@@ -39,12 +43,8 @@ const COMMANDS: &[SlashCommandItem] = &[
         description: "assign main/sub APIs and model names",
     },
     SlashCommandItem {
-        name: "models",
-        description: "alias for /model",
-    },
-    SlashCommandItem {
         name: "env",
-        description: "select Python and inspect local tool readiness",
+        description: "configure Python and report language",
     },
     SlashCommandItem {
         name: "compact",
@@ -98,10 +98,11 @@ mod tests {
     use super::matches;
 
     #[test]
-    fn filters_by_prefix_in_presentation_order() {
-        let commands = matches("c");
-        assert_eq!(commands[0].name, "config");
-        assert_eq!(commands[1].name, "compact");
-        assert_eq!(commands[2].name, "clear");
+    fn removes_only_models_alias() {
+        assert_eq!(matches("model")[0].name, "model");
+        assert_eq!(matches("env")[0].name, "env");
+        assert!(matches("models").is_empty());
+        assert_eq!(matches("sess")[0].name, "sessions");
+        assert!(matches("co").iter().any(|item| item.name == "config"));
     }
 }

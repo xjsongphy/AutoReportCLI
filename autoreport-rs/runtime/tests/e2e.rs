@@ -207,7 +207,7 @@ fn registry_for(workspace: &std::path::Path, agent: AgentType) -> ToolRegistry {
         AgentType::DataAnalysis => workspace.join("data").join("processed"),
         AgentType::Plotting => workspace.join("code"),
         AgentType::Theory => workspace.join("theory"),
-        AgentType::Report => workspace.join("tex"),
+        AgentType::Report => workspace.join("Report"),
         AgentType::Main => workspace.join("outline"),
     };
     let ctx = FsCtx::new(workspace.to_path_buf(), Some(write_dir));

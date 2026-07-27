@@ -1,7 +1,7 @@
 //! Full-screen API configuration screen.
 //!
 //! Two lifecycle modes share one render + key-handling implementation:
-//! `run_fullscreen` (first-run wizard, standalone loop) and the `/config`
+//! `run_fullscreen` (first-run wizard, standalone loop) and the `/model`
 //! overlay (driven by `tui.rs`).
 
 use crate::custom_terminal::Frame;

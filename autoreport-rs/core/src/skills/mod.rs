@@ -2,9 +2,10 @@
 //!
 //! Codex loads user skills from the global home and project skills from the
 //! project tree. AutoReport keeps pulled/user-wide skills in
-//! `$AUTOREPORT_HOME/skills/*/SKILL.md`; explicit project overrides under
+//! `$AUTOREPORT_HOME/resources/<language>/skills/*/SKILL.md`; explicit project overrides under
 //! `References/skills` remain readable but are never created automatically.
 
+use crate::project::{ReportLanguage, selected_report_language};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,21 +34,34 @@ struct Frontmatter {
 
 #[derive(Clone)]
 pub struct SkillLoader {
-    roots: Vec<PathBuf>,
+    home: PathBuf,
+    workspace: PathBuf,
     cache: std::sync::Arc<std::sync::Mutex<HashMap<String, Skill>>>,
 }
 
 impl SkillLoader {
     pub fn new(home: &Path, workspace: &Path) -> Self {
-        let roots = vec![
-            workspace.join("References").join("skills"),
-            home.join("skills"),
-        ];
-        let _ = std::fs::create_dir_all(home.join("skills"));
+        let resource_root = match selected_report_language(home, workspace) {
+            Some(ReportLanguage::Typst) => "typst",
+            _ => "latex",
+        };
+        let _ = std::fs::create_dir_all(home.join("resources").join(resource_root).join("skills"));
         Self {
-            roots,
+            home: home.to_path_buf(),
+            workspace: workspace.to_path_buf(),
             cache: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    fn roots(&self) -> Vec<PathBuf> {
+        let language = match selected_report_language(&self.home, &self.workspace) {
+            Some(ReportLanguage::Typst) => "typst",
+            _ => "latex",
+        };
+        vec![
+            self.workspace.join("References").join("skills"),
+            self.home.join("resources").join(language).join("skills"),
+        ]
     }
 
     pub fn list(&self) -> Vec<Skill> {
@@ -55,7 +69,8 @@ impl SkillLoader {
         let mut seen = HashSet::new();
         // Iterate roots in reverse so an explicit project override wins over a
         // same-named global skill, matching Codex's user/project precedence.
-        for root in self.roots.iter().rev() {
+        let roots = self.roots();
+        for root in roots.iter().rev() {
             for path in discover_skill_files(root) {
                 let Ok(skill) = parse_skill(&path) else {
                     continue;
@@ -79,11 +94,6 @@ impl SkillLoader {
     }
 
     pub fn load(&self, name: &str) -> Option<Skill> {
-        if let Ok(guard) = self.cache.lock()
-            && let Some(skill) = guard.get(name).cloned()
-        {
-            return Some(skill);
-        }
         let skill = self.list().into_iter().find(|skill| skill.name == name)?;
         self.cache
             .lock()
@@ -101,7 +111,7 @@ impl SkillLoader {
         out.push_str("## Skills\n");
         out.push_str("A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.\n");
         out.push_str("### Skill roots\n");
-        for (idx, root) in self.roots.iter().enumerate() {
+        for (idx, root) in self.roots().iter().enumerate() {
             let _ = writeln!(&mut out, "- `r{idx}` = `{}`", root.display());
         }
         out.push_str("### Available skills\n");
@@ -133,7 +143,7 @@ impl SkillLoader {
     }
 
     fn short_skill_path(&self, path: &Path) -> String {
-        for (idx, root) in self.roots.iter().enumerate() {
+        for (idx, root) in self.roots().iter().enumerate() {
             if let Ok(relative) = path.strip_prefix(root) {
                 return format!("r{idx}/{}", relative.display());
             }
@@ -338,7 +348,7 @@ mod tests {
     #[test]
     fn skill_loader_reads_directory_skills() {
         let dir = std::env::temp_dir().join(format!("skills-dir-{}", stamp()));
-        let skill_dir = dir.join("skills").join("latex-compile");
+        let skill_dir = dir.join("resources/latex/skills").join("latex-compile");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
@@ -357,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_loader_keeps_flat_cache_compatibility() {
+    fn skill_loader_does_not_read_legacy_flat_cache() {
         let dir = std::env::temp_dir().join(format!("skills-flat-{}", stamp()));
         let skills = dir.join("skills");
         std::fs::create_dir_all(&skills).unwrap();
@@ -367,8 +377,7 @@ mod tests {
         )
         .unwrap();
         let loader = SkillLoader::new(&dir, &dir);
-        let skill = loader.load("md-report-writer").expect("flat compat skill");
-        assert_eq!(skill.name, "md-report-writer");
+        assert!(loader.load("md-report-writer").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -388,8 +397,8 @@ mod tests {
     #[test]
     fn render_injections_emits_bodies_for_mentioned_only() {
         let dir = std::env::temp_dir().join(format!("skills-inj-{}", stamp()));
-        let s1 = dir.join("skills").join("alpha");
-        let s2 = dir.join("skills").join("beta");
+        let s1 = dir.join("resources/latex/skills").join("alpha");
+        let s2 = dir.join("resources/latex/skills").join("beta");
         std::fs::create_dir_all(&s1).unwrap();
         std::fs::create_dir_all(&s2).unwrap();
         std::fs::write(
@@ -408,6 +417,36 @@ mod tests {
         let inj = loader.render_injections(&mentioned);
         assert!(inj.contains("BETA BODY"), "inj: {inj}");
         assert!(!inj.contains("ALPHA BODY"), "inj: {inj}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn language_switch_refreshes_roots_and_excludes_other_language_skills() {
+        let dir = std::env::temp_dir().join(format!("skills-language-{}", stamp()));
+        let home = dir.join("home");
+        let latex = home.join("resources/latex/skills/latex-compile");
+        let typst = home.join("resources/typst/skills/typst");
+        std::fs::create_dir_all(&latex).unwrap();
+        std::fs::create_dir_all(&typst).unwrap();
+        let latex_skill = "---\nname: latex-compile\ndescription: latex\n---\nlatex";
+        let typst_skill = "---\nname: typst\ndescription: typst\n---\ntypst";
+        std::fs::write(latex.join("SKILL.md"), latex_skill).unwrap();
+        std::fs::write(typst.join("SKILL.md"), typst_skill).unwrap();
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let loader = SkillLoader::new(&home, &workspace);
+        assert!(loader.load("latex-compile").is_some());
+        crate::project::save_project_config(
+            &home,
+            &workspace,
+            &crate::project::ProjectConfig {
+                report_language: crate::project::ReportLanguage::Typst,
+            },
+        )
+        .unwrap();
+        assert!(loader.load("typst").is_some());
+        assert!(loader.load("latex-compile").is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 

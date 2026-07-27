@@ -950,13 +950,13 @@ mod tests {
                 "task_id": task.task_id,
                 "type": "reply",
                 "summary": "Report complete",
-                "content": "done at Tex/out.pdf"
+                "content": "done at Report/out.pdf"
             }))
             .await;
         assert!(out.error.is_none());
         let updated = board.get_task(&task.task_id, None, false).unwrap();
         assert_eq!(updated.status, TaskStatus::Completed);
-        assert_eq!(updated.reply.as_deref(), Some("done at Tex/out.pdf"));
+        assert_eq!(updated.reply.as_deref(), Some("done at Report/out.pdf"));
     }
 
     #[tokio::test]

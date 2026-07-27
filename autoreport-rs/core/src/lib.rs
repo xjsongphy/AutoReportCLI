@@ -6,6 +6,7 @@ pub mod config;
 pub mod environment;
 pub mod exec_policy;
 pub use autoreport_protocol::policy;
+pub mod project;
 pub mod prompts;
 pub mod provider;
 pub mod request_user_input;

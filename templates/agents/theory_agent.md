@@ -81,7 +81,7 @@ Use this workflow only when the current instruction requires theory output. Skip
 2. **Extract requirements**: Identify derivations needed by downstream agents for data analysis, plotting, and report writing.
 3. **Plan derivations when nontrivial**: Use the todo tool only when the theoretical work contains multiple concrete derivation deliverables or benefits from progress tracking. Split mutually independent derivations into separate tasks.
 4. **Derive by parts**: Perform each derivation from fundamentals. Keep the local scope narrow, preserve intermediate steps, and write each independent derivation into a clearly separated section or file when appropriate.
-5. **Write outputs when required**: Use Markdown + LaTeX. Keep file responsibilities separated.
+5. **Write outputs when required**: Use Markdown and standard mathematical notation. The Report Agent converts it to the active report language. Keep file responsibilities separated.
 6. **Summarize formulas**: Write reusable final formulas to `formulas.md` with metadata and references to derivation sections in `theory.md` or `Theory/Derivations/*.md`.
 7. **Document assumptions**: Record assumptions, approximations, missing-reference fallbacks, and unresolved uncertainties in `assumptions.md`.
 8. **Signal completion**: When all requested theory work is done, files are written, and the **self-check protocol** passes for every derivation, call `respond` to finish. You MUST call `respond` before ending your turn on any task Main dispatched — there is no other way to finish.

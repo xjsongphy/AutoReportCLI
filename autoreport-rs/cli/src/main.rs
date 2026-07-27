@@ -145,7 +145,7 @@ async fn run() -> Result<()> {
 
     if config::needs_api_config(&settings) {
         anyhow::bail!(
-            "no usable API is configured; add an API key in /config or the relevant environment variable"
+            "no usable API is configured; add an API key in /model or the relevant environment variable"
         );
     }
 
@@ -179,6 +179,53 @@ async fn run() -> Result<()> {
     }
 
     config::ensure_workspace(&workspace)?;
+
+    // Report language is project-scoped. Existing unambiguous projects are
+    // upgraded silently; new or ambiguous projects use the language stage of
+    // the environment wizard.
+    if autoreport_core::project::load_project_config(&autoreport_home, &workspace)?.is_none() {
+        match autoreport_core::project::infer_report_language(&workspace) {
+            autoreport_core::project::ReportLanguageInference::Latex => {
+                autoreport_core::project::save_project_config(
+                    &autoreport_home,
+                    &workspace,
+                    &autoreport_core::project::ProjectConfig {
+                        report_language: autoreport_core::project::ReportLanguage::Latex,
+                    },
+                )?;
+            }
+            autoreport_core::project::ReportLanguageInference::Typst => {
+                autoreport_core::project::save_project_config(
+                    &autoreport_home,
+                    &workspace,
+                    &autoreport_core::project::ProjectConfig {
+                        report_language: autoreport_core::project::ReportLanguage::Typst,
+                    },
+                )?;
+            }
+            autoreport_core::project::ReportLanguageInference::Empty
+            | autoreport_core::project::ReportLanguageInference::Ambiguous => {
+                match run_environment_wizard(&autoreport_home, &workspace) {
+                    Outcome::Saved => {}
+                    Outcome::Cancelled => return Ok(()),
+                }
+            }
+        }
+    }
+    let language = autoreport_core::project::selected_report_language(&autoreport_home, &workspace)
+        .unwrap_or(autoreport_core::project::ReportLanguage::Latex);
+    let prepared = autoreport_core::project::prepare_report_resources(
+        &workspace,
+        &autoreport_home,
+        language,
+        autoreport_core::project::MaterializePolicy::CreateMissingOnly,
+    )?;
+    if !prepared.failed.is_empty() {
+        log::warn!(
+            "report resources incomplete: {}",
+            prepared.failed.join("; ")
+        );
+    }
 
     let (main_api, main_model) = config::resolve_model(&settings, &settings.models.main, "main")?;
     let (sub_api, sub_model) = config::resolve_model(&settings, &settings.models.sub, "sub")?;
@@ -260,7 +307,11 @@ fn run_environment_wizard(home: &std::path::Path, workspace: &std::path::Path) -
             return Outcome::Cancelled;
         }
     };
-    let mut screen = EnvironmentScreen::new(home.to_path_buf(), workspace.to_path_buf());
+    let mut screen = if !environment::needs_python_config(home).unwrap_or(true) {
+        EnvironmentScreen::language_only(home.to_path_buf(), workspace.to_path_buf())
+    } else {
+        EnvironmentScreen::new(home.to_path_buf(), workspace.to_path_buf())
+    };
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);

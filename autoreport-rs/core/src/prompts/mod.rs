@@ -5,6 +5,7 @@
 //! project instruction layers.
 
 use crate::environment;
+use crate::project::{ReportLanguage, selected_report_language};
 use crate::skills::SkillLoader;
 use crate::types::AgentType;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,39 @@ const DATA_ANALYSIS: &str = include_str!("../../../../templates/agents/data_anal
 const PLOTTING: &str = include_str!("../../../../templates/agents/plotting_agent.md");
 const THEORY: &str = include_str!("../../../../templates/agents/theory_agent.md");
 const REPORT: &str = include_str!("../../../../templates/agents/report_agent.md");
+
+struct ReportLanguageProfile {
+    display_name: &'static str,
+    source_extension: &'static str,
+    entry_file: &'static str,
+    theme_file: &'static str,
+    writing_skill: &'static str,
+    compile_skill: &'static str,
+    compile_command: &'static str,
+}
+
+fn report_language_profile(language: ReportLanguage) -> ReportLanguageProfile {
+    match language {
+        ReportLanguage::Latex => ReportLanguageProfile {
+            display_name: "LaTeX",
+            source_extension: "tex",
+            entry_file: "Report/main.tex",
+            theme_file: "Report/mpltx.cls",
+            writing_skill: "experiment-report-writer",
+            compile_skill: "latex-compile",
+            compile_command: "latexmk -xelatex -cd Report/main.tex",
+        },
+        ReportLanguage::Typst => ReportLanguageProfile {
+            display_name: "Typst",
+            source_extension: "typ",
+            entry_file: "Report/main.typ",
+            theme_file: "Report/mplts.typ",
+            writing_skill: "experiment-report-writer",
+            compile_skill: "typst",
+            compile_command: "typst compile Report/main.typ",
+        },
+    }
+}
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -76,16 +110,35 @@ impl PromptLoader {
     ) -> String {
         let mut parts = Vec::new();
         parts.push(self.common());
-        parts.push(self.agent_prompt(agent));
+        let mut agent_prompt = self.agent_prompt(agent);
+        if agent == AgentType::Report {
+            let fragment = match selected_report_language(&self.home, &self.workspace)
+                .unwrap_or(ReportLanguage::Latex)
+            {
+                ReportLanguage::Latex => {
+                    include_str!("../../../../templates/report-languages/latex.md")
+                }
+                ReportLanguage::Typst => {
+                    include_str!("../../../../templates/report-languages/typst.md")
+                }
+            };
+            agent_prompt.push_str("\n\n");
+            agent_prompt.push_str(fragment);
+        }
+        parts.push(agent_prompt);
         let write_scope = match agent.write_dir() {
             Some(dir) => format!("You may write only under `{dir}/`."),
             None => "You may write only under `Outline/`.".to_string(),
         };
+        let profile = report_language_profile(
+            selected_report_language(&self.home, &self.workspace).unwrap_or(ReportLanguage::Latex),
+        );
+        parts.push(format!("\n\n## Report Environment\n\n- Language: {}\n- Source extension: `.{}`\n- Source directory: `Report/`\n- Entry file: `{}`\n- Theme: `{}`\n- Writing skill: `{}`\n- Compilation skill: `{}`\n- Compile command: `{}`", profile.display_name, profile.source_extension, profile.entry_file, profile.theme_file, profile.writing_skill, profile.compile_skill, profile.compile_command));
         parts.push(format!(
             "\n\n## Workspace\nYou are operating in: `{}`. The project has fixed directories: \
              `Data/` (raw + `Data/Processed/` analysis output), `References/` (reference PDFs, \
              images, custom templates/skills), `Theory/`, `Plots/` (`Plots/Fig/` figures + \
-             `Plots/Scripts/` code), `Tex/` (LaTeX sources + compiled PDF), `Outline/` (Main's \
+             `Plots/Scripts/` code), `Report/` (active LaTeX/Typst sources + compiled PDF), `Outline/` (Main's \
              report outline). {} \
              Read files and directory trees with `exec` (`cat`, `sed -n`, `rg`, `find`). \
              Edit files with `apply_patch`. Use `exec` for running programs, but any writes inside \

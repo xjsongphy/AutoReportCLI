@@ -4,9 +4,9 @@
 //!
 //! 1. **cc-switch** (`farion1231/cc-switch`) — TypeScript provider-preset files
 //!    (`*ProviderPresets.ts`) describing known providers/models/bases. Cached
-//!    under `$AUTOREPORT_HOME/external/cc-switch/`.
+//!    under `$AUTOREPORT_HOME/external/providers/cc-switch/`.
 //! 2. **skills** (`xjsongphy/skills`) — the agent skill files (`SKILL.md`),
-//!    written into `$AUTOREPORT_HOME/skills/<name>/SKILL.md` where `SkillLoader`
+//!    written into language-specific `$AUTOREPORT_HOME/resources/<language>/skills/`
 //!    discovers them.
 //!
 //! This is a real, complete implementation: HTTPS fetch via reqwest, on-disk
@@ -14,7 +14,7 @@
 //! providers, and best-effort behaviour (offline → keep existing cache, never
 //! block startup beyond the timeout).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 const CC_SWITCH_RAW: &str = "https://raw.githubusercontent.com/farion1231/cc-switch/f6e37ed99443890a865669e28bf1caf5e85d466d";
 const SKILLS_RAW: &str =
     "https://raw.githubusercontent.com/xjsongphy/skills/2d4557328cd56d3bc922a0e61bb7cb34dbd42011";
+const PKUMPL_TYPST_RAW: &str = "https://raw.githubusercontent.com/xjsongphy/pkumpl-typst/fa3afe997fdc390ea0b15d41df32c7750cf68858";
+const TYPST_SKILL_RAW: &str = "https://raw.githubusercontent.com/lucifer1004/claude-skill-typst/8069963bb563f8354ac6a43aeb750f1753e37556";
 
 const PRESET_FILES: &[&str] = &[
     "claudeProviderPresets.ts",
@@ -32,15 +34,15 @@ const PRESET_FILES: &[&str] = &[
     "opencodeProviderPresets.ts",
     "openclawProviderPresets.ts",
     "hermesProviderPresets.ts",
-    "openaiProviderPresets.ts",
     "universalProviderPresets.ts",
 ];
 
 /// Read the cached cc-switch templates without adding any of them to the
 /// user's configured providers. A template becomes a provider only after the
-/// user explicitly adds it in `/config`.
+/// user explicitly adds it in `/model`.
 pub fn load_presets(home: &Path) -> Vec<PresetProvider> {
     let cfg_dir = external_dir(home)
+        .join("providers")
         .join("cc-switch")
         .join("src")
         .join("config");
@@ -80,6 +82,37 @@ const SKILL_FILES: &[(&str, &str)] = &[
     ),
     ("latex-compile", "latex-compile/SKILL.md"),
 ];
+const TYPST_FILES: &[(&str, &str)] = &[
+    ("LICENSE", "LICENSE"),
+    ("mplts.typ", "themes/mplts.typ"),
+    ("template/main.typ", "templates/main.typ"),
+    ("template/bibli.bib", "templates/bibli.bib"),
+    (
+        "template/american-physics-society.csl",
+        "templates/american-physics-society.csl",
+    ),
+];
+const TYPST_SKILL_FILES: &[&str] = &[
+    "basics.md",
+    "types.md",
+    "styling.md",
+    "tables.md",
+    "academic.md",
+    "conversion.md",
+    "cli.md",
+    "query.md",
+    "advanced.md",
+    "template.md",
+    "package.md",
+    "debug.md",
+    "perf.md",
+    "examples/basic-document.typ",
+    "examples/styled-document.typ",
+    "examples/template-report.typ",
+    "examples/tables-showcase.typ",
+    "examples/academic-paper.typ",
+    "examples/query-export.typ",
+];
 
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
@@ -99,16 +132,18 @@ pub fn external_dir(home: &Path) -> PathBuf {
     home.join("external")
 }
 pub fn skills_dir(home: &Path) -> PathBuf {
-    home.join("skills")
+    home.join("resources")
 }
 
 /// Whether the local cache has the minimum files needed to skip startup sync.
 pub fn cache_is_warm(home: &Path) -> bool {
     let preset_dir = external_dir(home)
+        .join("providers")
         .join("cc-switch")
         .join("src")
         .join("config");
-    let skills = skills_dir(home);
+    let skills = skills_dir(home).join("latex").join("skills");
+    let typst = skills_dir(home).join("typst");
     PRESET_FILES
         .iter()
         .all(|file| preset_dir.join(file).is_file())
@@ -116,6 +151,12 @@ pub fn cache_is_warm(home: &Path) -> bool {
             skills.join(name).join("SKILL.md").is_file()
                 || skills.join(format!("{name}.md")).is_file()
         })
+        && typst.join("skills/typst/SKILL.md").is_file()
+        && typst
+            .join("skills/experiment-report-writer/SKILL.md")
+            .is_file()
+        && typst.join("templates/main.typ").is_file()
+        && typst.join("themes/mplts.typ").is_file()
 }
 
 /// Fetch both repositories' content into the global cache. Network errors
@@ -129,13 +170,29 @@ pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
         .unwrap_or_else(|_| reqwest::Client::new());
 
     let mut report = SyncReport::default();
+    let staging = home
+        .join(".sync-staging")
+        .join(uuid::Uuid::new_v4().to_string());
+    let staging_preset_dir = staging.join("external/providers/cc-switch/src/config");
+    let staging_skills = staging.join("resources/latex/skills");
+    let staging_typst = staging.join("resources/typst");
+    let _ = std::fs::create_dir_all(&staging_preset_dir);
+    let _ = std::fs::create_dir_all(&staging_skills);
+    let _ = std::fs::create_dir_all(staging_typst.join("themes"));
+    let _ = std::fs::create_dir_all(staging_typst.join("templates"));
+    let _ = std::fs::create_dir_all(staging_typst.join("skills/typst"));
+    let typst_writer = staging_typst.join("skills/experiment-report-writer/SKILL.md");
+    if let Err(e) = atomic_write(
+        &typst_writer,
+        include_str!("../../../templates/typst/skills/experiment-report-writer/SKILL.md"),
+    ) {
+        report
+            .errors
+            .push(format!("write bundled Typst writer skill: {e}"));
+    }
 
     // 1) cc-switch presets.
-    let preset_dir = external_dir(home)
-        .join("cc-switch")
-        .join("src")
-        .join("config");
-    let _ = std::fs::create_dir_all(&preset_dir);
+    let preset_dir = staging_preset_dir.clone();
     for file in PRESET_FILES {
         let url = format!("{CC_SWITCH_RAW}/src/config/{file}");
         let dest = preset_dir.join(file);
@@ -153,12 +210,16 @@ pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
     }
 
     // 2) skills repo.
-    let skills = skills_dir(home);
+    let skills = staging_skills.clone();
     let _ = std::fs::create_dir_all(&skills);
     for (name, repo_path) in SKILL_FILES {
         let url = format!("{SKILLS_RAW}/{repo_path}");
         match fetch_text(&client, &url).await {
             Ok(body) => {
+                if let Err(e) = validate_skill_text(&body) {
+                    report.errors.push(format!("skill {name}: {e}"));
+                    continue;
+                }
                 let skill_dir = skills.join(name);
                 let _ = std::fs::create_dir_all(&skill_dir);
                 let dest = skill_dir.join("SKILL.md");
@@ -173,6 +234,171 @@ pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
         }
     }
 
+    for (source, target) in TYPST_FILES {
+        match fetch_text(&client, &format!("{PKUMPL_TYPST_RAW}/{source}")).await {
+            Ok(body) => {
+                let body = if *target == "templates/main.typ" {
+                    body.replace(
+                        "#import \"@preview/unofficial-pku-mpl:0.1.0\": *",
+                        "#import \"mplts.typ\": *",
+                    )
+                } else {
+                    body
+                };
+                if let Err(e) = atomic_write(&staging_typst.join(target), &body) {
+                    report.errors.push(format!("write Typst {target}: {e}"));
+                }
+            }
+            Err(e) => report.errors.push(format!("Typst {target}: {e}")),
+        }
+    }
+    match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/skills/typst/SKILL.md")).await {
+        Ok(body) => {
+            let body = body.replace("(examples/package-example/)", "(package.md)");
+            if let Err(e) = validate_skill_text(&body) {
+                report.errors.push(format!("Typst skill: {e}"));
+            } else if let Err(e) = atomic_write(&staging_typst.join("skills/typst/SKILL.md"), &body)
+            {
+                report.errors.push(format!("write Typst skill: {e}"));
+            }
+        }
+        Err(e) => report.errors.push(format!("Typst skill: {e}")),
+    }
+    for file in TYPST_SKILL_FILES {
+        match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/skills/typst/{file}")).await {
+            Ok(body) => {
+                let body = body
+                    .replace("**Complete example**: See [examples/package-example/](examples/package-example/) for a minimal publishable package with submodules.", "**Complete example**: This bundled report skill omits package-development fixtures; use the package patterns in this document.")
+                    .replace("See [package search](scripts/search-packages.py) for alternatives.", "consult the Typst package documentation when selecting alternatives.");
+                if let Err(e) =
+                    atomic_write(&staging_typst.join(format!("skills/typst/{file}")), &body)
+                {
+                    report
+                        .errors
+                        .push(format!("write Typst reference {file}: {e}"));
+                }
+            }
+            Err(e) => report.errors.push(format!("Typst reference {file}: {e}")),
+        }
+    }
+    match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/LICENSE")).await {
+        Ok(body) => {
+            if let Err(e) = atomic_write(&staging_typst.join("skills/typst/LICENSE"), &body) {
+                report
+                    .errors
+                    .push(format!("write Typst skill LICENSE: {e}"));
+            }
+        }
+        Err(e) => report.errors.push(format!("Typst skill LICENSE: {e}")),
+    }
+
+    if report.errors.is_empty() {
+        if let Err(e) =
+            validate_relative_markdown_links(&staging_typst.join("skills/typst/SKILL.md"))
+        {
+            report.errors.push(format!("Typst skill links: {e}"));
+        }
+        for file in TYPST_SKILL_FILES
+            .iter()
+            .filter(|file| file.ends_with(".md"))
+        {
+            if let Err(e) = validate_relative_markdown_links(
+                &staging_typst.join(format!("skills/typst/{file}")),
+            ) {
+                report
+                    .errors
+                    .push(format!("Typst reference links {file}: {e}"));
+            }
+        }
+    }
+
+    if report.errors.is_empty() {
+        let published_preset = external_dir(home).join("providers/cc-switch/src/config");
+        let published_skills = skills_dir(home).join("latex/skills");
+        let published_typst = skills_dir(home).join("typst");
+        for target in [
+            published_preset.parent().unwrap(),
+            published_skills.as_path(),
+            published_typst.as_path(),
+        ] {
+            if let Err(e) = validate_managed_target(home, target) {
+                report
+                    .errors
+                    .push(format!("unsafe sync target {}: {e}", target.display()));
+            }
+        }
+        if !report.errors.is_empty() {
+            let _ = std::fs::remove_dir_all(&staging);
+            return report;
+        }
+        let _ = std::fs::create_dir_all(published_preset.parent().unwrap());
+        let _ = std::fs::create_dir_all(published_skills.parent().unwrap());
+        let backup = home
+            .join(".sync-staging")
+            .join(format!("backup-{}", uuid::Uuid::new_v4()));
+        let old_preset = published_preset.parent().unwrap().to_path_buf();
+        let old_skills = published_skills.clone();
+        let old_typst = published_typst.clone();
+        let backup_preset = backup.join("cc-switch");
+        let backup_skills = backup.join("skills");
+        let backup_typst = backup.join("typst");
+        let _ = std::fs::create_dir_all(&backup);
+        let mut moved_old_preset = false;
+        let mut moved_old_skills = false;
+        let mut moved_old_typst = false;
+        if old_preset.exists() {
+            moved_old_preset = std::fs::rename(&old_preset, &backup_preset).is_ok();
+        }
+        if old_skills.exists() {
+            moved_old_skills = std::fs::rename(&old_skills, &backup_skills).is_ok();
+        }
+        if old_typst.exists() {
+            moved_old_typst = std::fs::rename(&old_typst, &backup_typst).is_ok();
+        }
+        let publish_preset =
+            std::fs::rename(staging.join("external/providers/cc-switch"), &old_preset);
+        let publish_skills = std::fs::rename(staging.join("resources/latex/skills"), &old_skills);
+        let publish_typst = std::fs::rename(staging.join("resources/typst"), &old_typst);
+        let published_preset_ok = publish_preset.is_ok();
+        let published_skills_ok = publish_skills.is_ok();
+        let published_typst_ok = publish_typst.is_ok();
+        if let Err(e) = publish_preset {
+            report.errors.push(format!("publish presets: {e}"));
+        }
+        if let Err(e) = publish_skills {
+            report.errors.push(format!("publish skills: {e}"));
+        }
+        if let Err(e) = publish_typst {
+            report.errors.push(format!("publish Typst resources: {e}"));
+        }
+        if !report.errors.is_empty() {
+            if published_preset_ok {
+                let _ = std::fs::remove_dir_all(&old_preset);
+            }
+            if published_skills_ok {
+                let _ = std::fs::remove_dir_all(&old_skills);
+            }
+            if published_typst_ok {
+                let _ = std::fs::remove_dir_all(&old_typst);
+            }
+            if moved_old_preset {
+                let _ = std::fs::rename(&backup_preset, &old_preset);
+            }
+            if moved_old_skills {
+                let _ = std::fs::rename(&backup_skills, &old_skills);
+            }
+            if moved_old_typst {
+                let _ = std::fs::rename(&backup_typst, &old_typst);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+        if report.errors.is_empty() {
+            if let Err(e) = remove_legacy_managed_dirs(home) {
+                report.errors.push(format!("legacy cache cleanup: {e}"));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&staging);
     report
 }
 
@@ -202,6 +428,99 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String> {
         anyhow::bail!("HTTP {}", resp.status());
     }
     Ok(resp.text().await?)
+}
+
+fn validate_skill_text(body: &str) -> Result<()> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with("---") {
+        anyhow::bail!("missing YAML frontmatter");
+    }
+    let end = trimmed[3..]
+        .find("---")
+        .ok_or_else(|| anyhow::anyhow!("unterminated YAML frontmatter"))?;
+    let front = &trimmed[3..3 + end];
+    if !front
+        .lines()
+        .any(|line| line.trim_start().starts_with("name:"))
+    {
+        anyhow::bail!("frontmatter missing name");
+    }
+    if !front
+        .lines()
+        .any(|line| line.trim_start().starts_with("description:"))
+    {
+        anyhow::bail!("frontmatter missing description");
+    }
+    Ok(())
+}
+
+fn validate_relative_markdown_links(path: &Path) -> Result<()> {
+    let body = std::fs::read_to_string(path)?;
+    for line in body.lines() {
+        let mut rest = line;
+        while let Some(start) = rest.find("](") {
+            let raw_target = &rest[start + 2..];
+            let Some(end) = raw_target.find(')') else {
+                break;
+            };
+            let link = &raw_target[..end];
+            if !link.starts_with('#')
+                && !link.starts_with("http://")
+                && !link.starts_with("https://")
+            {
+                let target = link.split('#').next().unwrap_or(link);
+                if target.starts_with('/') || target.split('/').any(|part| part == "..") {
+                    anyhow::bail!("unsafe relative link {}", target);
+                }
+                if !target.is_empty() && !path.parent().unwrap().join(target).exists() {
+                    anyhow::bail!("missing relative link {}", target);
+                }
+            }
+            rest = &rest[start + 2 + end + 1..];
+        }
+    }
+    Ok(())
+}
+
+fn validate_managed_target(home: &Path, target: &Path) -> Result<()> {
+    let home = home
+        .canonicalize()
+        .context("canonicalizing AutoReport home")?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("target has no parent"))?;
+    let parent = parent
+        .canonicalize()
+        .context("canonicalizing managed target parent")?;
+    if !parent.starts_with(&home) {
+        anyhow::bail!("target escapes AutoReport home");
+    }
+    if target.exists() && std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+        anyhow::bail!("target is a symlink");
+    }
+    Ok(())
+}
+
+fn remove_legacy_managed_dirs(home: &Path) -> Result<()> {
+    let home = home
+        .canonicalize()
+        .context("canonicalizing AutoReport home")?;
+    for relative in ["skills", "templates", "external/cc-switch"] {
+        let target = home.join(relative);
+        if !target.exists() {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&target)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("legacy target is a symlink: {}", target.display());
+        }
+        let parent = target.parent().unwrap().canonicalize()?;
+        if parent != home && !parent.starts_with(&home) {
+            anyhow::bail!("legacy target escapes home: {}", target.display());
+        }
+        std::fs::remove_dir_all(target)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -761,5 +1080,22 @@ mod tests {
         assert_eq!(presets[0].name, "PatewayAI");
         assert_eq!(presets[0].base_url, "https://api.pateway.ai/v1");
         assert_eq!(presets[0].models, vec!["gpt-5.5"]);
+    }
+
+    #[test]
+    fn typst_allowlist_fixture_has_no_dangling_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skills/typst");
+        std::fs::create_dir_all(root.join("examples")).unwrap();
+        std::fs::write(root.join("basics.md"), "# basics\n").unwrap();
+        std::fs::write(root.join("examples/basic.typ"), "").unwrap();
+        std::fs::write(
+            root.join("SKILL.md"),
+            "See [basics](basics.md) and [example](examples/basic.typ).",
+        )
+        .unwrap();
+        validate_relative_markdown_links(&root.join("SKILL.md")).unwrap();
+        std::fs::write(root.join("bad.md"), "[missing](examples/nope/)").unwrap();
+        assert!(validate_relative_markdown_links(&root.join("bad.md")).is_err());
     }
 }

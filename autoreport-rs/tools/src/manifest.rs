@@ -73,7 +73,7 @@ impl ManifestStore {
             AgentType::DataAnalysis => &["Data/Processed"],
             AgentType::Plotting => &["Plots"],
             AgentType::Theory => &["Theory"],
-            AgentType::Report => &["Tex"],
+            AgentType::Report => &["Report"],
         }
     }
 
