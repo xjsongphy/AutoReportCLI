@@ -318,11 +318,12 @@ pub fn snapshot(home: &Path) -> EnvironmentSnapshot {
     let mineru_cli = which::which("mineru-open-api").ok();
     let mineru_key = ["MINERU_API_KEY", "MINERU_TOKEN", "MINERU_OPEN_API_KEY"]
         .iter()
-        .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()));
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+        || mineru_config_has_token();
     let mineru = ToolStatus {
         ready: mineru_cli.is_some() && mineru_key,
         detail: match (mineru_cli, mineru_key) {
-            (Some(path), true) => format!("{} · API key configured", path.display()),
+            (Some(path), true) => format!("{} · authenticated", path.display()),
             (Some(path), false) => format!("{} · API key missing", path.display()),
             (None, _) => "mineru-open-api not found".into(),
         },
@@ -337,6 +338,25 @@ pub fn snapshot(home: &Path) -> EnvironmentSnapshot {
         typst,
         mineru,
     }
+}
+
+fn mineru_config_has_token() -> bool {
+    let Some(home) = dirs_home() else {
+        return false;
+    };
+    let path = home.join(".mineru").join("config.yaml");
+    mineru_config_has_token_at(&path)
+}
+
+fn mineru_config_has_token_at(path: &Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    contents.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("token:")
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 pub fn render_context(home: &Path) -> String {
@@ -514,6 +534,21 @@ mod tests {
         let context = render_context(dir.path());
         assert!(context.contains("Local Environment"));
         assert!(!context.contains("API key configured"));
+    }
+
+    #[test]
+    fn mineru_config_token_detection_requires_a_nonempty_token() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+
+        std::fs::write(&config, "token: configured-token\n").unwrap();
+        assert!(mineru_config_has_token_at(&config));
+
+        std::fs::write(&config, "token:   \n").unwrap();
+        assert!(!mineru_config_has_token_at(&config));
+
+        std::fs::write(&config, "api_key: configured-token\n").unwrap();
+        assert!(!mineru_config_has_token_at(&config));
     }
 
     #[test]
