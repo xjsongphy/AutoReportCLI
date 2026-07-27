@@ -151,15 +151,59 @@ impl Tui {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
-        let mut terminal = Terminal::with_options(backend)?;
 
-        // Codex probes the terminal palette before its event stream owns stdin.
-        // Keep that ordering so OSC 10/11 replies cannot be mistaken for input,
-        // and let the shared palette choose the correct RGB/ANSI representation.
-        let colors = crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
-            .ok()
-            .flatten();
-        crate::terminal_palette::set_default_colors_from_startup_probe(colors);
+        // Codex batches OSC cursor-position, OSC 10/11 palette, and a keyboard-
+        // enhancement probe into one bounded startup query before crossterm's
+        // event stream owns stdin. Keep that ordering so replies cannot be
+        // mistaken for input, and let the shared palette choose the correct
+        // RGB/ANSI representation. (tui.rs init(), vendored verbatim in shape.)
+        #[cfg(unix)]
+        let startup_probe = {
+            use crate::terminal_probe::StartupKeyboardEnhancementProbe;
+
+            let started_at = std::time::Instant::now();
+            let keyboard_probe = StartupKeyboardEnhancementProbe::Query;
+            match crate::terminal_probe::startup(
+                crate::terminal_probe::DEFAULT_TIMEOUT,
+                keyboard_probe,
+            ) {
+                Ok(probe) => {
+                    tracing::info!(
+                        duration_ms = %started_at.elapsed().as_millis(),
+                        cursor_position = probe.cursor_position.is_some(),
+                        default_colors = probe.default_colors.is_some(),
+                        keyboard_enhancement_supported = ?probe.keyboard_enhancement_supported,
+                        "terminal startup probes completed"
+                    );
+                    probe
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        duration_ms = %started_at.elapsed().as_millis(),
+                        "terminal startup probes failed: {err}"
+                    );
+                    crate::terminal_probe::StartupProbe {
+                        cursor_position: None,
+                        default_colors: None,
+                        keyboard_enhancement_supported: None,
+                    }
+                }
+            }
+        };
+
+        #[cfg(unix)]
+        crate::terminal_palette::set_default_colors_from_startup_probe(startup_probe.default_colors);
+
+        #[cfg(unix)]
+        let cursor_pos = startup_probe.cursor_position.unwrap_or_else(|| {
+            tracing::warn!("initial cursor position probe timed out; defaulting to origin");
+            ratatui::layout::Position { x: 0, y: 0 }
+        });
+
+        #[cfg(not(unix))]
+        let cursor_pos = ratatui::layout::Position { x: 0, y: 0 };
+
+        let mut terminal = Terminal::with_options_and_cursor_position(backend, cursor_pos)?;
 
         // Codex inserts session notices before replayed transcript cells, so a
         // resumed conversation starts below the header/help surface.

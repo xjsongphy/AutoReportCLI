@@ -1,0 +1,23 @@
+[package]
+name = "autoreport-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_app_server"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-app-server-protocol = { workspace = true }
+autoreport-app-server-transport = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-protocol = { workspace = true }
+autoreport-otel = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

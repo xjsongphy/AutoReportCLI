@@ -27,11 +27,9 @@ pub(crate) struct DefaultColors {
 }
 
 #[cfg(unix)]
-// These probe helpers are vendored from codex. Our TUI bootstrap (app.rs) only
-// calls `default_colors`/`DEFAULT_TIMEOUT` so far; the full `startup(...)` probe
-// and `cursor_position(...)` resume-realignment callers (codex's tui.rs and
-// tui/job_control.rs) are not yet ported. Allow dead code until they are.
-#[allow(dead_code)]
+// Vendored from codex. `startup(...)` is wired into our TUI bootstrap (app.rs);
+// `cursor_position(...)` (the job-control resume-realignment caller in codex's
+// tui/job_control.rs) is not yet ported, so it stays dead-code-allowed below.
 mod imp {
     use super::DefaultColors;
     use super::parse_default_colors;
@@ -241,6 +239,9 @@ mod imp {
     /// Resume can emit a focus report immediately before the cursor-position response. Reusing
     /// the startup parser lets the probe find the response without leaking either sequence into
     /// the composer.
+    // Vendored from codex; caller is codex's job-control `fg`-resume realignment
+    // (tui/job_control.rs), whose module we have not ported yet.
+    #[allow(dead_code)]
     pub(crate) fn cursor_position(timeout: Duration) -> io::Result<Option<Position>> {
         let mut tty = Tty::open()?;
         tty.write_all(b"\x1B[6n")?;

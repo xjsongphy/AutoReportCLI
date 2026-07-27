@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "autoreport-rs/app-server",
     "autoreport-rs/app-server-protocol",
     "autoreport-rs/app-server-transport",
     "autoreport-rs/codex-protocol",
@@ -56,7 +57,10 @@ autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
+autoreport-app-server = { path = "autoreport-rs/app-server" }
+autoreport-protocol = { path = "autoreport-rs/protocol" }
 autoreport-app-server-transport = { path = "autoreport-rs/app-server-transport" }
+autoreport-otel = { path = "autoreport-rs/otel" }
 autoreport-uds = { path = "autoreport-rs/uds" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
@@ -139,7 +143,7 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"
 tracing = "0.1"
