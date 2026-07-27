@@ -5,6 +5,8 @@ members = [
     "autoreport-rs/app-server-transport",
     "autoreport-rs/codex-protocol",
     "autoreport-rs/http-client",
+    "autoreport-rs/websocket-client",
+    "autoreport-rs/codex-client",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -67,6 +69,8 @@ autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-trunca
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
 autoreport-http-client = { path = "autoreport-rs/http-client" }
+autoreport-websocket-client = { path = "autoreport-rs/websocket-client" }
+autoreport-codex-client = { path = "autoreport-rs/codex-client" }
 autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/app-server" }
@@ -165,7 +169,7 @@ thiserror = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.28", features = ["proxy", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"
@@ -188,3 +192,4 @@ lto = "thin"
 # HAR parser needs this one-line `String -> Box<str>` compatibility fix for
 # the current Rust toolchain.
 rama-http = { path = "third_party/rama-http" }
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
