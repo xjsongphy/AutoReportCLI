@@ -124,7 +124,7 @@ pub fn cache_is_warm(home: &Path) -> bool {
 pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
     let client = reqwest::Client::builder()
         .timeout(timeout)
-        .user_agent("AutoReportCLI/1.0")
+        .user_agent(crate::user_agent::app_user_agent())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 

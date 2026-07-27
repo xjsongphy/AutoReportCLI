@@ -475,10 +475,16 @@ impl ModelScreen {
     ) -> io::Result<Outcome> {
         loop {
             terminal.draw(|f| self.draw(f))?;
-            if let event::Event::Key(key) = event::read()? {
-                if let Some(outcome) = self.handle_key(key) {
-                    return Ok(outcome);
+            match event::read()? {
+                event::Event::Resize(width, height) => {
+                    terminal.resize(ratatui::layout::Size::new(width, height))?;
                 }
+                event::Event::Key(key) => {
+                    if let Some(outcome) = self.handle_key(key) {
+                        return Ok(outcome);
+                    }
+                }
+                _ => {}
             }
         }
     }

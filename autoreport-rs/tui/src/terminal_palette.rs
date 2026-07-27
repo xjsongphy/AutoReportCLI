@@ -1,6 +1,6 @@
 use crate::color::perceptual_distance;
-use crate::terminal_detection::TerminalName;
-use crate::terminal_detection::terminal_info;
+use autoreport_terminal_detection::TerminalName;
+use autoreport_terminal_detection::terminal_info;
 use ratatui::style::Color;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

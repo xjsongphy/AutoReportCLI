@@ -13,3 +13,4 @@ pub mod skills;
 pub mod sync;
 pub mod taskboard;
 pub mod types;
+pub mod user_agent;

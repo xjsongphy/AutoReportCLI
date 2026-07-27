@@ -1,0 +1,12 @@
+[package]
+name = "autoreport-utils-output-truncation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_utils_output_truncation"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-string = { workspace = true }

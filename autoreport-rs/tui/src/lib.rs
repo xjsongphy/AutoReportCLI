@@ -43,5 +43,4 @@ pub mod workspace_confirm;
 pub mod wrapping;
 
 pub use app::Tui;
-pub(crate) mod terminal_detection;
 pub(crate) mod terminal_probe;

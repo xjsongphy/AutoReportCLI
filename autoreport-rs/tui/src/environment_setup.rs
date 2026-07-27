@@ -8,13 +8,16 @@ use autoreport_core::environment::{
 };
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use std::io;
 use std::path::PathBuf;
 
 use crate::config_update::Outcome;
+use crate::render::Insets;
+use crate::render::renderable::{ColumnRenderable, Renderable, RenderableExt as _};
+use crate::selection_list::selection_option_row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -92,12 +95,6 @@ impl EnvironmentScreen {
     pub fn draw(&self, frame: &mut Frame<'_>) {
         let area = frame.area();
         frame.render_widget(Clear, area);
-        let block = Block::default()
-            .title(" Python environment ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let status = snapshot(&self.home);
         let status_line = Line::from(vec![
             Span::styled(
@@ -145,53 +142,53 @@ impl EnvironmentScreen {
         ]);
         match self.step {
             Step::Select => {
-                let mut items = self
-                    .candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(i, candidate)| {
-                        ListItem::new(Line::from(vec![
-                            Span::styled(
-                                format!("{}  ", i + 1),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::raw(candidate.label.clone()),
-                            Span::styled(
-                                format!("  · {}", candidate.version),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ]))
-                    })
-                    .collect::<Vec<_>>();
-                items.push(ListItem::new("Custom Python executable"));
-                items.push(ListItem::new("AutoReport managed venv (global)"));
-                let list = List::new(items).highlight_symbol("› ").highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
+                let mut column = ColumnRenderable::new();
+                column.push(Line::from("Python environment").style(Style::default().dim()));
+                column.push(
+                    Paragraph::new(
+                        "Select the Python environment used by AutoReportCLI for this machine and all workspaces.\nDetected environments are reused; the managed option creates ~/.autoreport/venv.",
+                    )
+                    .wrap(Wrap { trim: true })
+                    .inset(Insets::tlbr(0, 0, 0, 0)),
                 );
-                let mut state = ListState::default();
-                state.select(Some(self.selected));
-                let intro = Paragraph::new(
-                    "Select the Python environment used by AutoReportCLI for this machine and all workspaces.\nDetected environments are reused; the managed option creates ~/.autoreport/venv.\n",
+                column.push("");
+                for (i, candidate) in self.candidates.iter().enumerate() {
+                    let (title, detail) = candidate
+                        .label
+                        .split_once(" · ")
+                        .map_or((candidate.label.as_str(), ""), |parts| parts);
+                    column.push(selection_option_row(
+                        i,
+                        title.to_string(),
+                        self.selected == i,
+                    ));
+                    let detail = if detail.is_empty() {
+                        candidate.version.clone()
+                    } else {
+                        format!("{detail} · {}", candidate.version)
+                    };
+                    column.push(
+                        Line::from(format!("    {detail}"))
+                            .style(Style::default().fg(Color::DarkGray)),
+                    );
+                }
+                column.push(selection_option_row(
+                    self.candidates.len(),
+                    "Custom Python executable".into(),
+                    self.selected == self.candidates.len(),
+                ));
+                column.push(selection_option_row(
+                    self.candidates.len() + 1,
+                    "AutoReport managed venv (global)".into(),
+                    self.selected == self.candidates.len() + 1,
+                ));
+                column.push("");
+                column.push(status_line);
+                column.push(
+                    Line::from("↑/↓ select · Enter choose · Esc cancel")
+                        .style(Style::default().dim()),
                 );
-                frame.render_widget(intro, inner);
-                let list_area = ratatui::layout::Rect {
-                    x: inner.x + 1,
-                    y: inner.y + 4,
-                    width: inner.width.saturating_sub(2),
-                    height: inner.height.saturating_sub(7),
-                };
-                frame.render_stateful_widget(list, list_area, &mut state);
-                frame.render_widget(
-                    Paragraph::new(status_line),
-                    ratatui::layout::Rect {
-                        x: inner.x + 1,
-                        y: inner.bottom().saturating_sub(2),
-                        width: inner.width.saturating_sub(2),
-                        height: 1,
-                    },
-                );
+                column.render(area, frame.buffer_mut());
             }
             Step::Custom => {
                 let body = vec![
@@ -202,7 +199,7 @@ impl EnvironmentScreen {
                         Span::styled(&self.custom_path, Style::default().fg(Color::Yellow)),
                     ]),
                 ];
-                frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), inner);
+                frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), area);
             }
             Step::Review => {
                 let config = self.pending.as_ref().expect("review has a selection");
@@ -221,7 +218,7 @@ impl EnvironmentScreen {
                         .map(Line::from)
                         .unwrap_or_else(|| Line::from("")),
                 ];
-                frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), inner);
+                frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), area);
             }
         }
     }
@@ -280,10 +277,16 @@ impl EnvironmentScreen {
     ) -> io::Result<Outcome> {
         loop {
             terminal.draw(|frame| self.draw(frame))?;
-            if let event::Event::Key(key) = event::read()?
-                && let Some(outcome) = self.handle_key(key)
-            {
-                return Ok(outcome);
+            match event::read()? {
+                event::Event::Resize(width, height) => {
+                    terminal.resize(ratatui::layout::Size::new(width, height))?;
+                }
+                event::Event::Key(key) => {
+                    if let Some(outcome) = self.handle_key(key) {
+                        return Ok(outcome);
+                    }
+                }
+                _ => {}
             }
         }
     }

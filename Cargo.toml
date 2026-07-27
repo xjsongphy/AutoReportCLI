@@ -4,6 +4,10 @@ members = [
     "autoreport-rs/app-server-protocol",
     "autoreport-rs/app-server-transport",
     "autoreport-rs/codex-protocol",
+    "autoreport-rs/context-fragments",
+    "autoreport-rs/utils/output-truncation",
+    "autoreport-rs/utils/path-utils",
+    "autoreport-rs/utils/stream-parser",
     "autoreport-rs/cli",
     "autoreport-rs/core",
     "autoreport-rs/async-utils",
@@ -20,6 +24,7 @@ members = [
     "autoreport-rs/utils/cache",
     "autoreport-rs/utils/image",
     "autoreport-rs/utils/path-uri",
+    "autoreport-rs/terminal-detection",
     "autoreport-rs/sandboxing",
     "autoreport-rs/process-hardening",
     "autoreport-rs/install-context",
@@ -56,12 +61,17 @@ autoreport-utils-path-uri = { path = "autoreport-rs/utils/path-uri" }
 autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
+autoreport-context-fragments = { path = "autoreport-rs/context-fragments" }
+autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
+autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
+autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/app-server" }
 autoreport-protocol = { path = "autoreport-rs/protocol" }
 autoreport-app-server-transport = { path = "autoreport-rs/app-server-transport" }
 autoreport-otel = { path = "autoreport-rs/otel" }
 autoreport-uds = { path = "autoreport-rs/uds" }
+autoreport-terminal-detection = { path = "autoreport-rs/terminal-detection" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-io = "2.6.0"
@@ -105,6 +115,7 @@ once_cell = "1"
 landlock = "0.4.4"
 log = "0.4"
 nucleo = "0.5"
+os_info = "3"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", features = ["unstable-widget-ref", "unstable-rendered-line-info"] }
 regex = "1"
