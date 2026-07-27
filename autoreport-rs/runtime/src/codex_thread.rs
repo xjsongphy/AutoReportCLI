@@ -296,6 +296,12 @@ impl AgentLoop {
                                 message: format!("{e:?}"),
                             });
                             self.set_status(AgentStatus::Idle);
+                            // The turn bailed before the success-path snapshot
+                            // reset the accumulator; clear it here so any
+                            // partial tool/api tallies from this failed turn
+                            // are not attributed to the next turn's separator.
+                            *self.turn_metrics.lock().await =
+                                autoreport_core::types::RuntimeMetricsSummary::default();
                         }
                     }
                 }
