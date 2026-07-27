@@ -9,6 +9,7 @@ members = [
     "autoreport-rs/codex-client",
     "autoreport-rs/codex-api",
     "autoreport-rs/features",
+    "autoreport-rs/response-debug-context",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -68,6 +69,7 @@ autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 autoreport-context-fragments = { path = "autoreport-rs/context-fragments" }
 autoreport-features = { path = "autoreport-rs/features" }
+autoreport-response-debug-context = { path = "autoreport-rs/response-debug-context" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
