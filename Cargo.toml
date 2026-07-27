@@ -4,6 +4,7 @@ members = [
     "autoreport-rs/app-server-protocol",
     "autoreport-rs/app-server-transport",
     "autoreport-rs/codex-protocol",
+    "autoreport-rs/http-client",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -65,6 +66,8 @@ autoreport-context-fragments = { path = "autoreport-rs/context-fragments" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
+autoreport-http-client = { path = "autoreport-rs/http-client" }
+autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/app-server" }
 autoreport-protocol = { path = "autoreport-rs/protocol" }
@@ -136,6 +139,14 @@ pretty_assertions = "1"
 tempfile = "3"
 toml = "0.8"
 jsonwebtoken = "9.3"
+eventsource-stream = "0.2"
+opentelemetry = "0.31"
+rand = "0.9"
+rustls-native-certs = "0.8"
+rustls-pki-types = "1.14"
+tokio-rustls = "0.26"
+tracing-opentelemetry = "0.32"
+zstd = "0.13"
 owo-colors = { version = "4", features = ["supports-colors"] }
 sha2 = "0.10"
 supports-color = "3.0.2"
