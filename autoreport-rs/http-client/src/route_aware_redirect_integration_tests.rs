@@ -45,7 +45,7 @@ async fn route_aware_pool_re_resolves_redirects_and_logs_only_final_outcome() {
             })
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client", tracing::Level::TRACE),
+                    .with_target("autoreport_http_client", tracing::Level::TRACE),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);

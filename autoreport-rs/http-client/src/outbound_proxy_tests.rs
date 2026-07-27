@@ -418,11 +418,11 @@ async fn route_aware_pool_logs_only_the_final_redirect_outcome() {
             })
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client", tracing::Level::TRACE),
+                    .with_target("autoreport_http_client", tracing::Level::TRACE),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);
-    tracing::debug!(target: "codex_http_client", "log capture sentinel");
+    tracing::debug!(target: "autoreport_http_client", "log capture sentinel");
 
     let response = tokio::time::timeout(Duration::from_secs(2), pool.get(&initial_url).send())
         .await

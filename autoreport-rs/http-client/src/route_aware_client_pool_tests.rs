@@ -376,11 +376,11 @@ async fn disabled_pool_logging_does_not_expose_request_or_response_data() {
             })
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client", tracing::Level::TRACE),
+                    .with_target("autoreport_http_client", tracing::Level::TRACE),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);
-    tracing::debug!(target: "codex_http_client", "log capture sentinel");
+    tracing::debug!(target: "autoreport_http_client", "log capture sentinel");
     let request_url = format!(
         "http://auth-user:password-secret-value@{address}/token?client_secret=query-secret-value"
     );

@@ -10,9 +10,9 @@
 //! - error messages guide users when CA files are invalid.
 //! - optional HTTPS probes can complete a request through the constructed client.
 //!
-//! The detailed explanation of what "hermetic" means here lives in `codex_http_client::custom_ca`.
+//! The detailed explanation of what "hermetic" means here lives in `autoreport_http_client::custom_ca`.
 //! This binary exists so the tests can exercise
-//! [`codex_http_client::build_reqwest_client_for_subprocess_tests`] in a separate process without
+//! [`autoreport_http_client::build_reqwest_client_for_subprocess_tests`] in a separate process without
 //! duplicating client-construction logic.
 
 use std::env;

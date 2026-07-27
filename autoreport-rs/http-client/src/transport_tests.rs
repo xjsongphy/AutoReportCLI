@@ -51,11 +51,11 @@ async fn capture_transport_logs(client: HttpClient) -> String {
             .with_writer(move || TestLogWriter(Arc::clone(&writer_buffer)))
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client::transport", tracing::Level::TRACE),
+                    .with_target("autoreport_http_client::transport", tracing::Level::TRACE),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);
-    tracing::trace!(target: "codex_http_client::transport", "log capture sentinel");
+    tracing::trace!(target: "autoreport_http_client::transport", "log capture sentinel");
     let mut request = Request::new(
         Method::POST,
         format!("http://{server_addr}/request?token=url-secret"),

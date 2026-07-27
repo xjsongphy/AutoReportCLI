@@ -96,11 +96,11 @@ async fn route_aware_pool_sanitizes_redirected_failure_logs() {
             })
             .with_filter(
                 tracing_subscriber::filter::Targets::new()
-                    .with_target("codex_http_client", tracing::Level::TRACE),
+                    .with_target("autoreport_http_client", tracing::Level::TRACE),
             ),
     );
     let _guard = tracing::subscriber::set_default(subscriber);
-    tracing::debug!(target: "codex_http_client", "log capture sentinel");
+    tracing::debug!(target: "autoreport_http_client", "log capture sentinel");
 
     let (enabled_failure_addr, enabled_failure_thread) = spawn_failing_listener();
     let enabled_target_url =
