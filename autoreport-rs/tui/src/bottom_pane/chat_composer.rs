@@ -276,12 +276,6 @@ impl ChatComposer {
         self.history_search.as_ref().map(|s| s.status())
     }
 
-    /// Accept the current match: end the session but keep the matched draft so
-    /// the caller can submit it.
-    pub(crate) fn accept_history_search(&mut self) {
-        self.history_search = None;
-    }
-
     /// Cancel the session and restore the original draft.
     #[allow(dead_code)]
     pub(crate) fn cancel_history_search(&mut self) {
@@ -889,7 +883,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("reverse-i-search: c"));
-        composer.accept_history_search();
+        composer.history_search = None;
         assert!(!composer.history_search_active());
     }
 

@@ -174,6 +174,9 @@ impl TerminalInfo {
     }
 
     /// Formats the terminal info as a User-Agent token.
+    // Vendored from codex; caller is codex's `user_agent()` / `get_codex_user_agent()`.
+    // We currently hardcode the UA in core/src/sync.rs, so this is unwired here.
+    #[allow(dead_code)]
     fn user_agent_token(&self) -> String {
         let raw = if let Some(program) = self.term_program.as_ref() {
             match self.version.as_ref().filter(|v| !v.is_empty()) {
@@ -209,6 +212,9 @@ impl TerminalInfo {
     }
 
     /// Returns whether the active terminal multiplexer is Zellij.
+    // Vendored from codex; caller is codex's Zellij-aware history-line wrapping
+    // in tui/tui.rs, not yet ported.
+    #[allow(dead_code)]
     pub fn is_zellij(&self) -> bool {
         matches!(self.multiplexer, Some(Multiplexer::Zellij { .. }))
     }
@@ -273,6 +279,9 @@ impl Environment for ProcessEnvironment {
 }
 
 /// Returns a sanitized terminal identifier for User-Agent strings.
+// Vendored from codex; caller is codex's session/login/memories HTTP UA setup.
+// We hardcode the UA in core/src/sync.rs instead, so unwired here.
+#[allow(dead_code)]
 pub fn user_agent() -> String {
     terminal_info().user_agent_token()
 }
@@ -500,11 +509,15 @@ fn parse_zellij_version(value: &str) -> Option<String> {
 /// Sanitizes a terminal token for use in User-Agent headers.
 ///
 /// Invalid header characters are replaced with underscores.
+// Vendored from codex; helper for the unwired `user_agent_token` cluster.
+#[allow(dead_code)]
 fn sanitize_header_value(value: String) -> String {
     value.replace(|c| !is_valid_header_value_char(c), "_")
 }
 
 /// Returns whether a character is allowed in User-Agent header values.
+// Vendored from codex; helper for the unwired `user_agent_token` cluster.
+#[allow(dead_code)]
 fn is_valid_header_value_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/'
 }
@@ -535,6 +548,8 @@ fn terminal_name_from_term_program(value: &str) -> Option<TerminalName> {
     }
 }
 
+// Vendored from codex; helper for the unwired `user_agent_token` cluster.
+#[allow(dead_code)]
 fn format_terminal_version(name: &str, version: &Option<String>) -> String {
     match version.as_ref().filter(|value| !value.is_empty()) {
         Some(version) => format!("{name}/{version}"),

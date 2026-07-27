@@ -246,7 +246,9 @@ where
 
     fn with_screen_size_and_cursor_position(
         backend: B,
-        screen_size: Size,
+        // Deliberately unused: we start at `Size::ZERO` so the first `autoresize`
+        // (rather than codex's external `set_viewport_area` call) sizes the buffers.
+        _screen_size: Size,
         cursor_pos: Position,
     ) -> Self {
         Self {

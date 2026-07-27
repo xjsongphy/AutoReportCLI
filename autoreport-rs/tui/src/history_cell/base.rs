@@ -13,6 +13,7 @@ pub(crate) struct PlainHistoryCell {
 }
 
 impl PlainHistoryCell {
+    #[allow(dead_code)] // constructed once R5 builds cells from transcript items
     pub(crate) fn new(lines: Vec<Line<'static>>) -> Self {
         Self { lines }
     }
@@ -37,6 +38,7 @@ pub(crate) struct WebHyperlinkHistoryCell {
 }
 
 impl WebHyperlinkHistoryCell {
+    #[allow(dead_code)] // constructed once R5 wires assistant-message cells with URLs
     pub(crate) fn new(lines: Vec<Line<'static>>) -> Self {
         Self { lines }
     }
@@ -71,6 +73,7 @@ pub(crate) struct PrefixedWrappedHistoryCell {
 }
 
 impl PrefixedWrappedHistoryCell {
+    #[allow(dead_code)] // constructed once R5 wires prefixed transcript blocks
     pub(crate) fn new(
         text: impl Into<Text<'static>>,
         initial_prefix: impl Into<Line<'static>>,
@@ -194,6 +197,7 @@ pub(crate) struct CompositeHistoryCell {
 }
 
 impl CompositeHistoryCell {
+    #[allow(dead_code)] // constructed once composable transcript cells are wired
     pub(crate) fn new(parts: Vec<Box<dyn HistoryCell>>) -> Self {
         Self { parts }
     }
