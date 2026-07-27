@@ -16,7 +16,13 @@
 //! (`Searching`/`Match`/`NoMatch`), draft snapshot/restore, and case-insensitive
 //! matching are ported verbatim from Codex.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+/// Mirrors Codex's `has_ctrl_or_alt`: a key carries a composing modifier that
+/// means it is NOT plain text input (so it must not be appended to the query).
+fn has_ctrl_or_alt(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
 
 /// Live status of a search session, mirroring Codex's `HistorySearchStatus`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,13 +141,21 @@ fn search_from_latest(
         None => {
             session.match_index = None;
             session.status = HistorySearchStatus::NoMatch;
+            // No match for the extended query: restore the draft captured when
+            // the session opened (NOT the previously matched entry), mirroring
+            // Codex's `apply_history_search_result` NotFound arm. The query is
+            // retained so the user can keep editing.
+            *text = session.original_draft.clone();
+            *cursor = session.original_cursor;
         }
     }
 }
 
 /// Advance to the next match in `direction` from the current match. On a
-/// boundary (no further match) the status becomes `NoMatch` but the query is
-/// retained, matching Codex's "failing reverse-i-search" behavior.
+/// boundary (matches exist but none further in this direction) the status
+/// stays `Match` and the current preview is left intact, mirroring Codex's
+/// `AtBoundary` result. The "failing"/NoMatch state is reserved for a query
+/// that matches nothing at all.
 fn advance(
     history: &[String],
     session: &mut HistorySearchSession,
@@ -149,6 +163,12 @@ fn advance(
     cursor: &mut usize,
     direction: Direction,
 ) {
+    if session.query.is_empty() {
+        // Empty query matches nothing to advance to; Codex early-returns Idle.
+        session.status = HistorySearchStatus::Idle;
+        session.match_index = None;
+        return;
+    }
     let start = match (direction, session.match_index) {
         (Direction::Older, Some(i)) => i,
         (Direction::Newer, Some(i)) => i.saturating_add(1),
@@ -165,7 +185,12 @@ fn advance(
             *cursor = text.len();
         }
         None => {
-            session.status = HistorySearchStatus::NoMatch;
+            // AtBoundary: we had a match but there is no further one in this
+            // direction. Keep `Match` and leave the current preview intact
+            // (Codex `AtBoundary`), instead of flipping to a "failing" state.
+            if session.match_index.is_some() {
+                session.status = HistorySearchStatus::Match;
+            }
         }
     }
 }
@@ -180,6 +205,12 @@ pub(crate) fn handle_search_key(
     cursor: &mut usize,
     key: KeyEvent,
 ) -> SearchKeyOutcome {
+    // Some terminals emit both Press and Release for each physical keypress;
+    // ignore Release so a single keystroke is not processed twice (Codex's
+    // first line in `handle_history_search_key`).
+    if key.kind == KeyEventKind::Release {
+        return SearchKeyOutcome::Ignored;
+    }
     // Ctrl+R / Ctrl+S navigate regardless of the query.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -231,7 +262,7 @@ pub(crate) fn handle_search_key(
             pop_query(history, session, text, cursor);
             SearchKeyOutcome::Continue
         }
-        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char(ch) if !has_ctrl_or_alt(key.modifiers) => {
             session.query.push(ch);
             search_from_latest(history, session, text, cursor);
             SearchKeyOutcome::Continue
@@ -313,7 +344,9 @@ mod tests {
             key(KeyCode::Char('r'), KeyModifiers::CONTROL),
         );
         assert_eq!(text, "cargo test");
-        // No older "c" match → failing status, text retained.
+        // No older "c" match → AtBoundary: stay `Match`, preview retained
+        // (mirrors codex; "failing"/NoMatch is reserved for a query that
+        // matches nothing at all).
         handle_search_key(
             &history,
             &mut session,
@@ -321,7 +354,7 @@ mod tests {
             &mut cursor,
             key(KeyCode::Char('r'), KeyModifiers::CONTROL),
         );
-        assert_eq!(session.status(), HistorySearchStatus::NoMatch);
+        assert_eq!(session.status(), HistorySearchStatus::Match);
         assert_eq!(text, "cargo test");
     }
 
@@ -445,5 +478,74 @@ mod tests {
             key(KeyCode::Backspace, KeyModifiers::NONE),
         );
         assert_eq!(session.query(), "c");
+    }
+
+    /// I-3: extending a matched query to one with no match restores the
+    /// original draft (not the previously matched entry). Mirrors codex's
+    /// `history_search_no_match_restores_preview_but_keeps_search_open`.
+    #[test]
+    fn no_match_restores_original_draft() {
+        let history = history();
+        let mut session = HistorySearchSession::new("my draft".to_string(), 8);
+        let mut text = "my draft".to_string();
+        let mut cursor = 8;
+        // 'c' matches "cargo build"; then 'x' → "cx" matches nothing.
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('c'), KeyModifiers::NONE),
+        );
+        assert_eq!(text, "cargo build");
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(session.status(), HistorySearchStatus::NoMatch);
+        assert_eq!(text, "my draft", "no-match must restore original draft");
+    }
+
+    /// I-1: Alt-modified chars must NOT be appended to the query (word-motion
+    /// keys like Alt+b/Alt+f would otherwise corrupt the search).
+    #[test]
+    fn alt_modified_char_does_not_corrupt_query() {
+        let history = history();
+        let mut session = HistorySearchSession::new(String::new(), 0);
+        let mut text = String::new();
+        let mut cursor = 0;
+        handle_search_key(
+            &history,
+            &mut session,
+            &mut text,
+            &mut cursor,
+            key(KeyCode::Char('b'), KeyModifiers::ALT),
+        );
+        assert!(
+            session.query().is_empty(),
+            "Alt+char must not enter the query"
+        );
+        assert_eq!(session.status(), HistorySearchStatus::Idle);
+    }
+
+    /// I-2: Release events are ignored so a keypress is not double-processed on
+    /// terminals that emit both Press and Release.
+    #[test]
+    fn release_event_is_ignored() {
+        let history = history();
+        let mut session = HistorySearchSession::new(String::new(), 0);
+        let mut text = String::new();
+        let mut cursor = 0;
+        let mut evt = key(KeyCode::Char('g'), KeyModifiers::NONE);
+        evt.kind = crossterm::event::KeyEventKind::Release;
+        let out = handle_search_key(&history, &mut session, &mut text, &mut cursor, evt);
+        assert_eq!(out, SearchKeyOutcome::Ignored);
+        assert!(
+            session.query().is_empty(),
+            "Release must not append to query"
+        );
     }
 }

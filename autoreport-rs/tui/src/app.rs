@@ -290,8 +290,12 @@ impl Tui {
                             summary.iter().map(|s| s.text().to_string()).collect();
                         let (_header, body) =
                             crate::history_cell::split_reasoning_summary_parts(&parts);
-                        let transcript_only = body.trim().is_empty();
-                        if !transcript_only {
+                        // Skip reasoning whose body is empty (e.g. a `<!-- -->`
+                        // placeholder). `Cell::Reasoning::transcript_only` is
+                        // always false here: we render the summary in the main
+                        // transcript, matching codex's default.
+                        let body_is_empty = body.trim().is_empty();
+                        if !body_is_empty {
                             self.history.push(Cell::Reasoning {
                                 agent,
                                 text: body,

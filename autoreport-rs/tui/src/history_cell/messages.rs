@@ -287,7 +287,9 @@ pub(crate) fn split_reasoning_summary_parts(reasoning_parts: &[String]) -> (Stri
 #[cfg(test)]
 mod hyperlink_tests {
     use super::*;
+    use crate::app_state::Cell;
     use crate::history_cell::HistoryCell;
+    use autoreport_core::types::AgentType;
 
     #[test]
     fn agent_markdown_annotates_web_urls_as_hyperlinks() {
@@ -310,5 +312,26 @@ mod hyperlink_tests {
         let lines = cell.display_hyperlink_lines(80);
         let any = lines.iter().any(|l| !l.hyperlinks.is_empty());
         assert!(!any, "no URL → no hyperlink annotations");
+    }
+
+    /// Regression: the `Cell` enum wrapper (the production render path) must
+    /// dispatch `display_hyperlink_lines` to the annotated markdown cell, not
+    /// the default plain-lines impl. Previously the wrapper overrode only
+    /// `display_lines`/`raw_lines`, leaving OSC 8 marking dead.
+    #[test]
+    fn cell_agent_markdown_dispatches_to_hyperlink_annotation() {
+        let cell = Cell::AgentMarkdown {
+            agent: AgentType::Main,
+            text: "see https://example.com/x for details".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let found = lines
+            .iter()
+            .flat_map(|l| l.hyperlinks.iter())
+            .any(|h| h.destination == "https://example.com/x");
+        assert!(
+            found,
+            "Cell::AgentMarkdown must annotate URLs via display_hyperlink_lines"
+        );
     }
 }

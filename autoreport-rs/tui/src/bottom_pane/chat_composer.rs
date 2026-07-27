@@ -219,6 +219,12 @@ impl ChatComposer {
         if self.history_search.is_some() {
             return;
         }
+        // Drop any in-progress Up/Down history navigation so a later Down arrow
+        // (after accepting a match) does not resume from a stale `history_index`
+        // and recall the wrong entry. Mirrors Codex's `history.reset_search()`
+        // at the top of `begin_history_search`.
+        self.history_index = None;
+        self.draft_before_history = None;
         self.history_search = Some(super::history_search::HistorySearchSession::new(
             self.text.clone(),
             self.cursor,

@@ -125,6 +125,20 @@ impl HistoryCell for Cell {
         render_cell_lines(self, width)
     }
 
+    /// Dispatch per-variant so finalized assistant markdown is annotated with
+    /// OSC 8 web-URL hyperlinks. Mirrors Codex, where each concrete cell type
+    /// overrides `display_hyperlink_lines` and the render path dispatches via
+    /// the trait; variants without a richer override fall back to the default
+    /// plain-lines representation.
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        match self {
+            Cell::AgentMarkdown { text, .. } => {
+                messages::AgentMarkdownCell { text: text.clone() }.display_hyperlink_lines(width)
+            }
+            _ => crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width)),
+        }
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         match self {
             Cell::User { text, .. } => vec![Line::from(sanitize_user_text(text))],
