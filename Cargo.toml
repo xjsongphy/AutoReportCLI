@@ -7,6 +7,7 @@ members = [
     "autoreport-rs/http-client",
     "autoreport-rs/websocket-client",
     "autoreport-rs/codex-client",
+    "autoreport-rs/codex-api",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -71,6 +72,7 @@ autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
 autoreport-http-client = { path = "autoreport-rs/http-client" }
 autoreport-websocket-client = { path = "autoreport-rs/websocket-client" }
 autoreport-codex-client = { path = "autoreport-rs/codex-client" }
+autoreport-codex-api = { path = "autoreport-rs/codex-api" }
 autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
 autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/app-server" }
@@ -82,6 +84,7 @@ autoreport-terminal-detection = { path = "autoreport-rs/terminal-detection" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-io = "2.6.0"
+async-channel = "2.3"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["ws", "http1", "tokio"] }
 base64 = "0.22"
@@ -171,6 +174,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.28", features = ["proxy", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tungstenite = { version = "0.27", features = ["deflate", "proxy"] }
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"
 tracing = "0.1"
@@ -193,3 +197,4 @@ lto = "thin"
 # the current Rust toolchain.
 rama-http = { path = "third_party/rama-http" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
