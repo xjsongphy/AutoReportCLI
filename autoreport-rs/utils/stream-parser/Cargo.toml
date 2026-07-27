@@ -7,3 +7,6 @@ license.workspace = true
 name = "autoreport_utils_stream_parser"
 path = "src/lib.rs"
 doctest = false
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

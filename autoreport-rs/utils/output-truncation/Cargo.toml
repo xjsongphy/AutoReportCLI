@@ -10,3 +10,6 @@ doctest = false
 [dependencies]
 autoreport-codex-protocol = { workspace = true }
 autoreport-utils-string = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
