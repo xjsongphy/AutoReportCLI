@@ -21,6 +21,7 @@ pub(crate) mod frame_requester;
 pub mod highlight;
 pub(crate) mod history_cell;
 pub mod ide_context;
+pub(crate) mod insert_history;
 pub(crate) mod line_truncation;
 pub mod line_utils;
 pub mod markdown_render;

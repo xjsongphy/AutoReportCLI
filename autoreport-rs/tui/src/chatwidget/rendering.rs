@@ -8,8 +8,10 @@ use crate::app::Tui;
 use crate::app_state::Cell;
 use crate::bottom_pane::StatusIndicatorWidget;
 use crate::chatwidget::tool_arg_summary;
+use crate::render::Insets;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
+use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -23,6 +25,19 @@ impl Tui {
 
     pub(crate) fn codex_chat_cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.codex_chat_renderable(area.width).cursor_pos(area)
+    }
+
+    /// Height needed by the active transcript tail and bottom pane. Finalized history is written
+    /// to terminal scrollback and therefore does not consume this viewport.
+    pub(crate) fn codex_chat_viewport_height(&self, width: u16) -> u16 {
+        let active = TranscriptAreaRenderable {
+            lines: self.transcript_lines_from(width, self.committed_history_len()),
+            hyperlink_lines: Vec::new(),
+        }
+        .desired_height(width);
+        active
+            .saturating_add(self.codex_chat_bottom_pane_height(width))
+            .max(1)
     }
 
     /// Total fixed-height bottom pane used by popups that must stop above the
@@ -43,17 +58,18 @@ impl Tui {
                 .desired_height(width);
         let has_pending_input = self.pending_input_preview.desired_height(width) > 0;
         let has_status = !matches!(status, autoreport_core::types::AgentStatus::Idle);
-        status_height
+        // Codex's bottom pane is separated from the transcript by one
+        // breathing row. Keep this in popup geometry too.
+        1u16.saturating_add(status_height)
             .saturating_add(u16::from(has_pending_input && has_status))
             .saturating_add(self.pending_input_preview.desired_height(width))
             .saturating_add(self.composer.desired_height(width))
     }
 
-    fn codex_chat_renderable(&self, width: u16) -> FlexRenderable<'_> {
+    fn codex_chat_renderable(&self, width: u16) -> RenderableItem<'_> {
         let transcript = TranscriptAreaRenderable {
             lines: self.transcript_lines(width),
             hyperlink_lines: self.transcript_hyperlink_lines(width),
-            scroll: self.scroll,
         };
         let mut flex = FlexRenderable::new();
         flex.push(/*flex*/ 1, RenderableItem::Owned(Box::new(transcript)));
@@ -86,26 +102,39 @@ impl Tui {
             RenderableItem::Borrowed(&self.pending_input_preview),
         );
         flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.composer));
-        flex
+        // Match Codex's stable one-row separation between transcript and the
+        // bottom pane, including when the status row is idle.
+        flex.inset(Insets::tlbr(
+            /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+        ))
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.transcript_lines_from(width, self.history_inserted_cells)
+    }
+
+    fn transcript_lines_from(&self, width: u16, start: usize) -> Vec<Line<'static>> {
         use crate::history_cell::{HistoryCell, SessionHeaderHistoryCell};
         let model = if self.focused == autoreport_core::types::AgentType::Main {
             self.main_model.clone()
         } else {
             self.sub_model.clone()
         };
-        let header = SessionHeaderHistoryCell::new(model, self.workspace.clone());
-        let mut lines = header.display_lines(width);
+        let start = start.min(self.history.len());
+        let mut lines = if start == 0 {
+            SessionHeaderHistoryCell::new(model, self.workspace.clone()).display_lines(width)
+        } else {
+            Vec::new()
+        };
+        let history = &self.history[start..];
         if self.raw_output {
             lines.extend(crate::history_cell::render_raw_history_lines_for_agent(
-                &self.history,
+                history,
                 self.focused,
             ));
         } else {
             lines.extend(crate::history_cell::render_history_lines_for_agent(
-                &self.history,
+                history,
                 self.focused,
                 width,
             ));
@@ -126,14 +155,20 @@ impl Tui {
         } else {
             self.sub_model.clone()
         };
-        let header = SessionHeaderHistoryCell::new(model, self.workspace.clone());
-        let mut lines = header.display_hyperlink_lines(width);
+        let start = self.history_inserted_cells.min(self.history.len());
+        let mut lines = if start == 0 {
+            SessionHeaderHistoryCell::new(model, self.workspace.clone())
+                .display_hyperlink_lines(width)
+        } else {
+            Vec::new()
+        };
+        let history = &self.history[start..];
         // Raw-output mode drops styling/links; otherwise carry the per-cell
         // hyperlink annotations (assistant markdown URLs get annotated).
         if !self.raw_output {
             lines.extend(
                 crate::history_cell::render_history_hyperlink_lines_for_agent(
-                    &self.history,
+                    history,
                     self.focused,
                     width,
                 ),
@@ -176,7 +211,6 @@ struct TranscriptAreaRenderable {
     /// Parallel to `lines`: each row's hyperlink annotations, used to mark
     /// OSC 8 links over the rendered area after the Paragraph draws.
     hyperlink_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
-    scroll: usize,
 }
 
 impl Renderable for TranscriptAreaRenderable {
@@ -187,10 +221,9 @@ impl Renderable for TranscriptAreaRenderable {
         let paragraph = Paragraph::new(Text::from(self.lines.clone())).wrap(Wrap { trim: false });
         let line_count = paragraph.line_count(area.width);
         let overflow = line_count.saturating_sub(usize::from(area.height));
-        let scroll = overflow.saturating_sub(self.scroll);
         Clear.render_ref(area, buf);
         paragraph
-            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
+            .scroll((u16::try_from(overflow).unwrap_or(u16::MAX), 0))
             .render(area, buf);
         // Mark web URLs as OSC 8 terminal hyperlinks over the transcript area.
         // `mark_buffer_hyperlinks` re-wraps each line to locate URL cells and
@@ -199,7 +232,7 @@ impl Renderable for TranscriptAreaRenderable {
             buf,
             area,
             &self.hyperlink_lines,
-            scroll,
+            overflow,
         );
     }
 

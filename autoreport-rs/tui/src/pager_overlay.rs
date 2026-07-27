@@ -86,14 +86,6 @@ impl PagerOverlay {
         }
     }
 
-    pub(crate) fn scroll_by(&mut self, delta: i32) {
-        if delta.is_negative() {
-            self.scroll = self.scroll.saturating_sub(delta.unsigned_abs() as usize);
-        } else {
-            self.scroll = self.scroll.saturating_add(delta as usize);
-        }
-    }
-
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
         frame.render_widget(Clear, area);

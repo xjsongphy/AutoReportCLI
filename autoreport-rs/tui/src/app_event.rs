@@ -462,7 +462,7 @@ impl Tui {
     }
 }
 
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Instant;
 
 impl Tui {
@@ -471,26 +471,6 @@ impl Tui {
             // Codex refreshes OSC 10/11 after terminal focus changes so the
             // shared light/dark and accent decisions follow the active theme.
             crate::terminal_palette::requery_default_colors();
-            return true;
-        }
-        if let Event::Mouse(mouse) = ev {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => {
-                    if let Some(pager) = self.pager.as_mut() {
-                        pager.scroll_by(-3);
-                    } else {
-                        self.scroll = self.scroll.saturating_add(3);
-                    }
-                }
-                MouseEventKind::ScrollDown => {
-                    if let Some(pager) = self.pager.as_mut() {
-                        pager.scroll_by(3);
-                    } else {
-                        self.scroll = self.scroll.saturating_sub(3);
-                    }
-                }
-                _ => {}
-            }
             return true;
         }
         if let Event::Paste(text) = ev {
@@ -588,7 +568,10 @@ impl Tui {
                 match outcome {
                     Outcome::Saved => {
                         if is_environment {
-                            self.system("environment saved to environment.toml", SysKind::Info);
+                            self.system(
+                                "environment saved: Python global, report language project-scoped",
+                                SysKind::Info,
+                            );
                         } else if let Err(e) =
                             save_settings(&self.autoreport_home, screen.settings())
                         {
@@ -599,8 +582,15 @@ impl Tui {
                                 SysKind::Info,
                             );
                         }
+                        if !is_environment && self.want_models_after_config {
+                            self.want_models_after_config = false;
+                            self.want_models = true;
+                        }
                     }
                     Outcome::Cancelled => {
+                        if !is_environment {
+                            self.want_models_after_config = false;
+                        }
                         self.system(
                             if is_environment {
                                 "environment unchanged"
@@ -940,8 +930,8 @@ impl Tui {
                 self.composer.yank()
             }
             KeyCode::Up => {
-                if !self.composer.move_up() && !self.composer.history_previous() {
-                    self.scroll = self.scroll.saturating_add(1);
+                if !self.composer.move_up() {
+                    let _ = self.composer.history_previous();
                 }
             }
             KeyCode::Down => {
@@ -949,12 +939,8 @@ impl Tui {
                     // Multiline editor navigation owns this key.
                 } else if !self.composer.text().is_empty() && self.composer.history_next() {
                     // History navigation owns this key while a recalled draft is active.
-                } else {
-                    self.scroll = self.scroll.saturating_sub(1);
                 }
             }
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::Esc => {
                 // ESC: close completion popups if open, otherwise interrupt
                 // the focused agent's active turn (codex semantics).
@@ -973,14 +959,6 @@ impl Tui {
                 self.insert_plain_char(c, now);
             }
             _ => {}
-        }
-
-        // Any input that wasn't intercepted resets manual scroll.
-        if !matches!(
-            key.code,
-            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
-        ) {
-            self.scroll = 0;
         }
 
         // Recompute completion popups based on the token under the cursor.

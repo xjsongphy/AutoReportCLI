@@ -25,18 +25,62 @@ use autoreport_core::request_user_input::RequestUserInputQuestion;
 use autoreport_core::types::{AgentStatus, AgentType, BusMessage};
 use autoreport_rollout::ResponseItem;
 use autoreport_runtime::LoopManager;
+use crossterm::Command;
 use crossterm::event::EventStream;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_stream::StreamExt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnableAlternateScroll;
+
+impl Command for EnableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        write!(f, "\x1b[?1007h")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Err(io::Error::other(
+            "alternate scroll requires ANSI terminal support",
+        ))
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisableAlternateScroll;
+
+impl Command for DisableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        write!(f, "\x1b[?1007l")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Err(io::Error::other(
+            "alternate scroll requires ANSI terminal support",
+        ))
+    }
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        true
+    }
+}
 
 pub struct Tui {
     pub(crate) manager: Arc<LoopManager>,
@@ -46,6 +90,9 @@ pub struct Tui {
     pub(crate) main_model: String,
     pub(crate) sub_model: String,
     pub(crate) history: Vec<Cell>,
+    /// Number of finalized history cells already emitted to terminal scrollback.
+    pub(crate) history_inserted_cells: usize,
+    pub(crate) scrollback_needs_clear: bool,
     pub(crate) statuses: HashMap<AgentType, AgentStatus>,
     pub(crate) status_since: HashMap<AgentType, Instant>,
     pub(crate) focused: AgentType,
@@ -57,7 +104,6 @@ pub struct Tui {
     pub(crate) pending_submissions: Vec<PendingSubmission>,
     pub(crate) suppress_until_idle: HashSet<AgentType>,
     pub(crate) paste_burst: PasteBurst,
-    pub(crate) scroll: usize,
     rx: tokio::sync::broadcast::Receiver<BusMessage>,
     pub(crate) index: FileIndex,
     pub(crate) mention: Option<Mention>,
@@ -73,6 +119,7 @@ pub struct Tui {
     pub(crate) raw_output: bool,
     pub(crate) want_config: bool,
     pub(crate) want_models: bool,
+    pub(crate) want_models_after_config: bool,
     pub(crate) want_environment: bool,
     // `/ide` toggle state — mirrors codex's IdeContextState. When enabled, each
     // outgoing user turn is prefixed with IDE context fetched over the codex
@@ -94,6 +141,95 @@ pub struct Tui {
 }
 
 impl Tui {
+    fn prepare_chat_viewport(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> io::Result<()> {
+        let size = terminal.size()?;
+        let full_screen = self.overlay.is_some()
+            || self.pager.is_some()
+            || !self.pending_approvals.is_empty()
+            || !self.pending_user_inputs.is_empty();
+        let height = if full_screen {
+            size.height
+        } else {
+            self.codex_chat_viewport_height(size.width)
+                .min(size.height)
+                .max(1)
+        };
+        let area = Rect::new(0, size.height.saturating_sub(height), size.width, height);
+        // `Terminal::draw` performs its own autoresize pass. Record the size here so that pass
+        // does not replace this bottom-aligned Codex viewport with a full-screen area.
+        terminal.last_known_screen_size = size;
+        if area != terminal.viewport_area {
+            terminal.set_viewport_area(area);
+            terminal.invalidate_viewport();
+        }
+        Ok(())
+    }
+
+    fn flush_history_to_scrollback(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> io::Result<()> {
+        let committed = self.committed_history_len();
+        if committed <= self.history_inserted_cells || terminal.viewport_area.top() == 0 {
+            return Ok(());
+        }
+
+        let width = terminal.viewport_area.width.max(1);
+        let start = self.history_inserted_cells.min(committed);
+        let mut lines = Vec::new();
+        if start == 0 {
+            use crate::history_cell::{HistoryCell, SessionHeaderHistoryCell};
+            let model = if self.focused == AgentType::Main {
+                self.main_model.clone()
+            } else {
+                self.sub_model.clone()
+            };
+            lines.extend(
+                SessionHeaderHistoryCell::new(model, self.workspace.clone()).display_lines(width),
+            );
+        }
+        let history = &self.history[start..committed];
+        if self.raw_output {
+            lines.extend(crate::history_cell::render_raw_history_lines_for_agent(
+                history,
+                self.focused,
+            ));
+        } else {
+            lines.extend(crate::history_cell::render_history_lines_for_agent(
+                history,
+                self.focused,
+                width,
+            ));
+        }
+        crate::insert_history::insert_history_lines(terminal, &lines)?;
+        self.history_inserted_cells = committed;
+        Ok(())
+    }
+
+    pub(crate) fn committed_history_len(&self) -> usize {
+        let mut end = self.history.len();
+        loop {
+            let Some(cell) = self.history.get(end.saturating_sub(1)) else {
+                break;
+            };
+            let active = match cell {
+                Cell::AgentMessage { .. } => true,
+                Cell::ToolGroup { items, .. } => items
+                    .iter()
+                    .any(|item| item.result.is_none() && item.error.is_none()),
+                _ => false,
+            };
+            if !active {
+                break;
+            }
+            end = end.saturating_sub(1);
+        }
+        end
+    }
+
     pub fn new(
         manager: Arc<LoopManager>,
         bus: Bus,
@@ -114,6 +250,8 @@ impl Tui {
             main_model,
             sub_model,
             history: Vec::new(),
+            history_inserted_cells: 0,
+            scrollback_needs_clear: false,
             statuses: HashMap::new(),
             status_since: HashMap::new(),
             focused: AgentType::Main,
@@ -123,7 +261,6 @@ impl Tui {
             pending_submissions: Vec::new(),
             suppress_until_idle: HashSet::new(),
             paste_burst: PasteBurst::default(),
-            scroll: 0,
             index,
             mention: None,
             slash: None,
@@ -135,6 +272,7 @@ impl Tui {
             raw_output: false,
             want_config: false,
             want_models: false,
+            want_models_after_config: false,
             want_environment: false,
             ide_enabled: false,
             ide_warned: false,
@@ -149,7 +287,7 @@ impl Tui {
 
     pub async fn run(mut self) -> io::Result<()> {
         enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableAlternateScroll)?;
         let backend = CrosstermBackend::new(io::stdout());
 
         // Codex batches OSC cursor-position, OSC 10/11 palette, and a keyboard-
@@ -192,7 +330,9 @@ impl Tui {
         };
 
         #[cfg(unix)]
-        crate::terminal_palette::set_default_colors_from_startup_probe(startup_probe.default_colors);
+        crate::terminal_palette::set_default_colors_from_startup_probe(
+            startup_probe.default_colors,
+        );
 
         #[cfg(unix)]
         let cursor_pos = startup_probe.cursor_position.unwrap_or_else(|| {
@@ -208,7 +348,7 @@ impl Tui {
         // Codex inserts session notices before replayed transcript cells, so a
         // resumed conversation starts below the header/help surface.
         self.system(
-            "AutoReportCLI ready. Type @ to mention a file, Tab switches agent, /help for commands.",
+            "AutoReportCLI ready. Type @ to mention a file, Tab switches agent, /model changes models.",
             SysKind::Info,
         );
         self.restore_history().await;
@@ -251,6 +391,12 @@ impl Tui {
                     self.workspace.clone(),
                 )));
             }
+            if self.scrollback_needs_clear {
+                terminal.clear_scrollback_and_visible_screen_ansi()?;
+                self.scrollback_needs_clear = false;
+            }
+            self.prepare_chat_viewport(&mut terminal)?;
+            self.flush_history_to_scrollback(&mut terminal)?;
             terminal.draw(|f| self.draw(f))?;
 
             tokio::select! {
@@ -292,7 +438,7 @@ impl Tui {
 
         self.manager.shutdown().await;
         disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen)?;
+        execute!(io::stdout(), DisableAlternateScroll, LeaveAlternateScreen)?;
         Ok(())
     }
 
@@ -446,13 +592,14 @@ impl Tui {
     /// conversation.
     pub(crate) fn clear_terminal_ui(&mut self) {
         self.history.clear();
+        self.history_inserted_cells = 0;
+        self.scrollback_needs_clear = true;
         self.cancel_all_user_inputs();
         self.user_input_requests.clear();
         self.queued_inputs.clear();
         self.pending_submissions.clear();
         self.suppress_until_idle.clear();
         self.pending_input_preview.set_queued_messages(Vec::new());
-        self.scroll = 0;
         self.pager = None;
     }
 
@@ -524,10 +671,11 @@ mod tests {
 
     #[test]
     fn extracts_mentions_skipping_emails() {
-        let m = extract_mentions("see @Data/Raw.csv and contact me@example.com and @Tex/main.tex");
+        let m =
+            extract_mentions("see @Data/Raw.csv and contact me@example.com and @Report/main.tex");
         assert_eq!(
             m,
-            vec!["Data/Raw.csv".to_string(), "Tex/main.tex".to_string()]
+            vec!["Data/Raw.csv".to_string(), "Report/main.tex".to_string()]
         );
     }
 
@@ -557,9 +705,17 @@ mod tests {
     }
 
     #[test]
-    fn slash_command_matches_filter_by_prefix_in_presentation_order() {
-        let matches = slash_command::matches("co");
-        let names: Vec<&str> = matches.iter().map(|m| m.name).collect();
-        assert_eq!(names, vec!["config", "compact", "copy"]);
+    fn slash_command_catalog_removes_only_models_alias() {
+        assert!(
+            slash_command::matches("agent")
+                .iter()
+                .any(|m| m.name == "agent")
+        );
+        assert!(
+            slash_command::matches("model")
+                .iter()
+                .any(|m| m.name == "model")
+        );
+        assert!(slash_command::matches("models").is_empty());
     }
 }
