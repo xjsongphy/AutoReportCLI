@@ -229,6 +229,17 @@ impl<'a> ColumnRenderable<'a> {
         Self { children: vec![] }
     }
 
+    #[allow(dead_code)] // ported from codex for API parity; callers arrive with later ports
+    pub fn with<I, T>(children: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<RenderableItem<'a>>,
+    {
+        Self {
+            children: children.into_iter().map(Into::into).collect(),
+        }
+    }
+
     pub fn push(&mut self, child: impl Into<Box<dyn Renderable + 'a>>) {
         self.children.push(RenderableItem::Owned(child.into()));
     }
@@ -465,6 +476,16 @@ impl<'a> Renderable for InsetRenderable<'a> {
 
     fn cursor_style(&self, area: Rect) -> SetCursorStyle {
         self.child.cursor_style(area.inset(self.insets))
+    }
+}
+
+impl<'a> InsetRenderable<'a> {
+    #[allow(dead_code)] // ported from codex for API parity; callers arrive with later ports
+    pub fn new(child: impl Into<RenderableItem<'a>>, insets: Insets) -> Self {
+        Self {
+            child: child.into(),
+            insets,
+        }
     }
 }
 

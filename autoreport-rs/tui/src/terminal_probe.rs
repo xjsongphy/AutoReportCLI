@@ -27,7 +27,11 @@ pub(crate) struct DefaultColors {
 }
 
 #[cfg(unix)]
-#[cfg_attr(test, allow(dead_code))]
+// These probe helpers are vendored from codex. Our TUI bootstrap (app.rs) only
+// calls `default_colors`/`DEFAULT_TIMEOUT` so far; the full `startup(...)` probe
+// and `cursor_position(...)` resume-realignment callers (codex's tui.rs and
+// tui/job_control.rs) are not yet ported. Allow dead code until they are.
+#[allow(dead_code)]
 mod imp {
     use super::DefaultColors;
     use super::parse_default_colors;

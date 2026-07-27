@@ -35,8 +35,8 @@ pub(crate) struct ChatComposer {
     history: Vec<String>,
     history_index: Option<usize>,
     draft_before_history: Option<String>,
-    history_search_query: Option<String>,
-    history_search_index: Option<usize>,
+    /// Codex-style reverse/forward-i-search session. `None` outside a search.
+    history_search: Option<super::history_search::HistorySearchSession>,
     killed_text: Option<String>,
 }
 
@@ -52,8 +52,7 @@ impl ChatComposer {
             history: Vec::new(),
             history_index: None,
             draft_before_history: None,
-            history_search_query: None,
-            history_search_index: None,
+            history_search: None,
             killed_text: None,
         }
     }
@@ -76,7 +75,7 @@ impl ChatComposer {
     pub(crate) fn set_text_and_cursor(&mut self, text: String, cursor: usize) {
         self.text = text;
         self.cursor = self.clamp_cursor(cursor.min(self.text.len()));
-        self.reset_history_search();
+        self.history_search = None;
     }
 
     /// Remove a UTF-8-safe range immediately before the cursor. This is the
@@ -95,7 +94,7 @@ impl ChatComposer {
         self.cursor = 0;
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         let text = std::mem::take(&mut self.text);
         if !text.trim().is_empty() {
             self.history.push(text.clone());
@@ -114,14 +113,14 @@ impl ChatComposer {
         self.cursor = 0;
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         Some(cleared)
     }
 
     pub(crate) fn insert(&mut self, ch: char) {
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
     }
@@ -129,7 +128,7 @@ impl ChatComposer {
     pub(crate) fn insert_text(&mut self, text: &str) {
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();
     }
@@ -142,7 +141,7 @@ impl ChatComposer {
     pub(crate) fn delete_previous(&mut self) {
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         if self.cursor == 0 {
             return;
         }
@@ -158,7 +157,7 @@ impl ChatComposer {
     pub(crate) fn delete_next(&mut self) {
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
         if self.cursor >= self.text.len() {
             return;
         }
@@ -192,7 +191,7 @@ impl ChatComposer {
         self.history_index = Some(index);
         self.text = self.history[index].clone();
         self.cursor = self.text.len();
-        self.reset_history_search();
+        self.history_search = None;
         true
     }
 
@@ -208,73 +207,82 @@ impl ChatComposer {
             self.text = self.history[index + 1].clone();
         }
         self.cursor = self.text.len();
-        self.reset_history_search();
+        self.history_search = None;
         true
     }
 
-    /// Reverse-search the in-session history, matching Codex's Ctrl+R
-    /// direction. Persistent Codex history is owned by its history service;
-    /// AutoReport has no separate history daemon, so this searches the same
-    /// ordered entries already used by Up/Down recall.
-    pub(crate) fn history_search_previous(&mut self) -> bool {
-        let query = self
-            .history_search_query
-            .get_or_insert_with(|| self.text.clone())
-            .clone();
-        let start = self
-            .history_search_index
-            .unwrap_or(self.history.len())
-            .min(self.history.len());
-        let found = (0..start)
-            .rev()
-            .find(|&index| self.history[index].contains(&query));
-        let Some(index) = found else {
-            return false;
-        };
-        self.history_search_index = Some(index);
-        self.text = self.history[index].clone();
-        self.cursor = self.text.len();
-        true
+    /// Open a Codex-style reverse-i-search session: snapshot the current draft
+    /// (restored on cancel) and begin accumulating a query. The first `Ctrl+R`
+    /// from normal mode opens the session; subsequent keys go to
+    /// [`Self::handle_history_search_key`].
+    pub(crate) fn begin_history_search(&mut self) {
+        if self.history_search.is_some() {
+            return;
+        }
+        // Drop any in-progress Up/Down history navigation so a later Down arrow
+        // (after accepting a match) does not resume from a stale `history_index`
+        // and recall the wrong entry. Mirrors Codex's `history.reset_search()`
+        // at the top of `begin_history_search`.
+        self.history_index = None;
+        self.draft_before_history = None;
+        self.history_search = Some(super::history_search::HistorySearchSession::new(
+            self.text.clone(),
+            self.cursor,
+        ));
     }
 
-    /// Move forward through the current reverse-search session (Ctrl+S).
-    pub(crate) fn history_search_next(&mut self) -> bool {
-        let Some(query) = self.history_search_query.clone() else {
-            return false;
+    /// Dispatch one key to an open search session. The session mutates the
+    /// composer's draft to show the current match (or restores the original
+    /// draft on cancel). On `Accept`/`Cancel` the session is closed here so
+    /// callers only need to inspect the outcome.
+    pub(crate) fn handle_history_search_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> super::history_search::SearchKeyOutcome {
+        let Some(session) = self.history_search.as_mut() else {
+            return super::history_search::SearchKeyOutcome::Ignored;
         };
-        let start = self
-            .history_search_index
-            .map(|index| index.saturating_add(1))
-            .unwrap_or(0);
-        let found = (start..self.history.len()).find(|&index| self.history[index].contains(&query));
-        let Some(index) = found else {
-            return false;
-        };
-        self.history_search_index = Some(index);
-        self.text = self.history[index].clone();
-        self.cursor = self.text.len();
-        true
+        let outcome = super::history_search::handle_search_key(
+            &self.history,
+            session,
+            &mut self.text,
+            &mut self.cursor,
+            key,
+        );
+        match outcome {
+            super::history_search::SearchKeyOutcome::Accept
+            | super::history_search::SearchKeyOutcome::Cancel => {
+                self.history_search = None;
+            }
+            _ => {}
+        }
+        outcome
     }
 
     pub(crate) fn history_search_active(&self) -> bool {
-        self.history_search_query.is_some()
+        self.history_search.is_some()
     }
 
     pub(crate) fn history_search_query(&self) -> &str {
-        self.history_search_query.as_deref().unwrap_or_default()
+        self.history_search
+            .as_ref()
+            .map(|s| s.query())
+            .unwrap_or_default()
     }
 
-    pub(crate) fn accept_history_search(&mut self) {
-        self.reset_history_search();
+    pub(crate) fn history_search_status(
+        &self,
+    ) -> Option<super::history_search::HistorySearchStatus> {
+        self.history_search.as_ref().map(|s| s.status())
     }
 
+    /// Cancel the session and restore the original draft.
+    #[allow(dead_code)]
     pub(crate) fn cancel_history_search(&mut self) {
-        self.reset_history_search();
-    }
-
-    fn reset_history_search(&mut self) {
-        self.history_search_query = None;
-        self.history_search_index = None;
+        if let Some(session) = self.history_search.take() {
+            self.text = session.original_draft().to_string();
+            self.cursor = session.original_cursor();
+        }
     }
 
     pub(crate) fn move_right(&mut self) {
@@ -360,7 +368,7 @@ impl ChatComposer {
         self.cursor = boundary;
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
     }
 
     pub(crate) fn delete_word_next(&mut self) {
@@ -373,7 +381,7 @@ impl ChatComposer {
         self.text.replace_range(start..boundary, "");
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
     }
 
     pub(crate) fn delete_to_home(&mut self) {
@@ -386,7 +394,7 @@ impl ChatComposer {
         self.cursor = home;
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
     }
 
     pub(crate) fn delete_to_end(&mut self) {
@@ -398,7 +406,7 @@ impl ChatComposer {
         self.text.replace_range(self.cursor..end, "");
         self.history_index = None;
         self.draft_before_history = None;
-        self.reset_history_search();
+        self.history_search = None;
     }
 
     pub(crate) fn yank(&mut self) {
@@ -479,11 +487,32 @@ impl Renderable for ChatComposer {
         }
 
         let hint = if self.history_search_active() {
-            Line::from(vec![
-                Span::raw("  reverse-i-search: ").dim(),
+            // Codex renders `reverse-i-search: <query>` with a status suffix
+            // (`(searching)` / `enter accept · esc cancel` / `no match`). The
+            // prefix flips to `failing reverse-i-search` on a boundary miss.
+            let status = self.history_search_status();
+            let prefix = matches!(
+                status,
+                Some(super::history_search::HistorySearchStatus::NoMatch)
+            )
+            .then_some("  failing reverse-i-search: ")
+            .unwrap_or("  reverse-i-search: ");
+            let mut spans = vec![
+                Span::raw(prefix).dim(),
                 Span::raw(self.history_search_query().to_string()).dim(),
-                Span::raw("  Enter accept · Esc cancel").dim(),
-            ])
+            ];
+            match status {
+                Some(super::history_search::HistorySearchStatus::Searching) => {
+                    spans.push(Span::raw("  (searching)").dim());
+                }
+                Some(super::history_search::HistorySearchStatus::NoMatch) => {
+                    spans.push(Span::raw("  no match").dim());
+                }
+                _ => {
+                    spans.push(Span::raw("  Enter accept · Esc cancel").dim());
+                }
+            }
+            Line::from(spans)
         } else if !self.shortcuts_visible {
             self.status_line
                 .clone()
@@ -818,26 +847,33 @@ mod tests {
 
     #[test]
     fn reverse_history_search_matches_and_advances() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut composer = ChatComposer::new("Main");
         composer.insert_text("cargo test");
         composer.take_text();
         composer.insert_text("cargo build");
         composer.take_text();
         composer.insert_text("cargo");
-        assert!(composer.history_search_previous());
+        // Open a Codex-style session and type the query, then navigate.
+        composer.begin_history_search();
+        composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
         assert_eq!(composer.text(), "cargo build");
-        assert!(composer.history_search_previous());
+        composer
+            .handle_history_search_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(composer.text(), "cargo test");
-        assert!(composer.history_search_next());
+        composer
+            .handle_history_search_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert_eq!(composer.text(), "cargo build");
     }
 
     #[test]
     fn history_search_uses_codex_footer_mode_until_accept() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut composer = ChatComposer::new("Main");
         composer.record_history("cargo test");
-        composer.insert_text("cargo");
-        assert!(composer.history_search_previous());
+        composer.begin_history_search();
+        composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "cargo test");
         let area = ratatui::layout::Rect::new(0, 0, 60, 5);
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         composer.render(area, &mut buffer);
@@ -846,8 +882,22 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(rendered.contains("reverse-i-search: cargo"));
-        composer.accept_history_search();
+        assert!(rendered.contains("reverse-i-search: c"));
+        composer.history_search = None;
+        assert!(!composer.history_search_active());
+    }
+
+    #[test]
+    fn cancelling_search_restores_the_original_draft() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut composer = ChatComposer::new("Main");
+        composer.record_history("cargo test");
+        composer.insert_text("my draft");
+        composer.begin_history_search();
+        composer.handle_history_search_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "cargo test");
+        composer.handle_history_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(composer.text(), "my draft");
         assert!(!composer.history_search_active());
     }
 

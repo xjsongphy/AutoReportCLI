@@ -1,11 +1,21 @@
 //! Codex-compatible command-prefix policy for `exec`.
 //!
 //! Rules live in the global workspace state `rules/*.rules` and use Codex's
-//! `prefix_rule(pattern = [...], decision = "...")` shape. This module owns
-//! loading, evaluation, session approval caching, and safe persistence of the
-//! narrow allow-prefix amendments created by the approval UI.
+//! Starlark `prefix_rule(pattern = [...], decision = "...")` shape. Parsing and
+//! evaluation delegate to the vendored `autoreport-execpolicy` crate (copied
+//! verbatim from `codex-rs/execpolicy`); this module is the thin adapter that
+//! keeps the project's `ExecApprovalRequirement` / `ExecPolicyManager` surface,
+//! the session-approval cache, the sandbox-escalation guards, and the
+//! dangerous/safe-command heuristics layer (`autoreport-shell-command`) that
+//! codex's core wrapper adds on top of the starlark policy.
 
 use crate::policy::{AskForApproval, GranularApprovalConfig};
+use autoreport_execpolicy::Decision;
+use autoreport_execpolicy::MatchOptions;
+use autoreport_execpolicy::Policy;
+use autoreport_execpolicy::PolicyParser;
+use autoreport_execpolicy::RuleMatch;
+use autoreport_execpolicy::blocking_append_allow_prefix_rule;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,57 +23,6 @@ use std::sync::{Arc, Mutex};
 
 const RULES_DIR: &str = "rules";
 const DEFAULT_RULES_FILE: &str = "default.rules";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Decision {
-    Allow,
-    Prompt,
-    Forbidden,
-}
-
-impl Decision {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "allow" => Ok(Self::Allow),
-            "prompt" => Ok(Self::Prompt),
-            "forbidden" => Ok(Self::Forbidden),
-            _ => Err(format!("invalid execpolicy decision '{value}'")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PatternToken {
-    Single(String),
-    Alternatives(Vec<String>),
-}
-
-impl PatternToken {
-    fn matches(&self, value: &str) -> bool {
-        match self {
-            Self::Single(expected) => expected == value,
-            Self::Alternatives(values) => values.iter().any(|expected| expected == value),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PrefixRule {
-    pattern: Vec<PatternToken>,
-    decision: Decision,
-    justification: Option<String>,
-}
-
-impl PrefixRule {
-    fn matches(&self, command: &[String]) -> bool {
-        command.len() >= self.pattern.len()
-            && self
-                .pattern
-                .iter()
-                .zip(command)
-                .all(|(token, command_token)| token.matches(command_token))
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecApprovalRequirement {
@@ -80,10 +39,30 @@ pub enum ExecApprovalRequirement {
     },
 }
 
-#[derive(Debug, Default)]
 struct PolicyState {
-    rules: Vec<PrefixRule>,
+    /// Parsed Starlark policy (codex `execpolicy::Policy`). `Policy::empty()`
+    /// when no rules are loaded or a rule file failed to parse.
+    policy: Policy,
+    /// In-process allow prefixes added by “approve for session”.
     session_allow_prefixes: HashSet<Vec<String>>,
+}
+
+impl Default for PolicyState {
+    fn default() -> Self {
+        Self {
+            policy: Policy::empty(),
+            session_allow_prefixes: HashSet::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for PolicyState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PolicyState")
+            .field("policy", &self.policy)
+            .field("session_allow_prefixes", &self.session_allow_prefixes)
+            .finish()
+    }
 }
 
 /// Shared policy manager, inherited by every agent loop in a workspace.
@@ -102,11 +81,11 @@ impl ExecPolicyManager {
     }
 
     pub fn load(workspace: &Path) -> Result<Self, String> {
-        let rules = load_rules(workspace)?;
+        let policy = load_policy(workspace)?;
         Ok(Self {
             state_dir: workspace.to_path_buf(),
             state: Arc::new(Mutex::new(PolicyState {
-                rules,
+                policy,
                 session_allow_prefixes: HashSet::new(),
             })),
         })
@@ -137,29 +116,28 @@ impl ExecPolicyManager {
             };
         }
 
-        let mut decision = Decision::Allow;
-        let mut reason = None;
-        for command in &commands {
-            for rule in state.rules.iter().filter(|rule| rule.matches(command)) {
-                if rule.decision > decision {
-                    decision = rule.decision;
-                    reason = rule.justification.clone();
-                }
-            }
-            if !state.rules.iter().any(|rule| rule.matches(command)) {
-                decision = decision.max(unmatched_decision(
-                    command,
-                    approval_policy,
-                    requests_escalation,
-                ));
-            }
-        }
+        // Heuristics for commands that match no starlark rule: the project's
+        // dangerous/safe-command classification layered with the approval
+        // policy + escalation flag (codex core adds the same fallback in
+        // `create_exec_approval_requirement_for_command`).
+        let fallback =
+            |command: &[String]| unmatched_decision(command, approval_policy, requests_escalation);
+        let evaluation = state.policy.check_multiple_with_options(
+            commands.iter(),
+            &fallback,
+            &MatchOptions {
+                resolve_host_executables: true,
+            },
+        );
         drop(state);
 
+        let mut decision = evaluation.decision;
+        let mut reason = first_justification(&evaluation.matched_rules);
+
         // Prefix rules intentionally allow additional ordinary arguments, but
-        // shell syntax can execute a second command before the approved
-        // program runs. Never let a rule or session approval turn such a
-        // command into an unrestricted escalation.
+        // shell syntax can execute a second command before the approved program
+        // runs. Never let a rule or session approval turn such a command into an
+        // unrestricted escalation.
         if requests_escalation
             && contains_untrusted_shell_syntax(command)
             && decision == Decision::Allow
@@ -176,7 +154,9 @@ impl ExecPolicyManager {
                 None => ExecApprovalRequirement::NeedsApproval { reason },
             },
             Decision::Forbidden => ExecApprovalRequirement::Forbidden {
-                reason: reason.unwrap_or_else(|| "command forbidden by execpolicy".to_string()),
+                reason: reason
+                    .take()
+                    .unwrap_or_else(|| "command forbidden by execpolicy".to_string()),
             },
         }
     }
@@ -207,30 +187,33 @@ impl ExecPolicyManager {
         fs::create_dir_all(&rules_dir)
             .map_err(|err| format!("failed to create execpolicy rules directory: {err}"))?;
         let path = rules_dir.join(DEFAULT_RULES_FILE);
-        let pattern = command
-            .iter()
-            .map(|token| serde_json::to_string(token).expect("string serialization"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let rule = format!("\nprefix_rule(pattern = [{pattern}], decision = \"allow\")\n");
-        use std::io::Write;
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut file| file.write_all(rule.as_bytes()))
+        // Delegate the on-disk append to codex's `blocking_append_allow_prefix_rule`
+        // (advisory-locked, serializes the starlark `prefix_rule(...)` call).
+        blocking_append_allow_prefix_rule(&path, command)
             .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-        self.state
-            .lock()
-            .expect("execpolicy lock poisoned")
-            .rules
-            .push(PrefixRule {
-                pattern: command.iter().cloned().map(PatternToken::Single).collect(),
-                decision: Decision::Allow,
-                justification: None,
-            });
+        // Mirror the rule into the in-memory policy so the next `evaluate`
+        // sees it without a reload.
+        let mut state = self.state.lock().expect("execpolicy lock poisoned");
+        if let Err(err) = state.policy.add_prefix_rule(command, Decision::Allow) {
+            log::warn!("execpolicy in-memory rule add failed: {err}");
+        }
         Ok(())
     }
+}
+
+/// Extract the first explicit justification from matched rules for surfacing
+/// in the approval/forbidden reason.
+fn first_justification(matched_rules: &[RuleMatch]) -> Option<String> {
+    for rule in matched_rules {
+        if let RuleMatch::PrefixRuleMatch {
+            justification: Some(j),
+            ..
+        } = rule
+        {
+            return Some(j.clone());
+        }
+    }
+    None
 }
 
 fn approval_rejects_prompt(policy: AskForApproval, is_rule_prompt: bool) -> Option<String> {
@@ -310,10 +293,13 @@ fn is_interpreter_prefix(command: &[String]) -> bool {
     )
 }
 
-fn load_rules(workspace: &Path) -> Result<Vec<PrefixRule>, String> {
+/// Walk `<workspace>/rules/*.rules`, parse each with the starlark
+/// `PolicyParser`, and merge into one `Policy`. A parse failure falls back to
+/// `Policy::empty()` with a warning (codex never crashes on a bad rule file).
+fn load_policy(workspace: &Path) -> Result<Policy, String> {
     let dir = workspace.join(RULES_DIR);
     if !dir.exists() {
-        return Ok(Vec::new());
+        return Ok(Policy::empty());
     }
     let mut paths = fs::read_dir(&dir)
         .map_err(|err| format!("failed to read execpolicy rules {}: {err}", dir.display()))?
@@ -325,188 +311,25 @@ fn load_rules(workspace: &Path) -> Result<Vec<PrefixRule>, String> {
         })
         .collect::<Vec<_>>();
     paths.sort();
-    let mut rules = Vec::new();
+    let mut combined = Policy::empty();
     for path in paths {
-        let content = fs::read_to_string(&path)
-            .map_err(|err| format!("failed to read execpolicy rule {}: {err}", path.display()))?;
-        rules.extend(parse_rules(&content).map_err(|err| format!("{}: {err}", path.display()))?);
-    }
-    Ok(rules)
-}
-
-fn parse_rules(source: &str) -> Result<Vec<PrefixRule>, String> {
-    let mut rules = Vec::new();
-    let mut remaining = source;
-    while let Some(index) = remaining.find("prefix_rule(") {
-        remaining = &remaining[index + "prefix_rule".len()..];
-        let end = matching_paren(remaining).ok_or("unterminated prefix_rule")?;
-        let body = &remaining[1..end];
-        let pattern = field_value(body, "pattern").ok_or("prefix_rule requires pattern")?;
-        let pattern = parse_pattern(pattern)?;
-        if pattern.is_empty() {
-            return Err("prefix_rule pattern cannot be empty".into());
-        }
-        let decision = field_value(body, "decision")
-            .map(parse_string)
-            .transpose()?
-            .map(|value| Decision::parse(&value))
-            .transpose()?
-            .unwrap_or(Decision::Allow);
-        let justification = field_value(body, "justification")
-            .map(parse_string)
-            .transpose()?;
-        rules.push(PrefixRule {
-            pattern,
-            decision,
-            justification,
-        });
-        remaining = &remaining[end + 1..];
-    }
-    Ok(rules)
-}
-
-fn matching_paren(value: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = false;
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                log::warn!("failed to read execpolicy rule {}: {err}", path.display());
+                continue;
             }
-            continue;
-        }
-        match character {
-            '"' => quoted = true,
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn field_value<'a>(body: &'a str, field: &str) -> Option<&'a str> {
-    // Anchor the match: the byte before `field` must not be an identifier
-    // character, otherwise a field name that is a suffix of another (e.g.
-    // `pattern` inside `url_pattern`) would read the wrong value from a
-    // user-authored rule body.
-    let needle = format!("{field} =");
-    let bytes = body.as_bytes();
-    let mut from = 0;
-    let start = loop {
-        let rel = body[from..].find(&needle)?;
-        let pos = from + rel;
-        let prev_is_ident = pos > 0 && {
-            let prev = bytes[pos - 1];
-            prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'$'
         };
-        if !prev_is_ident {
-            break pos + field.len() + 2;
-        }
-        from = pos + 1;
-    };
-    let value = body[start..].trim_start();
-    let end = matching_value_end(value);
-    Some(value[..end].trim())
-}
-
-fn matching_value_end(value: &str) -> usize {
-    let mut square = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = false;
-            }
+        let mut parser = PolicyParser::new();
+        if let Err(err) = parser.parse(&path.display().to_string(), &content) {
+            // codex falls back to an empty policy + warning rather than crashing.
+            log::warn!("execpolicy parse error in {}: {err}", path.display());
             continue;
         }
-        match character {
-            '"' => quoted = true,
-            '[' => square += 1,
-            ']' => square = square.saturating_sub(1),
-            ',' if square == 0 => return index,
-            _ => {}
-        }
+        let parsed = parser.build();
+        combined = combined.merge_overlay(&parsed);
     }
-    value.len()
-}
-
-fn parse_pattern(value: &str) -> Result<Vec<PatternToken>, String> {
-    let value = value.trim();
-    if !value.starts_with('[') || !value.ends_with(']') {
-        return Err("pattern must be an array".into());
-    }
-    split_array(&value[1..value.len() - 1])
-        .into_iter()
-        .map(|entry| {
-            let entry = entry.trim();
-            if entry.starts_with('[') {
-                let alternatives = split_array(&entry[1..entry.len() - 1])
-                    .into_iter()
-                    .map(parse_string)
-                    .collect::<Result<Vec<_>, _>>()?;
-                if alternatives.is_empty() {
-                    return Err("pattern alternatives cannot be empty".into());
-                }
-                Ok(PatternToken::Alternatives(alternatives))
-            } else {
-                Ok(PatternToken::Single(parse_string(entry)?))
-            }
-        })
-        .collect()
-}
-
-fn split_array(value: &str) -> Vec<&str> {
-    let mut values = Vec::new();
-    let mut start = 0;
-    let mut square = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in value.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = false;
-            }
-            continue;
-        }
-        match character {
-            '"' => quoted = true,
-            '[' => square += 1,
-            ']' => square = square.saturating_sub(1),
-            ',' if square == 0 => {
-                values.push(value[start..index].trim());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if !value[start..].trim().is_empty() {
-        values.push(value[start..].trim());
-    }
-    values
-}
-
-fn parse_string(value: &str) -> Result<String, String> {
-    serde_json::from_str(value.trim()).map_err(|_| format!("expected a quoted string, got {value}"))
+    Ok(combined)
 }
 
 fn split_commands(script: &str) -> Vec<Vec<String>> {
@@ -599,17 +422,27 @@ fn contains_untrusted_shell_syntax(script: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_prefix_alternatives_and_uses_strictest_match() {
-        let rules = parse_rules(r#"prefix_rule(pattern = ["git", ["status", "log"]], decision = "allow")
-prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", justification = "review status")"#).unwrap();
-        let manager = ExecPolicyManager {
+    fn manager_with_policy(source: &str) -> ExecPolicyManager {
+        let mut parser = PolicyParser::new();
+        parser
+            .parse("test.rules", source)
+            .expect("test policy parses");
+        let policy = parser.build();
+        ExecPolicyManager {
             state_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(PolicyState {
-                rules,
+                policy,
                 session_allow_prefixes: HashSet::new(),
             })),
-        };
+        }
+    }
+
+    #[test]
+    fn parses_prefix_alternatives_and_uses_strictest_match() {
+        let manager = manager_with_policy(
+            r#"prefix_rule(pattern = ["git", ["status", "log"]], decision = "allow")
+prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", justification = "review status")"#,
+        );
         assert!(matches!(
             manager.evaluate("git log", AskForApproval::Never, false),
             ExecApprovalRequirement::Skip { .. }
@@ -712,6 +545,24 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
         assert!(matches!(
             manager.evaluate("git status > outside.txt", AskForApproval::Never, true),
             ExecApprovalRequirement::Forbidden { .. }
+        ));
+    }
+
+    #[test]
+    fn malformed_rule_file_falls_back_to_empty_policy() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let rules_dir = workspace.path().join(RULES_DIR);
+        fs::create_dir_all(&rules_dir).expect("rules dir");
+        fs::write(
+            rules_dir.join(DEFAULT_RULES_FILE),
+            "this is not starlark ((((",
+        )
+        .expect("write rule");
+        // A parse failure must not panic; load returns an empty policy.
+        let manager = ExecPolicyManager::load(workspace.path()).expect("load fallback");
+        assert!(matches!(
+            manager.evaluate("ls", AskForApproval::Never, false),
+            ExecApprovalRequirement::Skip { .. }
         ));
     }
 }

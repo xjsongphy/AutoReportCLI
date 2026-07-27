@@ -45,6 +45,7 @@ which.workspace = true
 autoreport-protocol = { path = "../protocol" }
 autoreport-sandboxing = { path = "../sandboxing" }
 autoreport-shell-command = { path = "../shell-command" }
+autoreport-execpolicy = { path = "../execpolicy" }
 autoreport-utils-home-dir = { path = "../utils/home-dir" }
 
 [dev-dependencies]

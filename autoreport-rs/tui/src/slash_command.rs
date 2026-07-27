@@ -19,8 +19,12 @@ const COMMANDS: &[SlashCommandItem] = &[
         description: "show commands",
     },
     SlashCommandItem {
+        name: "agent",
+        description: "switch the active agent thread",
+    },
+    SlashCommandItem {
         name: "agents",
-        description: "list agents and statuses",
+        description: "alias for /agent",
     },
     SlashCommandItem {
         name: "switch",

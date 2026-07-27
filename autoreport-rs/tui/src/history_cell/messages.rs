@@ -9,6 +9,7 @@ use crate::style::user_message_style;
 use crate::wrapping::{RtOptions, adaptive_wrap_lines};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Clear, Paragraph, WidgetRef, Wrap};
@@ -133,6 +134,15 @@ impl HistoryCell for AgentMarkdownCell {
             .map(|line| Line::from(line.to_string()))
             .collect()
     }
+
+    /// Annotate web URLs in the rendered markdown as OSC 8 terminal hyperlinks
+    /// (clickable in capable terminals). Mirrors Codex's `WebHyperlinkHistoryCell`.
+    fn display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        crate::terminal_hyperlinks::annotate_web_urls(HistoryCell::display_lines(self, width))
+    }
 }
 
 impl Renderable for AgentMarkdownCell {
@@ -146,5 +156,182 @@ impl Renderable for AgentMarkdownCell {
 
     fn desired_height(&self, width: u16) -> u16 {
         HistoryCell::desired_height(self, width)
+    }
+}
+
+/// Reasoning-summary cell, adapted from Codex's `ReasoningSummaryCell`
+/// (`history_cell/messages.rs`). The summary text is rendered as dimmed italic
+/// markdown with a `"• "` bullet indent, matching codex's transcript style.
+/// (`cwd`-relative file-link rendering is dropped — the project reasons about
+/// no local files inside the summary body.)
+#[derive(Debug)]
+pub(crate) struct ReasoningSummaryCell {
+    content: String,
+    transcript_only: bool,
+}
+
+impl ReasoningSummaryCell {
+    pub(crate) fn new(content: String, transcript_only: bool) -> Self {
+        Self {
+            content,
+            transcript_only,
+        }
+    }
+
+    fn lines(&self, width: u16) -> Vec<Line<'static>> {
+        let markdown = markdown_render::render_markdown_text_with_width(
+            &self.content,
+            Some(usize::from(width.max(1)).saturating_sub(2).max(1)),
+        )
+        .lines;
+        // codex paints every span of the rendered summary `dim().italic()`.
+        let summary_style = Style::default().dim().italic();
+        let summary_lines = markdown
+            .into_iter()
+            .map(|mut line| {
+                line.spans = line
+                    .spans
+                    .into_iter()
+                    .map(|span| span.patch_style(summary_style))
+                    .collect();
+                line
+            })
+            .collect::<Vec<_>>();
+        adaptive_wrap_lines(
+            summary_lines,
+            RtOptions::new(usize::from(width.max(1)))
+                .initial_indent("• ".dim().into())
+                .subsequent_indent("  ".into()),
+        )
+    }
+}
+
+impl HistoryCell for ReasoningSummaryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.transcript_only {
+            Vec::new()
+        } else {
+            self.lines(width)
+        }
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        if self.transcript_only {
+            Vec::new()
+        } else {
+            self.content
+                .trim()
+                .split('\n')
+                .map(|line| Line::from(line.to_string()))
+                .collect()
+        }
+    }
+}
+
+/// Split structured reasoning-summary parts into a status header and
+/// renderable content. Ported verbatim from codex
+/// `history_cell/messages.rs::split_reasoning_summary_parts`: trims each part,
+/// drops `<!-- -->` placeholder bodies, strips a leading `**...**` bold header,
+/// and returns `(header, content)`. An empty content body makes the cell
+/// `transcript_only` (hidden from the transcript).
+pub(crate) fn split_reasoning_summary_parts(reasoning_parts: &[String]) -> (String, String) {
+    let mut leading_empty_part_header = None;
+    let mut content_parts = Vec::with_capacity(reasoning_parts.len());
+
+    for part in reasoning_parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        let header_end = part.strip_prefix("**").and_then(|after_open| {
+            after_open
+                .find("**")
+                .and_then(|close| (close > 0).then_some(close + 4))
+        });
+        let body = header_end.map_or(part, |header_end| &part[header_end..]);
+        if body.trim() == "<!-- -->" {
+            if content_parts.is_empty()
+                && leading_empty_part_header.is_none()
+                && let Some(header_end) = header_end
+            {
+                leading_empty_part_header = Some(part[..header_end].to_string());
+            }
+            continue;
+        }
+
+        content_parts.push(part);
+    }
+
+    let content = content_parts.join("\n\n");
+    if content.is_empty() {
+        return (leading_empty_part_header.unwrap_or_default(), content);
+    }
+
+    if let Some(after_open) = content.strip_prefix("**")
+        && let Some(close) = after_open.find("**")
+    {
+        let after_close_idx = 2 + close + 2;
+        let after_close = &content[after_close_idx..];
+        if after_close.starts_with('\n') || after_close.starts_with('\r') {
+            return (
+                content[..after_close_idx].to_string(),
+                after_close.to_string(),
+            );
+        }
+    }
+
+    (leading_empty_part_header.unwrap_or_default(), content)
+}
+
+#[cfg(test)]
+mod hyperlink_tests {
+    use super::*;
+    use crate::app_state::Cell;
+    use crate::history_cell::HistoryCell;
+    use autoreport_core::types::AgentType;
+
+    #[test]
+    fn agent_markdown_annotates_web_urls_as_hyperlinks() {
+        let cell = AgentMarkdownCell {
+            text: "see https://example.com/x for details".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let found = lines
+            .iter()
+            .flat_map(|l| l.hyperlinks.iter())
+            .any(|h| h.destination == "https://example.com/x");
+        assert!(found, "URL should be annotated as a hyperlink destination");
+    }
+
+    #[test]
+    fn agent_markdown_without_urls_has_no_hyperlinks() {
+        let cell = AgentMarkdownCell {
+            text: "plain text without any link".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let any = lines.iter().any(|l| !l.hyperlinks.is_empty());
+        assert!(!any, "no URL → no hyperlink annotations");
+    }
+
+    /// Regression: the `Cell` enum wrapper (the production render path) must
+    /// dispatch `display_hyperlink_lines` to the annotated markdown cell, not
+    /// the default plain-lines impl. Previously the wrapper overrode only
+    /// `display_lines`/`raw_lines`, leaving OSC 8 marking dead.
+    #[test]
+    fn cell_agent_markdown_dispatches_to_hyperlink_annotation() {
+        let cell = Cell::AgentMarkdown {
+            agent: AgentType::Main,
+            text: "see https://example.com/x for details".into(),
+        };
+        let lines = cell.display_hyperlink_lines(80);
+        let found = lines
+            .iter()
+            .flat_map(|l| l.hyperlinks.iter())
+            .any(|h| h.destination == "https://example.com/x");
+        assert!(
+            found,
+            "Cell::AgentMarkdown must annotate URLs via display_hyperlink_lines"
+        );
     }
 }

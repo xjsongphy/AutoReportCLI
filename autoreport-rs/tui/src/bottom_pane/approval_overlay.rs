@@ -1,7 +1,7 @@
 //! Approval overlay adapted from Codex's bottom-pane approval surface.
 
 use crate::app_state::PendingApproval;
-use ratatui::Frame;
+use crate::custom_terminal::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -58,16 +58,21 @@ impl ApprovalOverlay {
             )));
         }
         lines.push(Line::raw(""));
+        // Keymap mirrors codex's default ApprovalKeymap (keymap.rs):
+        // y approve · a approve-for-session · p persist-prefix · d deny ·
+        // c cancel · Esc/n decline.
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled("[y]", Style::default().fg(Color::Green)),
             Span::raw(" approve   "),
             Span::styled("[a]", Style::default().fg(Color::Green)),
-            Span::raw(" this session   "),
+            Span::raw(" session   "),
             Span::styled("[p]", Style::default().fg(Color::Yellow)),
             Span::raw(" save rule   "),
-            Span::styled("[n]/Esc", Style::default().fg(Color::Red)),
-            Span::raw(" deny"),
+            Span::styled("[d]", Style::default().fg(Color::Red)),
+            Span::raw(" deny   "),
+            Span::styled("[c]/[n]/Esc", Style::default().fg(Color::DarkGray)),
+            Span::raw(" cancel"),
         ]));
         if pending_approvals.len() > 1 {
             lines.push(Line::from(Span::styled(

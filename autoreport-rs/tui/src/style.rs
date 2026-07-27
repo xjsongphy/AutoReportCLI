@@ -12,17 +12,26 @@ use ratatui::style::Stylize;
 
 const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
 // Decorative table rules should remain visible without competing with cell content.
+// Used by `table_separator_style_for` (vendored; markdown table rendering in
+// codex's markdown_render.rs is not yet wired into our crate).
+#[allow(dead_code)]
 const TABLE_SEPARATOR_FG_ALPHA: f32 = 0.20;
 
 pub fn user_message_style() -> Style {
     user_message_style_for(default_bg())
 }
 
+// Vendored from codex; caller is the not-yet-ported plan/proposal history cell
+// (codex history_cell/plans.rs, streaming/controller.rs).
+#[allow(dead_code)]
 pub fn proposed_plan_style() -> Style {
     proposed_plan_style_for(default_bg())
 }
 
 /// Returns a low-contrast rule style for separators within markdown tables.
+// Vendored from codex; caller is the not-yet-ported markdown table-rule path
+// (codex markdown_render.rs).
+#[allow(dead_code)]
 pub(crate) fn table_separator_style() -> Style {
     table_separator_style_for(default_fg(), default_bg(), stdout_color_level())
 }
@@ -40,6 +49,8 @@ pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     }
 }
 
+// Vendored from codex; backs `proposed_plan_style` (plan cell not yet ported).
+#[allow(dead_code)]
 pub fn proposed_plan_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
         Some(bg) => Style::default().bg(proposed_plan_bg(bg)),
@@ -56,6 +67,9 @@ pub(crate) fn accent_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     }
 }
 
+// Vendored from codex; backs `table_separator_style` (markdown table-rule
+// path not yet ported).
+#[allow(dead_code)]
 fn table_separator_style_for(
     terminal_fg: Option<(u8, u8, u8)>,
     terminal_bg: Option<(u8, u8, u8)>,
@@ -82,6 +96,8 @@ pub fn user_message_bg(terminal_bg: (u8, u8, u8)) -> Color {
     best_color(blend(top, terminal_bg, alpha))
 }
 
+// Vendored from codex; backs `proposed_plan_style_for` (plan cell not yet ported).
+#[allow(dead_code)]
 #[allow(clippy::disallowed_methods)]
 pub fn proposed_plan_bg(terminal_bg: (u8, u8, u8)) -> Color {
     user_message_bg(terminal_bg)

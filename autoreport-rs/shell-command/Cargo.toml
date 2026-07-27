@@ -23,7 +23,9 @@ tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 url.workspace = true
 which.workspace = true
-autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = "1"
+anyhow = { workspace = true }
+pretty_assertions = { workspace = true }

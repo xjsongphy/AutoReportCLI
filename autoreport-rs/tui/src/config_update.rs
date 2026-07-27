@@ -4,12 +4,12 @@
 //! `run_fullscreen` (first-run wizard, standalone loop) and the `/config`
 //! overlay (driven by `tui.rs`).
 
+use crate::custom_terminal::Frame;
+use crate::custom_terminal::Terminal;
 use autoreport_core::config::schema::{ProviderConfig, Settings};
 use autoreport_core::config::{resolve_api_key, save_settings};
 use autoreport_core::sync::PresetProvider;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Frame;
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -1120,9 +1120,9 @@ impl ConfigScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::custom_terminal::Terminal;
+    use crate::test_support::WritableTestBackend;
     use autoreport_core::config::{needs_api_config, save_settings};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     fn settings_with(provider: &str, cfg: ProviderConfig) -> Settings {
         let mut s = Settings::default();
@@ -1176,8 +1176,8 @@ mod tests {
         }
         let mut screen = ConfigScreen::new(settings, PathBuf::from("/tmp/ws"));
         screen.selected_in_group = 20;
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let backend = WritableTestBackend::new(100, 30);
+        let mut terminal = Terminal::with_options(backend).unwrap();
 
         terminal.draw(|frame| screen.draw(frame)).unwrap();
         assert!(screen.provider_scroll_offset > 0);

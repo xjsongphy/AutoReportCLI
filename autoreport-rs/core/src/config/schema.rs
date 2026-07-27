@@ -142,9 +142,11 @@ pub struct AgentDefaults {
     #[serde(default = "default_exec_timeout_secs")]
     pub exec_timeout_secs: u64,
     /// When execpolicy and sandbox escalation may consult the user. The product
-    /// default is `never`; `on-request`, `untrusted`, and `granular` are
-    /// handled by the shared TUI approval queue. AutoReport's enum default is
-    /// `OnRequest`, so the config default is pinned via a serde default fn.
+    /// default is `on-request` (only commands classified as dangerous prompt the
+    /// user; safe commands run silently, matching codex's `OnRequest` semantics
+    /// and minimizing interruption). `never`, `untrusted`, and `granular` are
+    /// also handled by the shared TUI approval queue. Pinned via a serde default
+    /// fn rather than relying on `AskForApproval::default()`.
     #[serde(default = "default_approval_policy")]
     pub approval_policy: AskForApproval,
 }
@@ -158,10 +160,12 @@ fn default_compact_threshold() -> f32 {
 fn default_exec_timeout_secs() -> u64 {
     120
 }
-/// Product default: least human intervention. (Kept as a fn rather than
-/// relying on `AskForApproval::default()`, which AutoReport pins to `OnRequest`.)
+/// Product default: minimal interruption — only commands classified as
+/// dangerous prompt the user; everything else runs silently. This matches
+/// codex's `OnRequest` semantics. (Kept as a fn rather than relying on
+/// `AskForApproval::default()`.)
 fn default_approval_policy() -> AskForApproval {
-    AskForApproval::Never
+    AskForApproval::OnRequest
 }
 
 impl Default for AgentDefaults {

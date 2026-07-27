@@ -156,11 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn codex_default_is_onrequest_product_default_is_never() {
+    fn codex_default_is_onrequest() {
         // Codex's #[derive(Default)] keeps OnRequest (verbatim fidelity).
         assert_eq!(AskForApproval::default(), AskForApproval::OnRequest);
         // Our product default is wired separately via a serde default fn in
-        // AgentDefaults, so it stays Never regardless of the enum's Default.
+        // AgentDefaults; it now also resolves to OnRequest (see
+        // `default_approval_policy`), matching this enum default.
     }
 
     #[test]

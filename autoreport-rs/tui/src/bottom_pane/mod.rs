@@ -1,5 +1,6 @@
 mod approval_overlay;
 mod chat_composer;
+pub(crate) mod history_search;
 pub(crate) mod paste_burst;
 mod pending_input_preview;
 mod request_user_input_overlay;

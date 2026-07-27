@@ -9,9 +9,7 @@ use crate::provider::types::{LLMResponse, LLMStreamChunk, Message, ToolCall, Too
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 
 pub struct OpenAIResponsesProvider {
     client: reqwest::Client,
@@ -279,6 +277,19 @@ fn parse_response(v: &Value) -> LLMResponse {
     }
 }
 
+fn parse_usage(value: &Value) -> Usage {
+    Usage {
+        input_tokens: value
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        output_tokens: value
+            .get("output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    }
+}
+
 fn parse_function_call(item: &Value) -> ToolCall {
     let arguments = item
         .get("arguments")
@@ -297,19 +308,6 @@ fn parse_function_call(item: &Value) -> ToolCall {
             .unwrap_or_default()
             .to_string(),
         arguments: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
-    }
-}
-
-fn parse_usage(value: &Value) -> Usage {
-    Usage {
-        input_tokens: value
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        output_tokens: value
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
     }
 }
 
@@ -367,28 +365,6 @@ impl LLMProvider for OpenAIResponsesProvider {
     }
 }
 
-#[derive(Default)]
-struct FunctionAccum {
-    call_id: String,
-    name: String,
-    arguments: String,
-    custom: bool,
-}
-
-/// Keep function calls in the order in which Responses emitted them.  A
-/// sorted map would make parallel calls appear in lexicographic id order,
-/// which is not the provider's output order and can change tool side effects.
-fn call_entry<'a>(calls: &'a mut Vec<(String, FunctionAccum)>, key: &str) -> &'a mut FunctionAccum {
-    let index = calls
-        .iter()
-        .position(|(existing, _)| existing == key)
-        .unwrap_or_else(|| {
-            calls.push((key.to_string(), FunctionAccum::default()));
-            calls.len() - 1
-        });
-    &mut calls[index].1
-}
-
 async fn run_stream(
     response: reqwest::Response,
     tx: tokio::sync::mpsc::Sender<Result<LLMStreamChunk>>,
@@ -397,492 +373,23 @@ async fn run_stream(
 }
 
 async fn run_stream_bytes<S, E>(
-    mut stream: S,
+    stream: S,
     tx: tokio::sync::mpsc::Sender<Result<LLMStreamChunk>>,
 ) -> Result<()>
 where
     S: futures_util::Stream<Item = std::result::Result<Bytes, E>> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let mut buffer = String::new();
-    let mut calls: Vec<(String, FunctionAccum)> = Vec::new();
-    let mut text_items_with_delta = BTreeSet::new();
-    // Responses emits reasoning summary/content in the same delta + done
-    // pattern as output text. Keep per-item markers so the finalized event is
-    // only a fallback when a gateway omitted the deltas, matching Codex's SSE
-    // event reduction semantics.
-    let mut reasoning_items_with_delta = BTreeSet::new();
-    // A few Responses-compatible gateways omit `item_id` on the finalized
-    // text event. Remember that case so the later output-item event does not
-    // replay the same full body a second time.
-    let mut anonymous_text_emitted = false;
-    let mut usage = None;
-    let mut reasoning_signature = None;
-    let mut completed = false;
-    while let Some(chunk) = stream.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk?));
-        while let Some((index, delimiter)) = sse_frame_end(&buffer) {
-            let frame: String = buffer.drain(..index + delimiter).collect();
-            for line in frame.lines() {
-                let Some(data) = line.strip_prefix("data:").map(str::trim_start) else {
-                    continue;
-                };
-                if data.trim().is_empty() || data.trim() == "[DONE]" {
-                    continue;
-                }
-                let event: Value = serde_json::from_str(data)?;
-                let event_type = event
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                match event_type {
-                    // Codex keeps reasoning in the response protocol but
-                    // does not render it in the normal transcript. Forward
-                    // it through the existing private reasoning channel so
-                    // the runtime can detect a reasoning-only turn and ask
-                    // once for the visible final answer.
-                    "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                        let key = reasoning_event_key(&event);
-                        reasoning_items_with_delta.insert(key);
-                        if let Some(delta) = event.get("delta").and_then(Value::as_str)
-                            && !delta.is_empty()
-                        {
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: None,
-                                thinking_delta: Some(delta.to_string()),
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
-                        // Some gateways omit the delta events and only send
-                        // the finalized reasoning text. It remains hidden in
-                        // the TUI, but preserving it keeps the runtime's
-                        // reasoning-only recovery path correct.
-                        let key = reasoning_event_key(&event);
-                        if !reasoning_items_with_delta.contains(&key)
-                            && let Some(text) = event.get("text").and_then(Value::as_str)
-                            && !text.is_empty()
-                        {
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: None,
-                                thinking_delta: Some(text.to_string()),
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    "response.output_text.delta" => {
-                        if let Some(item_id) = event.get("item_id").and_then(Value::as_str) {
-                            text_items_with_delta.insert(item_id.to_string());
-                        } else {
-                            anonymous_text_emitted = true;
-                        }
-                        if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: Some(delta.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    // `response.output_text.done` is the canonical finalized
-                    // text event. Most servers also send deltas, but some
-                    // compatible gateways only send this event. Emit it only
-                    // when no delta for the same output item was observed so
-                    // normal delta streams are not duplicated.
-                    "response.output_text.done" => {
-                        let item_key = event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .or_else(|| {
-                                event
-                                    .get("output_index")
-                                    .and_then(Value::as_u64)
-                                    .map(|index| format!("output-index:{index}"))
-                            });
-                        if item_key
-                            .as_deref()
-                            .is_none_or(|key| !text_items_with_delta.contains(key))
-                            && let Some(text) = event.get("text").and_then(Value::as_str)
-                            && !text.is_empty()
-                        {
-                            if let Some(key) = item_key {
-                                text_items_with_delta.insert(key);
-                            } else {
-                                anonymous_text_emitted = true;
-                            }
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: Some(text.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    // A few Responses-compatible gateways finalize the
-                    // content part before emitting the output item. Treat
-                    // this as the same finalized-body fallback as
-                    // `output_text.done`; the item event below is deduped by
-                    // the same item key.
-                    "response.content_part.done" => {
-                        let item_key = event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                            .or_else(|| {
-                                event
-                                    .get("output_index")
-                                    .and_then(Value::as_u64)
-                                    .map(|index| format!("output-index:{index}"))
-                            });
-                        if item_key
-                            .as_deref()
-                            .is_none_or(|key| !text_items_with_delta.contains(key))
-                            && let Some(part) = event.get("part")
-                        {
-                            let text = match part.get("type").and_then(Value::as_str) {
-                                Some("output_text") => part.get("text").and_then(Value::as_str),
-                                Some("refusal") => part.get("refusal").and_then(Value::as_str),
-                                _ => None,
-                            };
-                            if let Some(text) = text.filter(|text| !text.is_empty()) {
-                                if let Some(key) = item_key {
-                                    text_items_with_delta.insert(key);
-                                } else {
-                                    anonymous_text_emitted = true;
-                                }
-                                tx.send(Ok(LLMStreamChunk {
-                                    delta: Some(text.to_string()),
-                                    thinking_delta: None,
-                                    thinking_signature: None,
-                                    tool_calls: None,
-                                    done: false,
-                                    usage: None,
-                                }))
-                                .await
-                                .ok();
-                            }
-                        }
-                    }
-                    // Refusals use a parallel streaming event family. They
-                    // are still assistant-visible body text, so forward them
-                    // through the same unified delta channel instead of
-                    // silently leaving the turn empty.
-                    "response.refusal.delta" => {
-                        if let Some(item_id) = event.get("item_id").and_then(Value::as_str) {
-                            text_items_with_delta.insert(item_id.to_string());
-                        } else {
-                            anonymous_text_emitted = true;
-                        }
-                        if let Some(delta) = event.get("delta").and_then(Value::as_str)
-                            && !delta.is_empty()
-                        {
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: Some(delta.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    "response.refusal.done" => {
-                        // Gateways may omit refusal deltas and send only the
-                        // finalized refusal event. It is still visible
-                        // assistant text, just like output_text.done.
-                        let item_key = event.get("item_id").and_then(Value::as_str);
-                        if item_key.is_some_and(|key| text_items_with_delta.contains(key)) {
-                            continue;
-                        }
-                        if let Some(refusal) = event.get("refusal").and_then(Value::as_str)
-                            && !refusal.is_empty()
-                        {
-                            if let Some(key) = item_key {
-                                text_items_with_delta.insert(key.to_string());
-                            } else {
-                                anonymous_text_emitted = true;
-                            }
-                            tx.send(Ok(LLMStreamChunk {
-                                delta: Some(refusal.to_string()),
-                                thinking_delta: None,
-                                thinking_signature: None,
-                                tool_calls: None,
-                                done: false,
-                                usage: None,
-                            }))
-                            .await
-                            .ok();
-                        }
-                    }
-                    "response.output_item.added" => {
-                        if let Some(item) = event.get("item")
-                            && matches!(
-                                item.get("type").and_then(Value::as_str),
-                                Some("function_call" | "custom_tool_call")
-                            )
-                        {
-                            let key = event
-                                .get("item_id")
-                                .and_then(Value::as_str)
-                                .or_else(|| item.get("id").and_then(Value::as_str))
-                                .unwrap_or_default()
-                                .to_string();
-                            let entry = call_entry(&mut calls, &key);
-                            entry.call_id = item
-                                .get("call_id")
-                                .and_then(Value::as_str)
-                                .or_else(|| item.get("id").and_then(Value::as_str))
-                                .unwrap_or_default()
-                                .to_string();
-                            entry.name = item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            entry.arguments = item
-                                .get("arguments")
-                                .or_else(|| item.get("input"))
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            entry.custom = item.get("type").and_then(Value::as_str)
-                                == Some("custom_tool_call");
-                        }
-                    }
-                    "response.function_call_arguments.delta" => {
-                        let key = event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.get("call_id").and_then(Value::as_str))
-                            .unwrap_or_default();
-                        let entry = call_entry(&mut calls, key);
-                        if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                            entry.arguments.push_str(delta);
-                        }
-                    }
-                    "response.custom_tool_call_input.delta" => {
-                        let key = event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.get("call_id").and_then(Value::as_str))
-                            .unwrap_or_default();
-                        let entry = call_entry(&mut calls, key);
-                        if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                            entry.arguments.push_str(delta);
-                        }
-                        if let Some(call_id) = event.get("call_id").and_then(Value::as_str) {
-                            entry.call_id = call_id.to_string();
-                        }
-                    }
-                    // The Responses API emits this event when the argument
-                    // JSON is finalized.  Some gateways omit
-                    // `response.output_item.done`, so use the finalized
-                    // payload as the authoritative call metadata too.
-                    "response.function_call_arguments.done" => {
-                        let key = event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.get("call_id").and_then(Value::as_str))
-                            .unwrap_or_default()
-                            .to_string();
-                        let entry = call_entry(&mut calls, &key);
-                        entry.call_id = event
-                            .get("call_id")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.get("item_id").and_then(Value::as_str))
-                            .unwrap_or_default()
-                            .to_string();
-                        if let Some(name) = event.get("name").and_then(Value::as_str) {
-                            entry.name = name.to_string();
-                        }
-                        if let Some(arguments) = event.get("arguments").and_then(Value::as_str) {
-                            entry.arguments = arguments.to_string();
-                        }
-                    }
-                    "response.output_item.done" => {
-                        if let Some(item) = event.get("item") {
-                            if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                                reasoning_signature = item
-                                    .get("encrypted_content")
-                                    .and_then(Value::as_str)
-                                    .filter(|signature| !signature.is_empty())
-                                    .map(ToOwned::to_owned);
-                                continue;
-                            }
-                            if item.get("type").and_then(Value::as_str) == Some("message") {
-                                let item_id = event
-                                    .get("item_id")
-                                    .and_then(Value::as_str)
-                                    .or_else(|| item.get("id").and_then(Value::as_str));
-                                if !anonymous_text_emitted
-                                    && item_id.is_none_or(|id| !text_items_with_delta.contains(id))
-                                {
-                                    let text = item
-                                        .get("content")
-                                        .and_then(Value::as_array)
-                                        .into_iter()
-                                        .flatten()
-                                        .filter_map(|part| {
-                                            match part.get("type").and_then(Value::as_str) {
-                                                Some("output_text") => {
-                                                    part.get("text").and_then(Value::as_str)
-                                                }
-                                                Some("refusal") => {
-                                                    part.get("refusal").and_then(Value::as_str)
-                                                }
-                                                _ => None,
-                                            }
-                                        })
-                                        .collect::<String>();
-                                    if !text.is_empty() {
-                                        tx.send(Ok(LLMStreamChunk {
-                                            delta: Some(text.to_string()),
-                                            thinking_delta: None,
-                                            thinking_signature: None,
-                                            tool_calls: None,
-                                            done: false,
-                                            usage: None,
-                                        }))
-                                        .await
-                                        .ok();
-                                    }
-                                }
-                            }
-                            if !matches!(
-                                item.get("type").and_then(Value::as_str),
-                                Some("function_call" | "custom_tool_call")
-                            ) {
-                                continue;
-                            }
-                            let key = event
-                                .get("item_id")
-                                .and_then(Value::as_str)
-                                .or_else(|| item.get("id").and_then(Value::as_str))
-                                .unwrap_or_default()
-                                .to_string();
-                            let entry = call_entry(&mut calls, &key);
-                            entry.custom = item.get("type").and_then(Value::as_str)
-                                == Some("custom_tool_call");
-                            entry.call_id = item
-                                .get("call_id")
-                                .and_then(Value::as_str)
-                                .or_else(|| item.get("id").and_then(Value::as_str))
-                                .unwrap_or_default()
-                                .to_string();
-                            entry.name = item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            if let Some(arguments) = item
-                                .get("arguments")
-                                .or_else(|| item.get("input"))
-                                .and_then(Value::as_str)
-                            {
-                                entry.arguments = arguments.to_string();
-                            }
-                        }
-                    }
-                    "response.completed" => {
-                        completed = true;
-                        usage = event.pointer("/response/usage").map(parse_usage);
-                    }
-                    "response.incomplete" => {
-                        let reason = event
-                            .pointer("/response/incomplete_details/reason")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown");
-                        return Err(anyhow!(format!(
-                            "Responses API returned an incomplete response: {reason}"
-                        )));
-                    }
-                    "response.failed" | "error" => {
-                        let message = event
-                            .pointer("/response/error/message")
-                            .and_then(Value::as_str)
-                            .or_else(|| event.pointer("/error/message").and_then(Value::as_str))
-                            .unwrap_or("Responses API stream failed");
-                        return Err(anyhow!(message.to_string()));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    if !completed {
-        return Err(anyhow!(
-            "Responses API stream closed before response.completed"
-        ));
-    }
-    let tool_calls = calls
-        .into_iter()
-        .map(|(_, call)| call)
-        .map(|call| ToolCall {
-            id: call.call_id,
-            name: call.name,
-            arguments: serde_json::from_str(&call.arguments).unwrap_or_else(|_| {
-                if call.custom {
-                    Value::String(call.arguments)
-                } else {
-                    json!({})
-                }
-            }),
-        })
-        .collect::<Vec<_>>();
-    tx.send(Ok(LLMStreamChunk {
-        delta: None,
-        thinking_delta: None,
-        thinking_signature: reasoning_signature,
-        tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
-        done: true,
-        usage,
-    }))
+    // The Responses API event parser lives in the `openai_responses`
+    // protocol module (mirrors codex `process_responses_event`); this
+    // provider supplies only the transport. Frame splitting is shared by
+    // `drive_stream`.
+    crate::provider::sse_protocol::drive_stream(
+        stream,
+        tx,
+        crate::provider::protocols::OpenAIResponsesProtocol::new(),
+    )
     .await
-    .ok();
-    Ok(())
-}
-
-fn sse_frame_end(buffer: &str) -> Option<(usize, usize)> {
-    buffer
-        .find("\r\n\r\n")
-        .map(|index| (index, 4))
-        .or_else(|| buffer.find("\n\n").map(|index| (index, 2)))
-}
-
-fn reasoning_event_key(event: &Value) -> String {
-    if let Some(item_id) = event.get("item_id").and_then(Value::as_str) {
-        return format!("item:{item_id}");
-    }
-    if let Some(summary_index) = event.get("summary_index").and_then(Value::as_u64) {
-        return format!("summary:{summary_index}");
-    }
-    if let Some(content_index) = event.get("content_index").and_then(Value::as_u64) {
-        return format!("content:{content_index}");
-    }
-    "anonymous".to_string()
 }
 
 #[cfg(test)]

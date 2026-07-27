@@ -5,12 +5,12 @@
 //! show the directory plainly and require an explicit choice before
 //! continuing.
 
+use crate::custom_terminal::{Frame, Terminal};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 
@@ -50,8 +50,10 @@ impl WorkspaceScreen {
         let area = f.area();
 
         let mut column = ColumnRenderable::new();
+        // Codex's composer / user-prompt glyph is `›`; keep prompt-style rows
+        // consistent with it instead of a bare `>`.
         column.push(Line::from(vec![
-            "> ".into(),
+            "› ".into(),
             "You are in ".bold(),
             self.workspace.display().to_string().into(),
         ]));
@@ -125,8 +127,8 @@ impl WorkspaceScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use crate::custom_terminal::Terminal;
+    use crate::test_support::WritableTestBackend;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -163,22 +165,21 @@ mod tests {
     #[test]
     fn renders_a_codex_style_workspace_gate() {
         let screen = WorkspaceScreen::new(PathBuf::from("/tmp/project"));
-        let backend = TestBackend::new(80, 14);
-        let mut terminal = Terminal::new(backend).expect("terminal");
+        let backend = WritableTestBackend::new(80, 14);
+        let mut terminal = Terminal::with_options(backend).expect("terminal");
         terminal.draw(|frame| screen.draw(frame)).expect("draw");
 
         let rendered = terminal
-            .backend()
-            .buffer()
+            .rendered_buffer()
             .content()
             .chunks(80)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("> You are in /tmp/project"));
-        assert!(rendered.contains("› 1. Yes, continue"));
-        assert!(rendered.contains("  2. No, quit"));
+        assert!(rendered.contains("› You are in /tmp/project"));
+        assert!(rendered.contains("1. Yes, continue"));
+        assert!(rendered.contains("2. No, quit"));
         assert!(rendered.contains("Press Enter to continue"));
         assert!(!rendered.contains("After you continue"));
     }

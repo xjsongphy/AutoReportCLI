@@ -5,13 +5,14 @@
 //! bus to render their streamed output.
 
 use crate::app_state::{
-    Cell, Mention, Overlay, PendingApproval, PendingSubmission, PendingUserInput, SysKind,
-    ToolEntry,
+    AgentPickerState, Cell, Mention, Overlay, PendingApproval, PendingSubmission, PendingUserInput,
+    SysKind, ToolEntry,
 };
 use crate::bottom_pane::paste_burst::PasteBurst;
 use crate::bottom_pane::{ChatComposer, PendingInputPreview};
 use crate::clipboard_copy::ClipboardLease;
 use crate::config_update::ConfigScreen;
+use crate::custom_terminal::Terminal;
 use crate::environment_setup::EnvironmentScreen;
 use crate::file_search::FileIndex;
 use crate::frame_requester::FrameRequester;
@@ -29,7 +30,6 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -66,6 +66,9 @@ pub struct Tui {
     pub(crate) dismissed_slash: Option<String>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) pager: Option<PagerOverlay>,
+    /// `/agent` picker popup (codex `ListSelectionView` equivalent). `None`
+    /// means closed; `Some` holds the highlighted row index.
+    pub(crate) agent_picker: Option<AgentPickerState>,
     /// Codex's copy-friendly raw transcript mode (Alt+R).
     pub(crate) raw_output: bool,
     pub(crate) want_config: bool,
@@ -128,6 +131,7 @@ impl Tui {
             dismissed_slash: None,
             overlay: None,
             pager: None,
+            agent_picker: None,
             raw_output: false,
             want_config: false,
             want_models: false,
@@ -147,7 +151,7 @@ impl Tui {
         enable_raw_mode()?;
         execute!(io::stdout(), EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(io::stdout());
-        let mut terminal = Terminal::new(backend)?;
+        let mut terminal = Terminal::with_options(backend)?;
 
         // Codex probes the terminal palette before its event stream owns stdin.
         // Keep that ordering so OSC 10/11 replies cannot be mistaken for input,
@@ -164,6 +168,11 @@ impl Tui {
             SysKind::Info,
         );
         self.restore_history().await;
+
+        // Recover any approval request registered before we subscribed (a
+        // broadcast publish with no receiver would otherwise be lost). Re-run
+        // on every later `Lagged` event inside the loop.
+        self.reconcile_approvals().await;
 
         let mut events = EventStream::new();
         // Codex uses a coalescing frame scheduler instead of a fixed polling
@@ -218,7 +227,13 @@ impl Tui {
                             // status widget owns subsequent animation ticks.
                             frame_requester.schedule_frame();
                         },
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            // A lagging receiver skips messages; recover any
+                            // approval/user-input request that may have been
+                            // dropped so it cannot deadlock the awaiting agent.
+                            self.reconcile_approvals().await;
+                            continue;
+                        }
                         Err(_) => break,
                     }
                 }
@@ -264,10 +279,30 @@ impl Tui {
                             _ => {}
                         }
                     }
-                    // Codex keeps raw reasoning out of the normal transcript.
-                    // AutoReport follows that policy unconditionally: only
-                    // assistant text is rendered to the user.
-                    ResponseItem::Reasoning { .. } => {}
+                    // Codex renders finalized reasoning summaries as a dimmed
+                    // transcript cell (`ReasoningSummaryCell`); raw encrypted
+                    // reasoning stays out. We follow codex's default: summary
+                    // text only, content (raw thinking) is opt-in and dropped.
+                    // The live spinner is driven separately by the
+                    // `BusMessage::AgentReasoning` streaming path.
+                    ResponseItem::Reasoning { summary, .. } => {
+                        let parts: Vec<String> =
+                            summary.iter().map(|s| s.text().to_string()).collect();
+                        let (_header, body) =
+                            crate::history_cell::split_reasoning_summary_parts(&parts);
+                        // Skip reasoning whose body is empty (e.g. a `<!-- -->`
+                        // placeholder). `Cell::Reasoning::transcript_only` is
+                        // always false here: we render the summary in the main
+                        // transcript, matching codex's default.
+                        let body_is_empty = body.trim().is_empty();
+                        if !body_is_empty {
+                            self.history.push(Cell::Reasoning {
+                                agent,
+                                text: body,
+                                transcript_only: false,
+                            });
+                        }
+                    }
                     ResponseItem::FunctionCall {
                         call_id,
                         name,

@@ -5,12 +5,12 @@
 //! runs the codex-style TUI.
 
 use anyhow::Result;
+use autoreport_tui::custom_terminal::Terminal;
 use clap::Parser;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::PathBuf;
@@ -230,7 +230,7 @@ fn run_model_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
+    let mut terminal = match Terminal::with_options(backend) {
         Ok(t) => t,
         Err(_) => {
             let _ = disable_raw_mode();
@@ -252,7 +252,7 @@ fn run_environment_wizard(home: &std::path::Path, workspace: &std::path::Path) -
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
+    let mut terminal = match Terminal::with_options(backend) {
         Ok(t) => t,
         Err(_) => {
             let _ = disable_raw_mode();
@@ -274,7 +274,7 @@ fn run_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
+    let mut terminal = match Terminal::with_options(backend) {
         Ok(t) => t,
         Err(_) => {
             let _ = disable_raw_mode();
@@ -299,7 +299,7 @@ fn run_workspace_confirmation(workspace: &std::path::Path) -> WorkspaceOutcome {
     enable_raw_mode().ok();
     let _ = execute!(io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::new(backend) {
+    let mut terminal = match Terminal::with_options(backend) {
         Ok(t) => t,
         Err(_) => {
             let _ = disable_raw_mode();

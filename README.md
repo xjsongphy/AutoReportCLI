@@ -49,9 +49,13 @@ single codex-style TUI.
 
 ### TUI Experience
 - **Codex-Style Interface** — full-screen terminal UI with agent panes, streaming output, markdown rendering, and keyboard-first navigation
+- **OSC-8 Hyperlinks** — file paths and links render as clickable terminal hyperlinks (codex-aligned render backend)
+- **Composer History Search** — `Ctrl+R` / `Ctrl+S` reverse- and forward-i-search through prior inputs, codex-style
+- **Per-Turn Metrics** — token usage and timing are shown on each turn separator
+- **Codex Approval Prompts** — command-execution approvals use the codex keymap (`y` / `a` / `p` / `d` / `Esc` / `n` / `c`)
 - **Persistent Agent Sessions** — each agent keeps its own conversation history and resumes on the next launch
 - **`@` File Mentions** — fuzzy-search workspace files and inject them into prompts directly from the input box
-- **Slash Commands** — `/agents`, `/switch`, `/config`, `/models`, `/clear`, `/compact`, `/new`, `/manifest`, `/index`, `/help`
+- **Slash Commands** — `/agent(s)`, `/switch`, `/config`, `/model(s)`, `/env`, `/compact`, `/pager`, `/new`, `/clear`, `/copy`, `/manifest`, `/index`, `/ide`, `/help`, `/quit`
 
 ## Quick Start
 
@@ -152,15 +156,24 @@ The Rust source follows Codex's workspace layout rather than a monolithic
 
 ```text
 autoreport-rs/
-├── cli/          executable entry point
-├── core/         configuration, providers, agents, skills, and domain types
-├── protocol/     shared policy and sandbox protocol types
-├── rollout/      Codex-compatible session persistence
-├── runtime/      persistent agent loops and orchestration
-├── sandboxing/   cross-platform execution policy
-├── tools/        tool definitions and local handlers
-├── tui/          terminal UI, rendering, and IDE context
-└── utils/        absolute-path and path-URI crates
+├── cli/                  executable entry point
+├── core/                 configuration, providers, agents, skills, domain types
+├── runtime/              persistent agent loops and orchestration
+├── tui/                  terminal UI, OSC-8 rendering, IDE context
+├── tools/                tool definitions and local handlers
+├── shell-command/        codex-aligned shell/exec parsing
+├── protocol/             shared policy and sandbox protocol types
+├── codex-protocol/       vendored Codex protocol types (from codex-rs)
+├── app-server-protocol/  vendored app-server protocol + schema fixtures
+├── app-server-transport/ stdio / unix-socket / websocket transport
+├── uds/                  Unix domain socket transport
+├── rollout/              Codex-compatible session persistence
+├── sandboxing/           cross-platform execution policy (seatbelt / bwrap / landlock)
+├── linux-sandbox/        Linux sandbox launcher (bwrap + seccomp)
+├── bwrap/ · windows-sandbox/   platform sandbox helpers
+├── network-proxy/        managed network proxy and MITM policy
+├── execpolicy/           starlark exec-policy rule engine
+└── utils/                absolute-path, path-uri, home-dir, pty, image, …
 ```
 
 Run tests with:
@@ -168,6 +181,11 @@ Run tests with:
 ```bash
 cargo test
 ```
+
+CI (`/.github/workflows`) runs `cargo fmt --check`, `cargo clippy --workspace
+--all-targets`, and the workspace test suite on Ubuntu and macOS; the
+`linux-sandbox`, `macos-sandbox`, and `windows-sandbox` workflows build and
+stage the per-OS native sandbox artifacts.
 
 Build an npm package with a native binary for the current Rust target:
 

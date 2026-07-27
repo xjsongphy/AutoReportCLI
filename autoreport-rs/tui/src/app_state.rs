@@ -1,11 +1,11 @@
 //! State owned by the terminal application.
 
 use crate::config_update::{ConfigScreen, Outcome};
+use crate::custom_terminal::Frame;
 use crate::environment_setup::EnvironmentScreen;
 use crate::model_migration::ModelScreen;
 use autoreport_core::request_user_input::{RequestUserInputAnswer, RequestUserInputQuestion};
 use autoreport_core::types::{AgentType, TaskStatus};
-use ratatui::Frame;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -32,6 +32,14 @@ pub(crate) enum Cell {
         agent: AgentType,
         text: String,
     },
+    /// Codex `ReasoningSummaryCell` equivalent: the finalized model reasoning
+    /// summary, rendered as dimmed italic markdown. Live reasoning still drives
+    /// the thinking spinner; this cell is the transcript scrollback entry.
+    Reasoning {
+        agent: AgentType,
+        text: String,
+        transcript_only: bool,
+    },
     ToolGroup {
         agent: AgentType,
         items: Vec<ToolEntry>,
@@ -42,10 +50,12 @@ pub(crate) enum Cell {
         title: ratatui::text::Line<'static>,
         details: Vec<ratatui::text::Line<'static>>,
     },
-    /// Codex's final-message separator with the completed turn duration.
+    /// Codex's final-message separator with the completed turn duration and
+    /// per-turn runtime metrics (tool/inference counts+duration).
     TurnSeparator {
         agent: AgentType,
         elapsed_seconds: Option<u64>,
+        runtime_metrics: Option<autoreport_core::types::RuntimeMetricsSummary>,
     },
     /// Source-backed Codex-style checkbox plan snapshot.
     PlanUpdate {
@@ -98,6 +108,15 @@ pub(crate) enum Overlay {
     Api(ConfigScreen),
     Models(ModelScreen),
     Environment(EnvironmentScreen),
+}
+
+/// `/agent` picker popup state. The roster is the fixed `AgentType::ALL` set,
+/// so only the highlighted row needs tracking — mirroring codex's
+/// `ListSelectionView` selected index. `selected` is an index into
+/// `AgentType::ALL`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AgentPickerState {
+    pub(crate) selected: usize,
 }
 
 impl Overlay {

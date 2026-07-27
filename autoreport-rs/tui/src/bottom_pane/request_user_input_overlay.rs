@@ -1,7 +1,7 @@
 //! Codex-style user question modal.
 
 use crate::app_state::PendingUserInput;
-use ratatui::Frame;
+use crate::custom_terminal::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

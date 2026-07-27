@@ -24,7 +24,26 @@ mod plans;
 mod request_user_input;
 mod separators;
 mod session;
+pub(crate) use crate::terminal_hyperlinks::HyperlinkLine;
+pub(crate) use messages::split_reasoning_summary_parts;
 pub(crate) use session::SessionHeaderHistoryCell;
+
+/// Strip styling from lines, keeping only their text content. Ported from
+/// Codex's `history_cell::plain_lines`.
+#[allow(dead_code)] // used by PlainHistoryCell/WebHyperlinkHistoryCell once R5 constructs them
+pub(crate) fn plain_lines(lines: impl IntoIterator<Item = Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>();
+            Line::from(text)
+        })
+        .collect()
+}
 
 /// AutoReport stores all agent events in one vector; Codex displays the
 /// currently selected thread. Apply that same boundary when building lines.
@@ -33,6 +52,7 @@ pub(crate) fn belongs_to_agent(cell: &Cell, focused: autoreport_core::types::Age
         Cell::User { _agent, .. } => *_agent == focused,
         Cell::AgentMessage { agent, .. }
         | Cell::AgentMarkdown { agent, .. }
+        | Cell::Reasoning { agent, .. }
         | Cell::ToolGroup { agent, .. }
         | Cell::Collab { agent, .. }
         | Cell::TurnSeparator { agent, .. }
@@ -43,8 +63,28 @@ pub(crate) fn belongs_to_agent(cell: &Cell, focused: autoreport_core::types::Age
 }
 
 /// Width-aware history cell contract from Codex's transcript renderer.
+#[allow(dead_code)] // hyperlink methods used once R5 marks the transcript buffer
 pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>>;
+
+    /// Hyperlink-aware lines for terminals that support OSC 8. Cells without
+    /// web URLs fall back to plain lines (no link annotations). Ported from
+    /// Codex's `HistoryCell::display_hyperlink_lines`.
+    fn display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width))
+    }
+
+    /// Hyperlink lines used when writing the transcript to disk/export.
+    /// Defaults to the display hyperlinks (Codex parity).
+    fn transcript_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        self.display_hyperlink_lines(width)
+    }
 
     /// Copy-friendly source lines, matching Codex's raw scrollback mode.
     /// Cells that do not have a separate source representation fall back to
@@ -85,6 +125,20 @@ impl HistoryCell for Cell {
         render_cell_lines(self, width)
     }
 
+    /// Dispatch per-variant so finalized assistant markdown is annotated with
+    /// OSC 8 web-URL hyperlinks. Mirrors Codex, where each concrete cell type
+    /// overrides `display_hyperlink_lines` and the render path dispatches via
+    /// the trait; variants without a richer override fall back to the default
+    /// plain-lines representation.
+    fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        match self {
+            Cell::AgentMarkdown { text, .. } => {
+                messages::AgentMarkdownCell { text: text.clone() }.display_hyperlink_lines(width)
+            }
+            _ => crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width)),
+        }
+    }
+
     fn raw_lines(&self) -> Vec<Line<'static>> {
         match self {
             Cell::User { text, .. } => vec![Line::from(sanitize_user_text(text))],
@@ -92,6 +146,19 @@ impl HistoryCell for Cell {
                 .split('\n')
                 .map(|line| Line::from(line.to_string()))
                 .collect(),
+            Cell::Reasoning {
+                text,
+                transcript_only,
+                ..
+            } => {
+                if *transcript_only {
+                    Vec::new()
+                } else {
+                    text.split('\n')
+                        .map(|line| Line::from(line.to_string()))
+                        .collect()
+                }
+            }
             Cell::Collab { title, details, .. } => {
                 let mut lines = vec![Line::from(
                     title
@@ -112,8 +179,11 @@ impl HistoryCell for Cell {
             }
             Cell::ToolGroup { .. } | Cell::System { .. } => self.display_lines(u16::MAX),
             Cell::TurnSeparator {
-                elapsed_seconds, ..
-            } => separators::FinalMessageSeparator::new(*elapsed_seconds).raw_lines(),
+                elapsed_seconds,
+                runtime_metrics,
+                ..
+            } => separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
+                .raw_lines(),
             Cell::PlanUpdate {
                 explanation, steps, ..
             } => plans::raw_lines(explanation, steps),
@@ -136,6 +206,21 @@ pub(crate) fn render_history_lines_for_agent(
         .iter()
         .filter(|cell| belongs_to_agent(cell, focused))
         .flat_map(|cell| cell.display_lines(width))
+        .collect()
+}
+
+/// Hyperlink-aware counterpart of [`render_history_lines_for_agent`]: same
+/// cells/order, but each cell contributes its `display_hyperlink_lines` so web
+/// URLs can be marked as OSC 8 links over the rendered transcript area.
+pub(crate) fn render_history_hyperlink_lines_for_agent(
+    cells: &[Cell],
+    focused: autoreport_core::types::AgentType,
+    width: u16,
+) -> Vec<HyperlinkLine> {
+    cells
+        .iter()
+        .filter(|cell| belongs_to_agent(cell, focused))
+        .flat_map(|cell| cell.display_hyperlink_lines(width))
         .collect()
 }
 
@@ -177,6 +262,16 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
         Cell::AgentMarkdown { text, .. } => {
             out.extend(messages::AgentMarkdownCell { text: text.clone() }.display_lines(width_u16));
         }
+        Cell::Reasoning {
+            text,
+            transcript_only,
+            ..
+        } => {
+            out.extend(
+                messages::ReasoningSummaryCell::new(text.clone(), *transcript_only)
+                    .display_lines(width_u16),
+            );
+        }
         Cell::AgentMessage {
             text,
             is_first_line,
@@ -208,10 +303,13 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
             }
         }
         Cell::TurnSeparator {
-            elapsed_seconds, ..
+            elapsed_seconds,
+            runtime_metrics,
+            ..
         } => {
             out.extend(
-                separators::FinalMessageSeparator::new(*elapsed_seconds).display_lines(width_u16),
+                separators::FinalMessageSeparator::new(*elapsed_seconds, *runtime_metrics)
+                    .display_lines(width_u16),
             );
         }
         Cell::PlanUpdate {
@@ -449,6 +547,7 @@ mod tests {
         let lines = Cell::TurnSeparator {
             agent: AgentType::Main,
             elapsed_seconds: Some(61),
+            runtime_metrics: None,
         }
         .display_lines(80);
         let text = lines

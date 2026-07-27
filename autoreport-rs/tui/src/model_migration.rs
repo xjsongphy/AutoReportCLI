@@ -4,6 +4,7 @@
 //! per-agent API selection and model identifier.
 
 use crate::config_update::Outcome;
+use crate::custom_terminal::{Frame, Terminal};
 use autoreport_core::config::schema::{ModelConfig, Settings};
 use autoreport_core::config::{resolve_api_key, save_settings};
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
@@ -14,7 +15,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
 };
-use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 

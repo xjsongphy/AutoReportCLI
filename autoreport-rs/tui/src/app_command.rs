@@ -1,8 +1,8 @@
 //! Application command dispatch, separated from the terminal event loop.
 
 use crate::app::Tui;
-use crate::app_state::SysKind;
-use autoreport_core::types::{AgentStatus, AgentType};
+use crate::app_state::{AgentPickerState, SysKind};
+use autoreport_core::types::AgentType;
 
 impl Tui {
     pub(crate) fn run_command(&mut self, command: &str) {
@@ -11,20 +11,21 @@ impl Tui {
         let rest = parts.collect::<Vec<_>>().join(" ");
         match name {
             "help" | "h" | "?" => self.system(
-                "Commands:\n  /agents           list agents + statuses\n  /sessions         list this project's persisted sessions\n  /switch <agent>   focus an agent\n  /config           view & edit API settings\n  /model            assign main/sub APIs and model names\n  /models           alias for /model\n  /env              select Python and inspect local tool readiness\n  /clear            clear the terminal and start a new chat\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /copy             copy the last assistant response\n  /pager            open the transcript pager\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
+                "Commands:\n  /agent            switch the active agent thread (picker)\n  /switch <agent>   focus an agent\n  /sessions         list this project's persisted sessions\n  /config           view & edit API settings\n  /model            assign main/sub APIs and model names\n  /models           alias for /model\n  /env              select Python and inspect local tool readiness\n  /clear            clear the terminal and start a new chat\n  /compact          compact focused agent's context\n  /new              reset focused agent\n  /copy             copy the last assistant response\n  /pager            open the transcript pager\n  /manifest         show produced files\n  /index            rebuild the @ file index\n  /ide [on|off]     toggle IDE context injection (open file + selection)\n  /quit             exit",
                 SysKind::Info,
             ),
             "config" => self.want_config = true,
             "model" | "models" => self.want_models = true,
             "env" => self.want_environment = true,
-            "agents" => {
-                let mut output = String::from("Agents:\n");
-                for agent in AgentType::ALL {
-                    let status = self.statuses.get(&agent).copied().unwrap_or(AgentStatus::Idle);
-                    let mark = if agent == self.focused { "›" } else { " " };
-                    output.push_str(&format!("  {mark} {} [{status:?}]\n", agent.label()));
-                }
-                self.system(output.trim_end(), SysKind::Info);
+            "agent" | "agents" => {
+                // Codex opens a `/agent` selection popup (`ListSelectionView`).
+                // We open the equivalent picker rooted on the currently focused
+                // agent, matching codex's `initial_selected_idx` behavior.
+                let selected = AgentType::ALL
+                    .iter()
+                    .position(|agent| *agent == self.focused)
+                    .unwrap_or(0);
+                self.agent_picker = Some(AgentPickerState { selected });
             }
             "sessions" => {
                 let sessions = self.manager.session_summaries();

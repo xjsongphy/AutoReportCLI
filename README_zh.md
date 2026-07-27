@@ -47,9 +47,13 @@ codex 风格的 TUI 协调五个智能体完成整份报告。
 
 ### TUI 体验
 - **Codex 风格界面** — 全屏终端 UI，支持流式输出、Markdown 渲染和键盘优先操作
+- **OSC-8 超链接** — 文件路径与链接渲染为可点击的终端超链接（codex 对齐的渲染后端）
+- **输入历史搜索** — `Ctrl+R` / `Ctrl+S` 对历史输入做反向 / 正向增量搜索，codex 风格
+- **逐轮指标** — 每个回合分隔条上展示 token 用量与耗时
+- **Codex 审批键位** — 命令执行审批使用 codex 键位（`y` / `a` / `p` / `d` / `Esc` / `n` / `c`）
 - **持久化会话** — 每个智能体各自维护上下文，下次启动可继续之前的对话
 - **`@` 文件提及** — 在输入框中模糊搜索工作区文件并直接注入上下文
-- **斜杠命令** — `/agents`、`/switch`、`/config`、`/models`、`/clear`、`/compact`、`/new`、`/manifest`、`/index`、`/help`
+- **斜杠命令** — `/agent(s)`、`/switch`、`/config`、`/model(s)`、`/env`、`/compact`、`/pager`、`/new`、`/clear`、`/copy`、`/manifest`、`/index`、`/ide`、`/help`、`/quit`
 
 ## 快速开始
 
@@ -148,15 +152,24 @@ Rust 源码采用与 Codex 一致的 workspace 组织，而不是单一的 `src/
 
 ```text
 autoreport-rs/
-├── cli/          可执行程序入口
-├── core/         配置、Provider、Agent、skills 与领域类型
-├── protocol/     共享策略与 sandbox 协议类型
-├── rollout/      兼容 Codex 的会话持久化
-├── runtime/      持久 Agent loop 与编排
-├── sandboxing/   跨平台执行策略
-├── tools/        工具定义与本地 handler
-├── tui/          终端 UI、渲染与 IDE 上下文
-└── utils/        absolute-path 与 path-URI crate
+├── cli/                  可执行程序入口
+├── core/                 配置、Provider、Agent、skills 与领域类型
+├── runtime/              持久 Agent loop 与编排
+├── tui/                  终端 UI、OSC-8 渲染、IDE 上下文
+├── tools/                工具定义与本地 handler
+├── shell-command/        codex 对齐的 shell/exec 解析
+├── protocol/             共享策略与 sandbox 协议类型
+├── codex-protocol/       vendored Codex 协议类型（来自 codex-rs）
+├── app-server-protocol/  vendored app-server 协议 + schema fixture
+├── app-server-transport/ stdio / unix socket / websocket 传输层
+├── uds/                  Unix domain socket 传输
+├── rollout/              兼容 Codex 的会话持久化
+├── sandboxing/           跨平台执行策略（seatbelt / bwrap / landlock）
+├── linux-sandbox/        Linux 沙箱启动器（bwrap + seccomp）
+├── bwrap/ · windows-sandbox/   平台沙箱辅助
+├── network-proxy/        托管网络代理与 MITM 策略
+├── execpolicy/           starlark exec-policy 规则引擎
+└── utils/                absolute-path、path-uri、home-dir、pty、image 等
 ```
 
 运行测试：
@@ -164,6 +177,10 @@ autoreport-rs/
 ```bash
 cargo test
 ```
+
+CI（`/.github/workflows`）在 Ubuntu 与 macOS 上运行 `cargo fmt --check`、
+`cargo clippy --workspace --all-targets` 以及全量测试；`linux-sandbox`、
+`macos-sandbox`、`windows-sandbox` 三个 workflow 负责构建并打包各平台原生沙箱产物。
 
 为当前 Rust target 构建包含原生二进制的 npm 包：
 

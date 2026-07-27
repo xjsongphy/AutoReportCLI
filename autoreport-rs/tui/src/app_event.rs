@@ -4,11 +4,46 @@ use crate::app::Tui;
 use crate::app_state::{Cell, Overlay, PendingApproval, PendingUserInput, SysKind, ToolEntry};
 use crate::config_update::Outcome;
 use autoreport_core::config::save_settings;
+use autoreport_core::types::ApprovalRequestPayload;
 use autoreport_core::types::{BusMessage, MessageSource};
 use serde_json::Value;
 use std::collections::HashMap;
 
 impl Tui {
+    /// Push one approval request onto the shared display queue.
+    pub(crate) fn push_pending_approval(&mut self, payload: ApprovalRequestPayload) {
+        self.pending_approvals.push_back(PendingApproval {
+            agent: payload.agent_type,
+            call_id: payload.call_id,
+            command: payload.command,
+            cwd: payload.cwd,
+            summary: payload.summary,
+            reason: payload.reason,
+        });
+    }
+
+    /// Rebuild the display queue from the bus's non-lossy source of truth.
+    /// Called at startup and after any broadcast `Lagged(_)` so a request
+    /// dropped by a lagging (or late-subscribing) receiver is recovered instead
+    /// of deadlocking the awaiting agent. Already-queued items keep their
+    /// position; resolved-elsewhere items are dropped; newly-seen ones append.
+    pub(crate) async fn reconcile_approvals(&mut self) {
+        let snapshot = self.bus.pending_approvals().await;
+        let pending_ids: std::collections::HashSet<&str> =
+            snapshot.iter().map(|p| p.call_id.as_str()).collect();
+        self.pending_approvals
+            .retain(|p| pending_ids.contains(p.call_id.as_str()));
+        for payload in snapshot {
+            if !self
+                .pending_approvals
+                .iter()
+                .any(|p| p.call_id == payload.call_id)
+            {
+                self.push_pending_approval(payload);
+            }
+        }
+    }
+
     fn set_status_from_bus(
         &mut self,
         agent_type: autoreport_core::types::AgentType,
@@ -122,6 +157,9 @@ impl Tui {
                         self.history.push(Cell::TurnSeparator {
                             agent: agent_type,
                             elapsed_seconds,
+                            // Filled retroactively when the Idle StatusChange
+                            // arrives with per-turn runtime_metrics.
+                            runtime_metrics: None,
                         });
                     }
                     self.set_status_from_bus(agent_type, autoreport_core::types::AgentStatus::Idle);
@@ -265,7 +303,11 @@ impl Tui {
                     });
                 }
             }
-            BusMessage::StatusChange { agent_type, status } => {
+            BusMessage::StatusChange {
+                agent_type,
+                status,
+                runtime_metrics,
+            } => {
                 if !matches!(
                     status,
                     autoreport_core::types::AgentStatus::Thinking
@@ -276,6 +318,26 @@ impl Tui {
                     self.suppress_until_idle.remove(&agent_type);
                 }
                 self.set_status_from_bus(agent_type, status);
+                // The TurnSeparator is emitted on the final AgentResponse; the
+                // per-turn metrics arrive on this Idle transition, so attach
+                // them to that agent's most recent separator retroactively.
+                if matches!(status, autoreport_core::types::AgentStatus::Idle)
+                    && let Some(metrics) = runtime_metrics
+                {
+                    for cell in self.history.iter_mut().rev() {
+                        if let Cell::TurnSeparator {
+                            agent,
+                            runtime_metrics: slot,
+                            ..
+                        } = cell
+                            && *agent == agent_type
+                            && slot.is_none()
+                        {
+                            *slot = Some(metrics);
+                            break;
+                        }
+                    }
+                }
             }
             BusMessage::TaskUpdate { .. } => {
                 // Codex's interaction history is emitted from the actual
@@ -295,14 +357,35 @@ impl Tui {
             }
             BusMessage::Report {
                 agent_type,
+                report_type,
                 summary,
                 content,
                 ..
             } => {
-                let (title, details) =
-                    crate::multi_agents::report_end(agent_type, &summary, &content);
+                // Codex renders a collaborator's terminal status (Completed /
+                // Interrupted / Errored) inline. A `reply` is the clean
+                // `Received report from` row; `missing_data` / `quality` are
+                // non-terminal blocks rendered with codex's Interrupted tone.
+                let (title, details) = if report_type == "reply" {
+                    crate::multi_agents::report_end(agent_type, &summary, &content)
+                } else {
+                    crate::multi_agents::report_blocked(
+                        agent_type,
+                        &report_type,
+                        &summary,
+                        &content,
+                    )
+                };
                 self.history.push(Cell::Collab {
                     agent: agent_type,
+                    title,
+                    details,
+                });
+            }
+            BusMessage::Waiting { target_agent, .. } => {
+                let (title, details) = crate::multi_agents::waiting_begin(target_agent);
+                self.history.push(Cell::Collab {
+                    agent: target_agent,
                     title,
                     details,
                 });
@@ -319,25 +402,13 @@ impl Tui {
             BusMessage::Error { message, .. } => {
                 self.system(&format!("error: {message}"), SysKind::Error);
             }
-            BusMessage::ApprovalRequest {
-                agent_type,
-                call_id,
-                command,
-                cwd,
-                summary,
-                reason,
-            } => {
+            BusMessage::ApprovalRequest { payload } => {
                 // Single shared approval queue: any agent's request lands here
                 // regardless of which agent is focused. Ported from codex's
-                // `ApprovalOverlay::enqueue_request`.
-                self.pending_approvals.push_back(PendingApproval {
-                    agent: agent_type,
-                    call_id,
-                    command,
-                    cwd,
-                    summary,
-                    reason,
-                });
+                // `ApprovalOverlay::enqueue_request`. (If the broadcast
+                // receiver lagged and dropped this, `reconcile_approvals`
+                // re-surfaces it from the bus's non-lossy source of truth.)
+                self.push_pending_approval(payload);
             }
             BusMessage::UserInputRequest {
                 agent_type,
@@ -489,32 +560,13 @@ impl Tui {
             return true;
         }
 
-        // Codex gives reverse history search its own transient footer mode;
-        // accept/cancel must not fall through to submit or interrupt.
+        // Codex's reverse/forward-i-search owns all keys while open: typed
+        // chars extend the query, Ctrl+R/S + Up/Down navigate, Enter accepts,
+        // Esc/Ctrl+C cancels. Delegate the whole key to the session and never
+        // fall through to submit or edit.
         if self.composer.history_search_active() {
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.composer.cancel_history_search();
-                    return true;
-                }
-                KeyCode::Esc => {
-                    self.composer.cancel_history_search();
-                    return true;
-                }
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    self.composer.accept_history_search();
-                    return true;
-                }
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let _ = self.composer.history_search_previous();
-                    return true;
-                }
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let _ = self.composer.history_search_next();
-                    return true;
-                }
-                _ => {}
-            }
+            let _ = self.composer.handle_history_search_key(key);
+            return true;
         }
 
         // While an approval popup is open, it owns all keys (codex semantics:
@@ -632,6 +684,68 @@ impl Tui {
                     return true;
                 }
                 _ => {}
+            }
+        }
+
+        // Codex's `/agent` selection popup owns navigation while open: it
+        // mirrors the `ListSelectionView` keymap (Up/Down/j/k, Enter accept,
+        // Esc cancel, 1-9 quick-select). Tab/BackTab also step the selection
+        // since that is the global agent-switch key here.
+        if self.agent_picker.is_some() {
+            #[derive(Clone, Copy)]
+            enum PickerAction {
+                Close,
+                Shift(i32),
+                Accept(usize),
+                Swallow,
+            }
+            let roster = autoreport_core::types::AgentType::ALL;
+            let len = roster.len();
+            let shift =
+                |idx: usize, delta: i32| (idx as i32 + delta).rem_euclid(len as i32) as usize;
+            let action = match key.code {
+                KeyCode::Esc => Some(PickerAction::Close),
+                KeyCode::Enter => Some(PickerAction::Accept(
+                    self.agent_picker.as_ref().expect("picker open").selected,
+                )),
+                KeyCode::Tab | KeyCode::Down => Some(PickerAction::Shift(1)),
+                KeyCode::BackTab | KeyCode::Up => Some(PickerAction::Shift(-1)),
+                KeyCode::Char('j') if key.modifiers.is_empty() => Some(PickerAction::Shift(1)),
+                KeyCode::Char('k') if key.modifiers.is_empty() => Some(PickerAction::Shift(-1)),
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(PickerAction::Shift(1))
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(PickerAction::Shift(-1))
+                }
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty()
+                        && c.is_ascii_digit()
+                        && c.to_digit(10).filter(|d| *d as usize <= len).is_some() =>
+                {
+                    c.to_digit(10)
+                        .map(|d| PickerAction::Accept((d - 1) as usize))
+                }
+                _ => Some(PickerAction::Swallow),
+            };
+            if let Some(action) = action {
+                match action {
+                    PickerAction::Close => self.agent_picker = None,
+                    PickerAction::Shift(delta) => {
+                        if let Some(p) = self.agent_picker.as_mut() {
+                            p.selected = shift(p.selected, delta);
+                        }
+                    }
+                    PickerAction::Accept(idx) => {
+                        let agent = roster[idx.min(len - 1)];
+                        self.focused = agent;
+                        self.composer.set_focused_agent(agent.label());
+                        self.refresh_pending_input_preview();
+                        self.agent_picker = None;
+                    }
+                    PickerAction::Swallow => {}
+                }
+                return true;
             }
         }
 
@@ -814,10 +928,13 @@ impl Tui {
                 }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let _ = self.composer.history_search_previous();
+                // Open a Codex-style reverse-i-search session. Subsequent keys
+                // (query chars, Ctrl+R/S, Enter, Esc) route through the
+                // search-active handler at the top of this function.
+                self.composer.begin_history_search();
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let _ = self.composer.history_search_next();
+                self.composer.begin_history_search();
             }
             KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.composer.yank()

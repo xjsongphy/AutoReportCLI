@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-progress runs on the same ref when a new commit is pushed.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  lint-test:
+    name: clippy + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install Linux sandbox build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap libcap-dev pkg-config
+      # Clippy's `correctness`/`suspicious` lint groups are deny-by-default,
+      # so this still fails on real lint errors without treating every style
+      # warning (e.g. provisional dead_code during feature work) as fatal.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Build Linux sandbox helper for tools isolation test
+        # The autoreport-tools `isolation` integration test spawns sandboxed
+        # exec, which on Linux needs the autoreport-linux-sandbox binary.
+        # `cargo test --workspace` doesn't place workspace bin targets into
+        # deps/, so build it and point the ExecTool at it via the env var it
+        # already reads (mirrors codex's rust-ci-full-nextest-platform.yml,
+        # which builds codex-linux-sandbox and hands it to the test harness).
+        if: runner.os == 'Linux'
+        run: |
+          cargo build -p autoreport-linux-sandbox
+          echo "AUTOREPORT_LINUX_SANDBOX_EXE=${PWD}/target/debug/autoreport-linux-sandbox" >> "$GITHUB_ENV"
+      - name: Test
+        # The four sandbox crates are tested natively on their own OS in the
+        # linux-sandbox / macos-sandbox / windows-sandbox workflows; exclude
+        # them here to avoid the overlap. They still compile (core/cli/runtime
+        # depend on autoreport-sandboxing) — we just skip their test binaries.
+        run: >
+          cargo test --workspace
+          --exclude autoreport-sandboxing
+          --exclude autoreport-bwrap
+          --exclude autoreport-linux-sandbox
+          --exclude autoreport-windows-sandbox

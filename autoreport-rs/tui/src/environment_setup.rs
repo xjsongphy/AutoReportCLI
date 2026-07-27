@@ -1,5 +1,6 @@
 //! Python and local-tool environment setup, shared by startup and `/env`.
 
+use crate::custom_terminal::{Frame, Terminal};
 use autoreport_core::environment::{
     EnvironmentConfig, PythonCandidate, PythonConfig, config_for_candidate, config_for_custom,
     detect_python_environments, ensure_python_environment, managed_venv_path,
@@ -10,7 +11,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
 use std::io;
 use std::path::PathBuf;
 
@@ -198,7 +198,7 @@ impl EnvironmentScreen {
                     Line::from("Enter an executable path (for example /opt/venv/bin/python):"),
                     Line::from(""),
                     Line::from(vec![
-                        Span::raw("> "),
+                        Span::raw("› "),
                         Span::styled(&self.custom_path, Style::default().fg(Color::Yellow)),
                     ]),
                 ];
@@ -292,17 +292,16 @@ impl EnvironmentScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
+    use crate::test_support::WritableTestBackend;
 
     #[test]
     fn page_renders_python_choice_and_tool_section() {
         let dir = tempfile::tempdir().unwrap();
         let screen = EnvironmentScreen::new(dir.path().to_path_buf(), dir.path().to_path_buf());
-        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut terminal = Terminal::with_options(WritableTestBackend::new(100, 20)).unwrap();
         terminal.draw(|frame| screen.draw(frame)).unwrap();
         let rendered = terminal
-            .backend()
-            .buffer()
+            .rendered_buffer()
             .content()
             .chunks(100)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
