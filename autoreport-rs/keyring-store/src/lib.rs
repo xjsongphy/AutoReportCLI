@@ -224,3 +224,76 @@ pub mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::tests::MockKeyringStore;
+    use super::KeyringStore;
+
+    const SERVICE: &str = "autoreport-test";
+
+    #[test]
+    fn load_returns_none_when_missing() {
+        let store = MockKeyringStore::default();
+        assert!(store.load(SERVICE, "absent").unwrap().is_none());
+    }
+
+    #[test]
+    fn save_then_load_roundtrips() {
+        let store = MockKeyringStore::default();
+        store.save(SERVICE, "alice", "s3cret").unwrap();
+        assert_eq!(
+            store.load(SERVICE, "alice").unwrap().as_deref(),
+            Some("s3cret")
+        );
+        assert_eq!(store.saved_value("alice").as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn save_overwrites_existing_value() {
+        let store = MockKeyringStore::default();
+        store.save(SERVICE, "bob", "first").unwrap();
+        store.save(SERVICE, "bob", "second").unwrap();
+        assert_eq!(
+            store.load(SERVICE, "bob").unwrap().as_deref(),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn delete_returns_true_when_present() {
+        let store = MockKeyringStore::default();
+        store.save(SERVICE, "carol", "value").unwrap();
+        assert_eq!(store.delete(SERVICE, "carol").unwrap(), true);
+        // After deletion the entry is gone.
+        assert!(store.load(SERVICE, "carol").unwrap().is_none());
+        assert!(!store.contains("carol"));
+    }
+
+    #[test]
+    fn delete_returns_false_when_absent() {
+        let store = MockKeyringStore::default();
+        assert_eq!(store.delete(SERVICE, "nobody").unwrap(), false);
+    }
+
+    #[test]
+    fn delete_is_idempotent() {
+        let store = MockKeyringStore::default();
+        store.save(SERVICE, "dave", "value").unwrap();
+        assert_eq!(store.delete(SERVICE, "dave").unwrap(), true);
+        assert_eq!(store.delete(SERVICE, "dave").unwrap(), false);
+    }
+
+    #[test]
+    fn distinct_accounts_are_isolated() {
+        let store = MockKeyringStore::default();
+        store.save(SERVICE, "alice", "a").unwrap();
+        store.save(SERVICE, "bob", "b").unwrap();
+        assert_eq!(store.load(SERVICE, "alice").unwrap().as_deref(), Some("a"));
+        assert_eq!(store.load(SERVICE, "bob").unwrap().as_deref(), Some("b"));
+        // Deleting one must not affect the other.
+        assert_eq!(store.delete(SERVICE, "alice").unwrap(), true);
+        assert!(store.load(SERVICE, "alice").unwrap().is_none());
+        assert_eq!(store.load(SERVICE, "bob").unwrap().as_deref(), Some("b"));
+    }
+}

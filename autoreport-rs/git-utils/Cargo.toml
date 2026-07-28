@@ -26,3 +26,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "time"] }
 ts-rs = { workspace = true }
 walkdir = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

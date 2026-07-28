@@ -18,6 +18,8 @@ members = [
     "autoreport-rs/code-mode-protocol",
     "autoreport-rs/exec-server-protocol",
     "autoreport-rs/keyring-store",
+    "autoreport-rs/prompts",
+    "autoreport-rs/secrets",
     "autoreport-rs/collaboration-mode-templates",
     "autoreport-rs/utils-template",
     "autoreport-rs/context-fragments",
@@ -64,6 +66,7 @@ rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
+age = "0.11"
 autoreport-utils-absolute-path = { path = "autoreport-rs/utils/absolute-path" }
 autoreport-utils-cache = { path = "autoreport-rs/utils/cache" }
 autoreport-utils-image = { path = "autoreport-rs/utils/image" }
@@ -88,6 +91,8 @@ autoreport-agent-identity = { path = "autoreport-rs/agent-identity" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/code-mode-protocol" }
 autoreport-exec-server-protocol = { path = "autoreport-rs/exec-server-protocol" }
 autoreport-keyring-store = { path = "autoreport-rs/keyring-store" }
+autoreport-prompts = { path = "autoreport-rs/prompts" }
+autoreport-secrets = { path = "autoreport-rs/secrets" }
 autoreport-collaboration-mode-templates = { path = "autoreport-rs/collaboration-mode-templates" }
 autoreport-utils-template = { path = "autoreport-rs/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
