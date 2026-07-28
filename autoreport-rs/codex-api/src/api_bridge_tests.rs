@@ -1,6 +1,6 @@
 use super::*;
-use base64::Engine;
 use autoreport_codex_protocol::protocol::RateLimitReachedType;
+use base64::Engine;
 use pretty_assertions::assert_eq;
 
 #[test]

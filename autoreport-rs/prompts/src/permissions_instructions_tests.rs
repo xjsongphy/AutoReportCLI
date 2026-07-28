@@ -1,10 +1,10 @@
 use super::*;
-use autoreport_execpolicy::Decision;
 use autoreport_codex_protocol::permissions::FileSystemAccessMode;
 use autoreport_codex_protocol::permissions::FileSystemPath;
 use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
 use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
 use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_execpolicy::Decision;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;

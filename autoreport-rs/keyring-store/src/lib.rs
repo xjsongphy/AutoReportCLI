@@ -226,9 +226,9 @@ pub mod tests {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::tests::MockKeyringStore;
+mod crate_tests {
     use super::KeyringStore;
+    use super::tests::MockKeyringStore;
 
     const SERVICE: &str = "autoreport-test";
 

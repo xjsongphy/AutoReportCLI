@@ -665,11 +665,11 @@ fn rate_limit_regex() -> &'static regex_lite::Regex {
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
-    use bytes::Bytes;
     use autoreport_codex_client::StreamResponse;
     use autoreport_codex_client::TransportError;
     use autoreport_codex_protocol::models::MessagePhase;
     use autoreport_codex_protocol::models::ResponseItem;
+    use bytes::Bytes;
     use futures::TryStreamExt;
     use futures::stream;
     use http::HeaderMap;

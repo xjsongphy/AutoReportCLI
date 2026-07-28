@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use autoreport_codex_protocol::capabilities::SelectedCapabilityRoot;
+use autoreport_codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use autoreport_file_system::FileSystemSandboxContext;
 pub use autoreport_file_system::WalkOptions;
 pub use autoreport_file_system::WalkOutcome;
 use autoreport_network_proxy::ManagedNetworkSandboxContext;
 use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
-use autoreport_codex_protocol::capabilities::SelectedCapabilityRoot;
-use autoreport_codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use autoreport_shell_command::shell_detect::DetectedShell;
 use autoreport_utils_path_uri::PathUri;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -737,12 +737,6 @@ mod tests {
     use super::HttpRequestParams;
     use super::ProcessId;
     use super::ShellInfo;
-    use autoreport_file_system::FileSystemSandboxContext;
-    use autoreport_network_proxy::ManagedNetworkSandboxContext;
-    use autoreport_network_proxy::NetworkProxyAuditMetadata;
-    use autoreport_network_proxy::NetworkProxyConfig;
-    use autoreport_network_proxy::RemoteNetworkProxyConfig;
-    use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
     use autoreport_codex_protocol::config_types::WindowsSandboxProxySettingsMode;
     use autoreport_codex_protocol::models::ManagedFileSystemPermissions;
     use autoreport_codex_protocol::models::PermissionProfile;
@@ -752,6 +746,12 @@ mod tests {
     use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
     use autoreport_codex_protocol::permissions::FileSystemSpecialPath;
     use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
+    use autoreport_file_system::FileSystemSandboxContext;
+    use autoreport_network_proxy::ManagedNetworkSandboxContext;
+    use autoreport_network_proxy::NetworkProxyAuditMetadata;
+    use autoreport_network_proxy::NetworkProxyConfig;
+    use autoreport_network_proxy::RemoteNetworkProxyConfig;
+    use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
     use autoreport_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;

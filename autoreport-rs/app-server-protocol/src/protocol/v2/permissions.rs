@@ -679,14 +679,14 @@ impl From<autoreport_codex_protocol::protocol::SandboxPolicy> for SandboxPolicy 
             autoreport_codex_protocol::protocol::SandboxPolicy::ReadOnly { network_access } => {
                 SandboxPolicy::ReadOnly { network_access }
             }
-            autoreport_codex_protocol::protocol::SandboxPolicy::ExternalSandbox { network_access } => {
-                SandboxPolicy::ExternalSandbox {
-                    network_access: match network_access {
-                        CoreNetworkAccess::Restricted => NetworkAccess::Restricted,
-                        CoreNetworkAccess::Enabled => NetworkAccess::Enabled,
-                    },
-                }
-            }
+            autoreport_codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
+                network_access,
+            } => SandboxPolicy::ExternalSandbox {
+                network_access: match network_access {
+                    CoreNetworkAccess::Restricted => NetworkAccess::Restricted,
+                    CoreNetworkAccess::Enabled => NetworkAccess::Enabled,
+                },
+            },
             autoreport_codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
                 writable_roots,
                 network_access,

@@ -15,3 +15,9 @@ tokio = { workspace = true, features = ["net", "rt", "time"] }
 tokio-rustls = { workspace = true }
 tokio-tungstenite = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+autoreport-utils-rustls-provider = { workspace = true }
+pretty_assertions = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true, features = ["macros", "test-util"] }

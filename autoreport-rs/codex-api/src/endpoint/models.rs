@@ -32,7 +32,10 @@ impl<T: HttpTransport> ModelsClient<T> {
         "models"
     }
 
-    fn append_client_version_query(req: &mut autoreport_codex_client::Request, client_version: &str) {
+    fn append_client_version_query(
+        req: &mut autoreport_codex_client::Request,
+        client_version: &str,
+    ) {
         let separator = if req.url.contains('?') { '&' } else { '?' };
         req.url = format!("{}{}client_version={client_version}", req.url, separator);
     }

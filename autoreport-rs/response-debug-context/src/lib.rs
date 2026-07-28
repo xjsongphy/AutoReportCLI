@@ -1,6 +1,6 @@
-use base64::Engine;
 use autoreport_codex_api::ApiError;
 use autoreport_codex_api::TransportError;
+use base64::Engine;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const OAI_REQUEST_ID_HEADER: &str = "x-oai-request-id";

@@ -32,7 +32,9 @@ mod tests {
             ("PAIR_PROGRAMMING", PAIR_PROGRAMMING),
         ] {
             assert!(
-                template.lines().any(|line| line.trim_start().starts_with('#')),
+                template
+                    .lines()
+                    .any(|line| line.trim_start().starts_with('#')),
                 "{name} template has no Markdown heading"
             );
         }

@@ -15,3 +15,6 @@ autoreport-codex-protocol = { workspace = true }
 autoreport-utils-absolute-path = { workspace = true }
 autoreport-utils-template = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

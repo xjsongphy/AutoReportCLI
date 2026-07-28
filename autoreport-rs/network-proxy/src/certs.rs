@@ -1,8 +1,8 @@
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::anyhow;
-use base64::Engine as _;
 use autoreport_utils_home_dir::find_autoreport_home;
+use base64::Engine as _;
 use rama_net::tls::ApplicationProtocol;
 use rama_tls_rustls::dep::pki_types::CertificateDer;
 use rama_tls_rustls::dep::pki_types::PrivateKeyDer;

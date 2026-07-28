@@ -1,5 +1,3 @@
-use autoreport_context_fragments::ContextualUserFragment;
-use autoreport_execpolicy::Policy;
 use autoreport_codex_protocol::config_types::ApprovalsReviewer;
 use autoreport_codex_protocol::config_types::SandboxMode;
 use autoreport_codex_protocol::models::PermissionProfile;
@@ -12,6 +10,8 @@ use autoreport_codex_protocol::protocol::AskForApproval;
 use autoreport_codex_protocol::protocol::GranularApprovalConfig;
 use autoreport_codex_protocol::protocol::NetworkAccess;
 use autoreport_codex_protocol::protocol::WritableRoot;
+use autoreport_context_fragments::ContextualUserFragment;
+use autoreport_execpolicy::Policy;
 use autoreport_utils_template::Template;
 use std::path::Path;
 use std::sync::LazyLock;

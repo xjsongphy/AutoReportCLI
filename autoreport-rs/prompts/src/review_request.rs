@@ -1,6 +1,6 @@
-use autoreport_git_utils::merge_base_with_head;
 use autoreport_codex_protocol::protocol::ReviewRequest;
 use autoreport_codex_protocol::protocol::ReviewTarget;
+use autoreport_git_utils::merge_base_with_head;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_template::Template;
 use std::sync::LazyLock;
