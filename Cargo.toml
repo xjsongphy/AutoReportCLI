@@ -13,6 +13,13 @@ members = [
     "autoreport-rs/model-provider-info",
     "autoreport-rs/file-system",
     "autoreport-rs/memories-read",
+    "autoreport-rs/git-utils",
+    "autoreport-rs/agent-identity",
+    "autoreport-rs/code-mode-protocol",
+    "autoreport-rs/exec-server-protocol",
+    "autoreport-rs/keyring-store",
+    "autoreport-rs/collaboration-mode-templates",
+    "autoreport-rs/utils-template",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -76,6 +83,13 @@ autoreport-response-debug-context = { path = "autoreport-rs/response-debug-conte
 autoreport-model-provider-info = { path = "autoreport-rs/model-provider-info" }
 autoreport-file-system = { path = "autoreport-rs/file-system" }
 autoreport-memories-read = { path = "autoreport-rs/memories-read" }
+autoreport-git-utils = { path = "autoreport-rs/git-utils" }
+autoreport-agent-identity = { path = "autoreport-rs/agent-identity" }
+autoreport-code-mode-protocol = { path = "autoreport-rs/code-mode-protocol" }
+autoreport-exec-server-protocol = { path = "autoreport-rs/exec-server-protocol" }
+autoreport-keyring-store = { path = "autoreport-rs/keyring-store" }
+autoreport-collaboration-mode-templates = { path = "autoreport-rs/collaboration-mode-templates" }
+autoreport-utils-template = { path = "autoreport-rs/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
@@ -99,12 +113,15 @@ async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["ws", "http1", "tokio"] }
 base64 = "0.22"
 constant_time_eq = "0.3"
+crypto_box = { version = "0.9", features = ["seal"] }
 bytes = "1"
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 diffy = "0.4"
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+keyring = { version = "3.6", default-features = false, features = ["crypto-rust"] }
 icu_decimal = "2.1"
 icu_locale_core = "2.1"
 icu_provider = { version = "2.1", features = ["sync"] }
@@ -118,6 +135,7 @@ sha1 = "0.10"
 similar = "2.7.0"
 sys-locale = "0.3"
 wildmatch = "2"
+walkdir = "2.5"
 derive_more = { version = "2", features = ["is_variant"] }
 dirs = "5"
 dunce = "1"
@@ -126,6 +144,7 @@ env_logger = "0.11"
 futures = "0.3"
 futures-util = "0.3"
 globset = "0.4"
+gix = { version = "0.81", default-features = false, features = ["sha1"] }
 hex = "0.4"
 hmac = "0.12.1"
 http = "1.3.1"

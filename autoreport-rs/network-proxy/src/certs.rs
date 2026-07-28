@@ -1,8 +1,8 @@
 use anyhow::Context as _;
 use anyhow::Result;
 use anyhow::anyhow;
-use autoreport_utils_home_dir::find_autoreport_home;
 use base64::Engine as _;
+use autoreport_utils_home_dir::find_autoreport_home;
 use rama_net::tls::ApplicationProtocol;
 use rama_tls_rustls::dep::pki_types::CertificateDer;
 use rama_tls_rustls::dep::pki_types::PrivateKeyDer;
@@ -154,13 +154,14 @@ pub(crate) const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
 
 // Best-effort compatibility set for common child toolchains that accept a CA bundle path.
 // This is intentionally curated rather than pretending to cover every TLS client.
-pub const CUSTOM_CA_ENV_KEYS: [&str; 10] = [
+pub const CUSTOM_CA_ENV_KEYS: [&str; 11] = [
     "CODEX_CA_CERTIFICATE",
     "SSL_CERT_FILE",
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
     "NODE_EXTRA_CA_CERTS",
     "GIT_SSL_CAINFO",
+    "CARGO_HTTP_CAINFO",
     "PIP_CERT",
     "BUNDLE_SSL_CA_CERT",
     "npm_config_cafile",
@@ -183,9 +184,9 @@ pub(crate) struct ManagedMitmCaTrustBundle {
 }
 
 fn managed_ca_dir() -> Result<PathBuf> {
-    let autoreport_home =
-        find_autoreport_home().context("failed to resolve AUTOREPORT_HOME for managed MITM CA")?;
-    Ok(autoreport_home.join(MANAGED_MITM_CA_DIR).to_path_buf())
+    let codex_home =
+        find_autoreport_home().context("failed to resolve CODEX_HOME for managed MITM CA")?;
+    Ok(codex_home.join(MANAGED_MITM_CA_DIR).to_path_buf())
 }
 
 pub(crate) fn managed_ca_trust_bundle(
