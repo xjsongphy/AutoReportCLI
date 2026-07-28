@@ -10,6 +10,9 @@ members = [
     "autoreport-rs/codex-api",
     "autoreport-rs/features",
     "autoreport-rs/response-debug-context",
+    "autoreport-rs/model-provider-info",
+    "autoreport-rs/file-system",
+    "autoreport-rs/memories-read",
     "autoreport-rs/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
@@ -70,6 +73,9 @@ autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
 autoreport-context-fragments = { path = "autoreport-rs/context-fragments" }
 autoreport-features = { path = "autoreport-rs/features" }
 autoreport-response-debug-context = { path = "autoreport-rs/response-debug-context" }
+autoreport-model-provider-info = { path = "autoreport-rs/model-provider-info" }
+autoreport-file-system = { path = "autoreport-rs/file-system" }
+autoreport-memories-read = { path = "autoreport-rs/memories-read" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }

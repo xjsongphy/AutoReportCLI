@@ -1,0 +1,16 @@
+[package]
+name = "autoreport-file-system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_file_system"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
