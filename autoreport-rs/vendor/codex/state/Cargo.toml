@@ -1,0 +1,29 @@
+[package]
+name = "autoreport-state"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_state"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+dirs = { workspace = true }
+libsqlite3-sys = { workspace = true }
+log = { workspace = true }
+owo-colors = { workspace = true, features = ["supports-colors"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

@@ -1,29 +1,29 @@
 [workspace]
 members = [
-    "autoreport-rs/app-server",
-    "autoreport-rs/app-server-protocol",
-    "autoreport-rs/app-server-transport",
-    "autoreport-rs/codex-protocol",
-    "autoreport-rs/http-client",
-    "autoreport-rs/websocket-client",
-    "autoreport-rs/codex-client",
-    "autoreport-rs/codex-api",
-    "autoreport-rs/config",
-    "autoreport-rs/features",
-    "autoreport-rs/response-debug-context",
-    "autoreport-rs/model-provider-info",
-    "autoreport-rs/file-system",
-    "autoreport-rs/memories-read",
-    "autoreport-rs/git-utils",
-    "autoreport-rs/agent-identity",
-    "autoreport-rs/code-mode-protocol",
-    "autoreport-rs/exec-server-protocol",
-    "autoreport-rs/keyring-store",
-    "autoreport-rs/prompts",
-    "autoreport-rs/secrets",
-    "autoreport-rs/collaboration-mode-templates",
-    "autoreport-rs/utils-template",
-    "autoreport-rs/context-fragments",
+    "autoreport-rs/vendor/codex/app-server",
+    "autoreport-rs/vendor/codex/app-server-protocol",
+    "autoreport-rs/vendor/codex/app-server-transport",
+    "autoreport-rs/vendor/codex/codex-protocol",
+    "autoreport-rs/vendor/codex/http-client",
+    "autoreport-rs/vendor/codex/websocket-client",
+    "autoreport-rs/vendor/codex/codex-client",
+    "autoreport-rs/vendor/codex/codex-api",
+    "autoreport-rs/vendor/codex/config",
+    "autoreport-rs/vendor/codex/features",
+    "autoreport-rs/vendor/codex/response-debug-context",
+    "autoreport-rs/vendor/codex/model-provider-info",
+    "autoreport-rs/vendor/codex/file-system",
+    "autoreport-rs/vendor/codex/memories-read",
+    "autoreport-rs/vendor/codex/git-utils",
+    "autoreport-rs/vendor/codex/agent-identity",
+    "autoreport-rs/vendor/codex/code-mode-protocol",
+    "autoreport-rs/vendor/codex/exec-server-protocol",
+    "autoreport-rs/vendor/codex/keyring-store",
+    "autoreport-rs/vendor/codex/prompts",
+    "autoreport-rs/vendor/codex/secrets",
+    "autoreport-rs/vendor/codex/collaboration-mode-templates",
+    "autoreport-rs/vendor/codex/utils-template",
+    "autoreport-rs/vendor/codex/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
     "autoreport-rs/utils/stream-parser",
@@ -68,6 +68,8 @@ license = "MIT"
 
 [workspace.dependencies]
 age = "0.11"
+arc-swap = "1.9"
+clatter = { version = "2.2", default-features = false, features = ["alloc", "getrandom", "use-25519", "use-aes-gcm", "use-rust-crypto-ml-kem", "use-sha"] }
 autoreport-utils-absolute-path = { path = "autoreport-rs/utils/absolute-path" }
 autoreport-utils-cache = { path = "autoreport-rs/utils/cache" }
 autoreport-utils-image = { path = "autoreport-rs/utils/image" }
@@ -80,35 +82,35 @@ autoreport-network-proxy = { path = "autoreport-rs/network-proxy" }
 autoreport-utils-path-uri = { path = "autoreport-rs/utils/path-uri" }
 autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
-autoreport-codex-protocol = { path = "autoreport-rs/codex-protocol" }
-autoreport-context-fragments = { path = "autoreport-rs/context-fragments" }
-autoreport-features = { path = "autoreport-rs/features" }
-autoreport-response-debug-context = { path = "autoreport-rs/response-debug-context" }
-autoreport-model-provider-info = { path = "autoreport-rs/model-provider-info" }
-autoreport-file-system = { path = "autoreport-rs/file-system" }
-autoreport-memories-read = { path = "autoreport-rs/memories-read" }
-autoreport-git-utils = { path = "autoreport-rs/git-utils" }
-autoreport-agent-identity = { path = "autoreport-rs/agent-identity" }
-autoreport-code-mode-protocol = { path = "autoreport-rs/code-mode-protocol" }
-autoreport-exec-server-protocol = { path = "autoreport-rs/exec-server-protocol" }
-autoreport-keyring-store = { path = "autoreport-rs/keyring-store" }
-autoreport-prompts = { path = "autoreport-rs/prompts" }
-autoreport-secrets = { path = "autoreport-rs/secrets" }
-autoreport-collaboration-mode-templates = { path = "autoreport-rs/collaboration-mode-templates" }
-autoreport-utils-template = { path = "autoreport-rs/utils-template" }
+autoreport-codex-protocol = { path = "autoreport-rs/vendor/codex/codex-protocol" }
+autoreport-context-fragments = { path = "autoreport-rs/vendor/codex/context-fragments" }
+autoreport-features = { path = "autoreport-rs/vendor/codex/features" }
+autoreport-response-debug-context = { path = "autoreport-rs/vendor/codex/response-debug-context" }
+autoreport-model-provider-info = { path = "autoreport-rs/vendor/codex/model-provider-info" }
+autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
+autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
+autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
+autoreport-agent-identity = { path = "autoreport-rs/vendor/codex/agent-identity" }
+autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
+autoreport-exec-server-protocol = { path = "autoreport-rs/vendor/codex/exec-server-protocol" }
+autoreport-keyring-store = { path = "autoreport-rs/vendor/codex/keyring-store" }
+autoreport-prompts = { path = "autoreport-rs/vendor/codex/prompts" }
+autoreport-secrets = { path = "autoreport-rs/vendor/codex/secrets" }
+autoreport-collaboration-mode-templates = { path = "autoreport-rs/vendor/codex/collaboration-mode-templates" }
+autoreport-utils-template = { path = "autoreport-rs/vendor/codex/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
-autoreport-http-client = { path = "autoreport-rs/http-client" }
-autoreport-websocket-client = { path = "autoreport-rs/websocket-client" }
-autoreport-codex-client = { path = "autoreport-rs/codex-client" }
-autoreport-codex-api = { path = "autoreport-rs/codex-api" }
-autoreport-config = { path = "autoreport-rs/config" }
+autoreport-http-client = { path = "autoreport-rs/vendor/codex/http-client" }
+autoreport-websocket-client = { path = "autoreport-rs/vendor/codex/websocket-client" }
+autoreport-codex-client = { path = "autoreport-rs/vendor/codex/codex-client" }
+autoreport-codex-api = { path = "autoreport-rs/vendor/codex/codex-api" }
+autoreport-config = { path = "autoreport-rs/vendor/codex/config" }
 autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
-autoreport-app-server-protocol = { path = "autoreport-rs/app-server-protocol" }
-autoreport-app-server = { path = "autoreport-rs/app-server" }
+autoreport-app-server-protocol = { path = "autoreport-rs/vendor/codex/app-server-protocol" }
+autoreport-app-server = { path = "autoreport-rs/vendor/codex/app-server" }
 autoreport-protocol = { path = "autoreport-rs/protocol" }
-autoreport-app-server-transport = { path = "autoreport-rs/app-server-transport" }
+autoreport-app-server-transport = { path = "autoreport-rs/vendor/codex/app-server-transport" }
 autoreport-otel = { path = "autoreport-rs/otel" }
 autoreport-uds = { path = "autoreport-rs/uds" }
 autoreport-terminal-detection = { path = "autoreport-rs/terminal-detection" }
@@ -154,6 +156,7 @@ globset = "0.4"
 gix = { version = "0.81", default-features = false, features = ["sha1"] }
 gethostname = "0.5"
 indexmap = "2.12"
+libsqlite3-sys = { version = "0.37", default-features = false }
 hex = "0.4"
 hmac = "0.12.1"
 http = "1.3.1"
@@ -179,6 +182,8 @@ shlex = "1"
 # execpolicy crate uses the same version + `default-features = false` to keep
 # the build slim — matches codex-rs/Cargo.toml).
 starlark = { version = "0.14.2", default-features = false }
+sqlx = { version = "0.9", default-features = false, features = ["chrono", "json", "macros", "migrate", "runtime-tokio", "tls-rustls", "sqlite-bundled", "time", "uuid"] }
+tracing-subscriber = "0.3"
 multimap = "0.10"
 pretty_assertions = "1"
 rcgen = { version = "0.14.7", default-features = false, features = ["aws_lc_rs", "pem"] }
@@ -215,6 +220,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.28", features = ["proxy", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokio-test = "0.4"
+wiremock = "0.6"
 toml_edit = "0.22"
 tonic = { version = "0.14", default-features = false, features = ["channel", "codegen"] }
 tungstenite = { version = "0.27", features = ["deflate", "proxy"] }
