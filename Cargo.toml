@@ -23,6 +23,9 @@ members = [
     "autoreport-rs/vendor/codex/keyring-store",
     "autoreport-rs/vendor/codex/prompts",
     "autoreport-rs/vendor/codex/secrets",
+    "autoreport-rs/vendor/codex/agent-graph-store",
+    "autoreport-rs/vendor/codex/utils-plugins",
+    "autoreport-rs/vendor/codex/apply-patch",
     "autoreport-rs/vendor/codex/collaboration-mode-templates",
     "autoreport-rs/vendor/codex/utils-template",
     "autoreport-rs/vendor/codex/context-fragments",
@@ -103,6 +106,9 @@ autoreport-exec-server-protocol = { path = "autoreport-rs/vendor/codex/exec-serv
 autoreport-keyring-store = { path = "autoreport-rs/vendor/codex/keyring-store" }
 autoreport-prompts = { path = "autoreport-rs/vendor/codex/prompts" }
 autoreport-secrets = { path = "autoreport-rs/vendor/codex/secrets" }
+autoreport-agent-graph-store = { path = "autoreport-rs/vendor/codex/agent-graph-store" }
+autoreport-utils-plugins = { path = "autoreport-rs/vendor/codex/utils-plugins" }
+autoreport-apply-patch = { path = "autoreport-rs/vendor/codex/apply-patch" }
 autoreport-collaboration-mode-templates = { path = "autoreport-rs/vendor/codex/collaboration-mode-templates" }
 autoreport-utils-template = { path = "autoreport-rs/vendor/codex/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
@@ -240,8 +246,8 @@ tungstenite = { version = "0.27", features = ["deflate", "proxy"] }
 prost = "0.14"
 dns-lookup = "2"
 tonic-prost = "0.14"
-tree-sitter = "0.24"
-tree-sitter-bash = "0.23"
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25"
 tracing = "0.1"
 ts-rs = { version = "11", features = ["uuid-impl", "serde-json-impl", "no-serde-warnings"] }
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
