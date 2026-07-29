@@ -27,3 +27,8 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thr
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+autoreport-git-utils = { workspace = true }
+pretty_assertions = { workspace = true }
+scopeguard = { workspace = true }

@@ -11,3 +11,6 @@ doctest = false
 autoreport-codex-protocol = { workspace = true }
 autoreport-shell-command = { workspace = true }
 autoreport-utils-absolute-path = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

@@ -8,12 +8,17 @@ pub mod policy_transforms;
 pub mod seatbelt;
 mod spawn;
 mod windows;
+pub mod mode;
 
 #[cfg(target_os = "linux")]
 pub use bwrap::find_system_bwrap_in_path;
 #[cfg(target_os = "linux")]
 pub use bwrap::system_bwrap_warning;
 pub use autoreport_windows_sandbox::WindowsSandboxProxySettingsMode;
+pub use mode::SandboxMode;
+pub use mode::SandboxSpec;
+pub use mode::build_filesystem_policy;
+pub use mode::sandbox_command_argv;
 pub use denial::is_likely_sandbox_denied;
 pub use manager::SandboxCommand;
 pub use manager::SandboxDirectSpawnTransformRequest;

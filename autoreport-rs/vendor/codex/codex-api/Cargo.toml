@@ -35,3 +35,11 @@ tracing = { workspace = true }
 tungstenite = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+assert_matches = { workspace = true }
+pretty_assertions = { workspace = true }
+tokio-test = { workspace = true }
+wiremock = { workspace = true }
+reqwest = { workspace = true }
