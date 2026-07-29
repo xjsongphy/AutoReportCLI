@@ -25,7 +25,7 @@ async fn sqlite_sink_drops_low_level_opentelemetry_sdk_logs() {
     tracing::trace!(target: "opentelemetry_sdk", "dropped-trace");
     tracing::debug!(target: "opentelemetry_sdk", "dropped-debug");
     tracing::info!(target: "opentelemetry_sdk", "retained-info");
-    tracing::trace!(target: "codex_state", "retained-trace");
+    tracing::trace!(target: "autoreport_state", "retained-trace");
     tracing::trace!(
         target: "codex_api::responses_websocket_timing",
         payload = "complete timing payload",
@@ -49,7 +49,7 @@ async fn sqlite_sink_drops_low_level_opentelemetry_sdk_logs() {
             .collect::<Vec<_>>(),
         vec![
             ("INFO", "opentelemetry_sdk", Some("retained-info")),
-            ("TRACE", "codex_state", Some("retained-trace")),
+            ("TRACE", "autoreport_state", Some("retained-trace")),
         ]
     );
 

@@ -12,25 +12,21 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
-base64.workspace = true
-dirs.workspace = true
 dunce.workspace = true
 libc.workspace = true
 regex-lite.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true
 which.workspace = true
-autoreport-protocol = { path = "../protocol" }
-autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
-autoreport-utils-home-dir = { path = "../utils/home-dir" }
-autoreport-utils-path-uri = { path = "../utils/path-uri" }
-autoreport-network-proxy = { path = "../network-proxy" }
+autoreport-codex-protocol = { workspace = true }
+autoreport-network-proxy = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+autoreport-utils-pty = { workspace = true }
+autoreport-windows-sandbox = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-autoreport-windows-sandbox = { path = "../windows-sandbox" }
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]

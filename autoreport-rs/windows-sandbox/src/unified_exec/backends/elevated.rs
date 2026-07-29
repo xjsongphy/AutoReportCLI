@@ -16,10 +16,10 @@ use crate::runner_client::retry_runner_spawn_once;
 use crate::runner_client::spawn_runner_transport;
 use crate::spawn_prep::prepare_elevated_spawn_context_for_permissions;
 use anyhow::Result;
-use autoreport_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
-use autoreport_utils_pty::ProcessDriver;
-use autoreport_utils_pty::SpawnedProcess;
+use codex_utils_pty::ProcessDriver;
+use codex_utils_pty::SpawnedProcess;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,7 +29,7 @@ use tokio::sync::oneshot;
 
 struct RunnerTransportRequest {
     permissions: ResolvedWindowsSandboxPermissions,
-    autoreport_home: PathBuf,
+    codex_home: PathBuf,
     cwd: PathBuf,
     env_map: HashMap<String, String>,
     logs_base_dir: Option<PathBuf>,
@@ -66,7 +66,7 @@ fn spawn_runner_transport_with_retry<T>(
         &request.spawn_request.command,
         |sandbox_creds| {
             spawn(
-                &request.autoreport_home,
+                &request.codex_home,
                 &request.cwd,
                 &sandbox_creds,
                 request.logs_base_dir.as_deref(),
@@ -78,7 +78,7 @@ fn spawn_runner_transport_with_retry<T>(
                 &request.permissions,
                 &request.cwd,
                 &request.env_map,
-                &request.autoreport_home,
+                &request.codex_home,
                 request.read_roots_override.as_deref(),
                 request.read_roots_include_platform_defaults,
                 request.write_roots_override.as_deref(),
@@ -111,11 +111,12 @@ async fn spawn_runner_transport_task(
 pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profile(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
-    autoreport_home: &Path,
+    codex_home: &Path,
     command: Vec<String>,
     cwd: &Path,
     mut env_map: HashMap<String, String>,
     proxy_enforced: bool,
+    network_proxy_restricting_sid: Option<String>,
     proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
     timeout_ms: Option<u64>,
     read_roots_override: Option<&[PathBuf]>,
@@ -142,7 +143,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
         )?;
     let elevated = prepare_elevated_spawn_context_for_permissions(
         permissions.clone(),
-        autoreport_home,
+        codex_home,
         cwd,
         &mut env_map,
         &command,
@@ -158,7 +159,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
     let sandbox_creds = elevated.sandbox_creds;
     let request = RunnerTransportRequest {
         permissions,
-        autoreport_home: autoreport_home.to_path_buf(),
+        codex_home: codex_home.to_path_buf(),
         cwd: cwd.to_path_buf(),
         env_map: env_map.clone(),
         logs_base_dir: elevated.logs_base_dir,
@@ -168,9 +169,10 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
             env: env_map,
             permission_profile: permission_profile.clone(),
             workspace_roots: workspace_roots.to_vec(),
-            autoreport_home: elevated.sandbox_base,
-            real_autoreport_home: autoreport_home.to_path_buf(),
+            codex_home: elevated.sandbox_base,
+            real_codex_home: codex_home.to_path_buf(),
             cap_sids: elevated.cap_sids,
+            network_proxy_restricting_sid,
             timeout_ms,
             tty,
             stdin_open,

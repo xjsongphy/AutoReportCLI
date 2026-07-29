@@ -34,11 +34,11 @@ tempfile = "3"
 tokio = { workspace = true, features = ["sync", "rt", "macros", "signal", "time"] }
 tracing-appender = "0.2.3"
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_NetworkManagement_WindowsFirewall", "Win32_System_Com", "Win32_System_Variant"] }
-autoreport-otel = { path = "../otel" }
-autoreport-protocol = { path = "../protocol" }
-autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
-autoreport-utils-pty = { path = "../utils/pty" }
-autoreport-utils-string = { path = "../utils/string" }
+autoreport-otel = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-pty = { workspace = true }
+autoreport-utils-string = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemServices", "Win32_System_Environment", "Win32_System_Pipes", "Win32_System_WindowsProgramming", "Win32_System_IO", "Win32_System_Memory", "Win32_System_Kernel", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_NetManagement", "Win32_NetworkManagement_WindowsFilteringPlatform", "Win32_Networking_WinSock", "Win32_System_LibraryLoader", "Win32_System_Com", "Win32_Security_Cryptography", "Win32_Security_Authentication_Identity", "Win32_System_Rpc", "Win32_Graphics_Gdi", "Win32_System_StationsAndDesktops", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Registry"] }

@@ -2,7 +2,7 @@
 //!
 //! These helpers centralize small pieces of setup logic used across both legacy and
 //! elevated paths, including unified_exec sessions and capture flows. They cover
-//! autoreport home directory creation and git safe.directory injection so sandboxed
+//! codex home directory creation and git safe.directory injection so sandboxed
 //! users can run git inside a repo owned by the primary user.
 
 use anyhow::Result;
@@ -24,8 +24,8 @@ fn find_git_worktree_root_for_safe_directory(start: &Path) -> Option<std::path::
     }
 }
 
-/// Ensure the sandbox autoreport home directory exists.
-pub fn ensure_autoreport_home_exists(p: &Path) -> Result<()> {
+/// Ensure the sandbox codex home directory exists.
+pub fn ensure_codex_home_exists(p: &Path) -> Result<()> {
     std::fs::create_dir_all(p)?;
     Ok(())
 }

@@ -79,10 +79,7 @@ impl RawConPty {
     }
 
     pub fn pseudoconsole_handle(&self) -> RawHandle {
-        // `HPCON` is defined by winapi as `*mut winapi::ctypes::c_void`,
-        // whereas Rust's `RawHandle` is `*mut std::ffi::c_void`. They carry
-        // the same opaque Windows handle value but are distinct Rust types.
-        self.con.raw_handle() as RawHandle
+        self.con.raw_handle()
     }
 
     pub fn into_handles(self) -> (PsuedoCon, FileDescriptor, FileDescriptor) {

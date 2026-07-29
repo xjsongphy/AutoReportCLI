@@ -9,6 +9,8 @@ members = [
     "autoreport-rs/vendor/codex/codex-client",
     "autoreport-rs/vendor/codex/codex-api",
     "autoreport-rs/vendor/codex/config",
+    "autoreport-rs/vendor/codex/state",
+    "autoreport-rs/vendor/codex/exec-server",
     "autoreport-rs/vendor/codex/features",
     "autoreport-rs/vendor/codex/response-debug-context",
     "autoreport-rs/vendor/codex/model-provider-info",
@@ -79,8 +81,13 @@ autoreport-extension-items = { path = "autoreport-rs/extension-items" }
 autoreport-experimental-api-macros = { path = "autoreport-rs/experimental-api-macros" }
 autoreport-shell-command = { path = "autoreport-rs/shell-command" }
 autoreport-network-proxy = { path = "autoreport-rs/network-proxy" }
+autoreport-sandboxing = { path = "autoreport-rs/sandboxing" }
+autoreport-install-context = { path = "autoreport-rs/install-context" }
+autoreport-process-hardening = { path = "autoreport-rs/process-hardening" }
+autoreport-windows-sandbox = { path = "autoreport-rs/windows-sandbox" }
 autoreport-utils-path-uri = { path = "autoreport-rs/utils/path-uri" }
 autoreport-utils-string = { path = "autoreport-rs/utils/string" }
+autoreport-utils-pty = { path = "autoreport-rs/utils/pty" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/vendor/codex/codex-protocol" }
 autoreport-context-fragments = { path = "autoreport-rs/vendor/codex/context-fragments" }
@@ -106,6 +113,8 @@ autoreport-websocket-client = { path = "autoreport-rs/vendor/codex/websocket-cli
 autoreport-codex-client = { path = "autoreport-rs/vendor/codex/codex-client" }
 autoreport-codex-api = { path = "autoreport-rs/vendor/codex/codex-api" }
 autoreport-config = { path = "autoreport-rs/vendor/codex/config" }
+autoreport-state = { path = "autoreport-rs/vendor/codex/state" }
+autoreport-exec-server = { path = "autoreport-rs/vendor/codex/exec-server" }
 autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
 autoreport-app-server-protocol = { path = "autoreport-rs/vendor/codex/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/vendor/codex/app-server" }
@@ -116,6 +125,7 @@ autoreport-uds = { path = "autoreport-rs/uds" }
 autoreport-terminal-detection = { path = "autoreport-rs/terminal-detection" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
+assert_matches = "1.5.0"
 async-io = "2.6.0"
 async-channel = "2.3"
 async-trait = "0.1"
@@ -136,12 +146,14 @@ icu_locale_core = "2.1"
 icu_provider = { version = "2.1", features = ["sync"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 lru = "0.12"
+maplit = "1.0.2"
 mime_guess = "2.0"
 quick-xml = { version = "0.41", features = ["serialize"] }
 inventory = "0.3"
 rmcp = { version = "1.8", default-features = false }
 sha1 = "0.10"
 similar = "2.7.0"
+scopeguard = "1.2.0"
 sys-locale = "0.3"
 wildmatch = "2"
 walkdir = "2.5"

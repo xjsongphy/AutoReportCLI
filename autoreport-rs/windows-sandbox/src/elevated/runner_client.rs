@@ -41,7 +41,6 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::CreateProcessWithLogonW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::GetCurrentThread;
-use windows_sys::Win32::System::Threading::LOGON_WITH_PROFILE;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::STARTUPINFOW;
 use windows_sys::Win32::System::Threading::TerminateProcess;
@@ -49,7 +48,7 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 const RUNNER_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const RUNNER_PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const RUNNER_SPAWN_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const RUNNER_SPAWN_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const RUNNER_ERROR_MODE_FLAGS: u32 = 0x0001 | 0x0002;
 const WAIT_OBJECT_0: u32 = 0;
 
@@ -207,7 +206,7 @@ fn connect_pipe_with_timeout(
     let (connect_result_tx, connect_result_rx) = mpsc::sync_channel(1);
     let mut connect_thread = Some(
         thread::Builder::new()
-            .name(format!("autoreport-runner-connect-{pipe_label}"))
+            .name(format!("codex-runner-connect-{pipe_label}"))
             .spawn(move || {
                 let current_process = unsafe { GetCurrentProcess() };
                 let mut thread_handle = 0;
@@ -309,7 +308,7 @@ fn connect_pipe_with_timeout(
 }
 
 pub(crate) fn spawn_runner_transport(
-    autoreport_home: &Path,
+    codex_home: &Path,
     cwd: &Path,
     sandbox_creds: &SandboxCreds,
     log_dir: Option<&Path>,
@@ -321,11 +320,11 @@ pub(crate) fn spawn_runner_transport(
     let h_pipe_out =
         create_named_pipe(&pipe_out_name, PIPE_ACCESS_INBOUND, &sandbox_creds.username)?;
 
-    let runner_exe = find_runner_exe(autoreport_home, log_dir);
+    let runner_exe = find_runner_exe(codex_home, log_dir);
     let runner_cmdline = runner_exe
         .to_str()
         .map(str::to_owned)
-        .unwrap_or_else(|| "autoreport-command-runner.exe".to_string());
+        .unwrap_or_else(|| "codex-command-runner.exe".to_string());
     let runner_full_cmd = format!(
         "{} {} {}",
         quote_windows_arg(&runner_cmdline),
@@ -344,12 +343,13 @@ pub(crate) fn spawn_runner_transport(
     let env_block: Option<Vec<u16>> = None;
 
     let previous_error_mode = unsafe { SetErrorMode(RUNNER_ERROR_MODE_FLAGS) };
+    // Sandbox users have no profile state that commands should inherit.
     let spawn_res = unsafe {
         CreateProcessWithLogonW(
             user_w.as_ptr(),
             domain_w.as_ptr(),
             password_w.as_ptr(),
-            LOGON_WITH_PROFILE,
+            /*dwlogonflags*/ 0,
             exe_w.as_ptr(),
             cmdline_vec.as_mut_ptr(),
             windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
@@ -392,7 +392,7 @@ pub(crate) fn spawn_runner_transport(
         unsafe {
             // Keep the process handle alive until the pipe handshake finishes. If the handshake
             // fails after the runner process has already launched, we still need a way to stop
-            // that child instead of leaking a stray `autoreport-command-runner.exe`.
+            // that child instead of leaking a stray `codex-command-runner.exe`.
             if pi.hProcess != 0 {
                 let _ = TerminateProcess(pi.hProcess, 1);
                 CloseHandle(pi.hProcess);
@@ -412,7 +412,7 @@ pub(crate) fn spawn_runner_transport(
     let startup_result = (|| -> Result<()> {
         // Keep the runner process HANDLE alive until the *entire* startup handshake finishes.
         // That way, a later `send_spawn_request` or `spawn_ready` failure can still terminate the
-        // runner instead of leaving a stray `autoreport-command-runner.exe` behind.
+        // runner instead of leaving a stray `codex-command-runner.exe` behind.
         transport.send_spawn_request(spawn_request)?;
         transport.read_spawn_ready()?;
         Ok(())
