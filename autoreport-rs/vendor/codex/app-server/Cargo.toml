@@ -10,15 +10,15 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+anyhow = { workspace = true }
 autoreport-app-server-protocol = { workspace = true }
 autoreport-app-server-transport = { workspace = true }
-autoreport-codex-protocol = { workspace = true }
-autoreport-protocol = { workspace = true }
-autoreport-otel = { workspace = true }
-futures = { workspace = true }
+autoreport-core = { path = "../../../core" }
+autoreport-rollout = { path = "../../../rollout" }
+autoreport-runtime = { path = "../../../runtime" }
+autoreport-sandboxing = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 

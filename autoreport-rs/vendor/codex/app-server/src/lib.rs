@@ -1,11 +1,10 @@
-//! AutoReport app-server: a backend that speaks codex's app-server-protocol
-//! over the vendored transport, so plugins / graphical frontends / IDEs can
-//! drive the (fixed-agent) runtime. Ported from codex's `app-server` crate,
-//! minimal changes at the codex-core → our-runtime boundary.
+//! AutoReport's provider-backed app-server boundary.
+//!
+//! The protocol and stdio framing are reused as transport infrastructure;
+//! request semantics are implemented by AutoReport's own provider/runtime
+//! adapter. Only the provider-runtime methods declared below are exposed.
 
-pub mod analytics;
-pub mod connection_rpc_gate;
-pub mod error_code;
-pub mod outgoing_message;
-pub mod request_serialization;
-pub mod server_request_error;
+pub mod provider_dispatch;
+pub mod provider_runtime_server;
+pub mod provider_transport_runner;
+pub mod runtime_adapter;
