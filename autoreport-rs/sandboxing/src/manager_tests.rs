@@ -417,22 +417,25 @@ fn wsl1_allows_non_bubblewrap_linux_paths() {
 #[cfg(target_os = "linux")]
 #[test]
 fn transform_linux_seccomp_preserves_helper_path_in_arg0_when_available() {
-    let codex_linux_sandbox_exe = std::path::PathBuf::from("/tmp/codex-linux-sandbox");
-    let exec_request = transform_linux_seccomp_request(&codex_linux_sandbox_exe);
+    let autoreport_linux_sandbox_exe = std::path::PathBuf::from("/tmp/autoreport-linux-sandbox");
+    let exec_request = transform_linux_seccomp_request(&autoreport_linux_sandbox_exe);
 
     assert_eq!(
         exec_request.arg0,
-        Some(codex_linux_sandbox_exe.to_string_lossy().into_owned())
+        Some(autoreport_linux_sandbox_exe.to_string_lossy().into_owned())
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn transform_linux_seccomp_uses_helper_alias_when_launcher_is_not_helper_path() {
-    let codex_linux_sandbox_exe = std::path::PathBuf::from("/tmp/codex");
-    let exec_request = transform_linux_seccomp_request(&codex_linux_sandbox_exe);
+    let autoreport_linux_sandbox_exe = std::path::PathBuf::from("/tmp/autoreport");
+    let exec_request = transform_linux_seccomp_request(&autoreport_linux_sandbox_exe);
 
-    assert_eq!(exec_request.arg0, Some("codex-linux-sandbox".to_string()));
+    assert_eq!(
+        exec_request.arg0,
+        Some("autoreport-linux-sandbox".to_string())
+    );
 }
 
 #[cfg(target_os = "windows")]

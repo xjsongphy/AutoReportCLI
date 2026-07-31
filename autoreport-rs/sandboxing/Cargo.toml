@@ -31,5 +31,7 @@ autoreport-windows-sandbox = { workspace = true }
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
+autoreport-network-proxy = { workspace = true }
 pretty_assertions = "1"
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

@@ -8,17 +8,17 @@
 use std::path::Path;
 use std::process::Command;
 
-use autoreport_protocol::FileSystemAccessMode;
-use autoreport_protocol::FileSystemSandboxPolicy;
-use autoreport_protocol::NetworkSandboxPolicy;
+use autoreport_codex_protocol::permissions::FileSystemAccessMode;
+use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
+use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_network_proxy::ManagedNetworkSandboxContext;
 use autoreport_sandboxing::SandboxMode;
 use autoreport_sandboxing::SandboxSpec;
 use autoreport_sandboxing::mode::build_filesystem_policy;
-use autoreport_sandboxing::network_proxy::ManagedNetworkSandboxContext;
-use autoreport_sandboxing::sandboxing::seatbelt::CreateSeatbeltCommandArgsParams;
-use autoreport_sandboxing::sandboxing::seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE;
-use autoreport_sandboxing::sandboxing::seatbelt::create_seatbelt_command_args;
-use autoreport_sandboxing::seatbelt_command_argv;
+use autoreport_sandboxing::mode::seatbelt_command_argv;
+use autoreport_sandboxing::seatbelt::CreateSeatbeltCommandArgsParams;
+use autoreport_sandboxing::seatbelt::MACOS_PATH_TO_SEATBELT_EXECUTABLE;
+use autoreport_sandboxing::seatbelt::create_seatbelt_command_args;
 
 fn argv_for(mode: SandboxMode, cwd: &Path, command: &[&str]) -> Vec<String> {
     let spec = SandboxSpec::new(mode, false).with_writable_root(Some(&cwd.join("Outline")));
@@ -135,9 +135,9 @@ fn workspace_write_executes_with_agent_only_write_access() {
 fn resolve_access_uses_most_specific_entry() {
     // Faithfulness check: the codex precedence algorithm — longest prefix wins,
     // deny beats write beats read — survives the vendoring intact.
-    use autoreport_protocol::FileSystemPath;
-    use autoreport_protocol::FileSystemSandboxEntry;
-    use autoreport_protocol::FileSystemSpecialPath;
+    use autoreport_codex_protocol::permissions::FileSystemPath;
+    use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
+    use autoreport_codex_protocol::permissions::FileSystemSpecialPath;
     use autoreport_utils_absolute_path::AbsolutePathBuf;
 
     let cwd = std::env::current_dir().unwrap();
@@ -149,14 +149,17 @@ fn resolve_access_uses_most_specific_entry() {
                 value: FileSystemSpecialPath::project_roots(None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: docs },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: docs_private },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
     ]);
 
