@@ -91,7 +91,7 @@ impl RequestUserInputOverlay {
         let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
         let popup = Rect {
             x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height.saturating_sub(height) / 3,
+            y: area.y + area.height.saturating_sub(height) / 2,
             width,
             height,
         };

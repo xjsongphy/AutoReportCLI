@@ -65,6 +65,10 @@ impl Tui {
             "copy" => self.copy_last_response(),
             "pager" => self.open_pager(),
             "new" => {
+                // `/new` starts a genuinely fresh visible conversation.  The
+                // previous implementation only reset the runtime context,
+                // leaving the old transcript (and queued UI state) on screen.
+                self.clear_terminal_ui();
                 self.manager.clear_context(self.focused);
                 self.system(&format!("reset {}", self.focused.label()), SysKind::Info);
             }

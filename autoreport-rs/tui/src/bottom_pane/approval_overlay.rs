@@ -83,7 +83,7 @@ impl ApprovalOverlay {
         let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
         let popup_area = Rect {
             x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 3,
+            y: area.y + (area.height.saturating_sub(height)) / 2,
             width,
             height,
         };

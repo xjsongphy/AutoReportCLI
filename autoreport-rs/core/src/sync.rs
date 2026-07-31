@@ -106,12 +106,6 @@ const TYPST_SKILL_FILES: &[&str] = &[
     "package.md",
     "debug.md",
     "perf.md",
-    "examples/basic-document.typ",
-    "examples/styled-document.typ",
-    "examples/template-report.typ",
-    "examples/tables-showcase.typ",
-    "examples/academic-paper.typ",
-    "examples/query-export.typ",
 ];
 
 #[derive(Debug, Default, Clone)]
@@ -254,7 +248,17 @@ pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
     }
     match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/skills/typst/SKILL.md")).await {
         Ok(body) => {
-            let body = body.replace("(examples/package-example/)", "(package.md)");
+            let body = body
+                .replace("(examples/package-example/)", "(package.md)")
+                // The application ships its own report templates; keep the
+                // upstream skill's package/example fixtures out of the cache
+                // and remove the corresponding stale links from its index.
+                .replace("| [basic-document.typ](examples/basic-document.typ)   | A short note or memo                     | [basics.md](basics.md), [styling.md](styling.md) |\n", "")
+                .replace("| [styled-document.typ](examples/styled-document.typ) | A multi-section report with page styling | [styling.md](styling.md), [tables.md](tables.md) |\n", "")
+                .replace("| [template-report.typ](examples/template-report.typ) | A reusable template for a series         | [template.md](template.md)                       |\n", "")
+                .replace("| [tables-showcase.typ](examples/tables-showcase.typ) | A data-heavy doc (tables, CSV/JSON)      | [tables.md](tables.md), [types.md](types.md) |\n", "")
+                .replace("| [academic-paper.typ](examples/academic-paper.typ)   | A paper with citations, theorems, math   | [academic.md](academic.md)                       |\n", "")
+                .replace("| [query-export.typ](examples/query-export.typ)       | Metadata export or multi-pass builds     | [query.md](query.md)                             |\n", "");
             if let Err(e) = validate_skill_text(&body) {
                 report.errors.push(format!("Typst skill: {e}"));
             } else if let Err(e) = atomic_write(&staging_typst.join("skills/typst/SKILL.md"), &body)

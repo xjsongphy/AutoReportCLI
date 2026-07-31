@@ -16,6 +16,7 @@ members = [
     "autoreport-rs/vendor/codex/model-provider-info",
     "autoreport-rs/vendor/codex/file-system",
     "autoreport-rs/vendor/codex/memories-read",
+    "autoreport-rs/vendor/codex/models-manager",
     "autoreport-rs/vendor/codex/git-utils",
     "autoreport-rs/vendor/codex/agent-identity",
     "autoreport-rs/vendor/codex/code-mode-protocol",
@@ -100,6 +101,7 @@ autoreport-response-debug-context = { path = "autoreport-rs/vendor/codex/respons
 autoreport-model-provider-info = { path = "autoreport-rs/vendor/codex/model-provider-info" }
 autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
 autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
+autoreport-models-manager = { path = "autoreport-rs/vendor/codex/models-manager" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
 autoreport-agent-identity = { path = "autoreport-rs/vendor/codex/agent-identity" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
