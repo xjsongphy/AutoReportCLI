@@ -13,7 +13,7 @@ use autoreport_network_proxy::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 use autoreport_network_proxy::RemoteNetworkProxyConfig;
 use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
 #[cfg(target_os = "linux")]
-use autoreport_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use autoreport_sandboxing::landlock::AUTOREPORT_LINUX_SANDBOX_ARG0;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
@@ -158,7 +158,10 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
         ]
     );
     #[cfg(target_os = "linux")]
-    assert_eq!(prepared.arg0, Some(CODEX_LINUX_SANDBOX_ARG0.to_string()));
+    assert_eq!(
+        prepared.arg0,
+        Some(AUTOREPORT_LINUX_SANDBOX_ARG0.to_string())
+    );
     #[cfg(target_os = "macos")]
     assert_eq!(prepared.arg0, None);
 }
