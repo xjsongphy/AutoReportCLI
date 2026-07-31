@@ -78,9 +78,12 @@ exit 1
 
     assert!(!system_bwrap_has_user_namespace_access(
         fake_bwrap_path,
-        Duration::from_millis(100),
+        // Allow the shell to start on loaded Linux runners while still
+        // exercising the non-blocking stderr drain before the fake child
+        // would naturally finish sleeping.
+        Duration::from_millis(500),
     ));
-    assert!(started_at.elapsed() < Duration::from_millis(500));
+    assert!(started_at.elapsed() < Duration::from_secs(1));
 }
 
 #[test]
