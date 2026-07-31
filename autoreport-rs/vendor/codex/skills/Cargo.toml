@@ -1,0 +1,16 @@
+[package]
+name = "autoreport-skills"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+[lib]
+name = "autoreport_skills"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+include_dir = { workspace = true }
+thiserror = { workspace = true }
