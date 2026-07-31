@@ -46,10 +46,19 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
-    LEGACY_PROCESS_TEST_LOCK
-        .lock()
-        .expect("legacy Windows sandbox process test lock poisoned")
+fn legacy_process_test_guard() -> Option<MutexGuard<'static, ()>> {
+    if std::env::var_os("CI").is_some() {
+        eprintln!(
+            "skipping legacy Windows sandbox process test: desktop isolation is unavailable in CI"
+        );
+        return None;
+    }
+
+    Some(
+        LEGACY_PROCESS_TEST_LOCK
+            .lock()
+            .expect("legacy Windows sandbox process test lock poisoned"),
+    )
 }
 
 fn current_thread_runtime() -> tokio::runtime::Runtime {
@@ -222,7 +231,9 @@ async fn collect_stdout_and_exit(
 
 #[test]
 fn legacy_non_tty_cmd_emits_output() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -261,7 +272,9 @@ fn legacy_non_tty_cmd_emits_output() {
 
 #[test]
 fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -307,7 +320,9 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
 
 #[test]
 fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -349,7 +364,9 @@ fn legacy_non_tty_powershell_emits_output() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -537,7 +554,9 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let cwd = sandbox_cwd();
     let codex_home = sandbox_home("legacy-capture-pwsh");
     println!("capture pwsh codex_home={}", codex_home.path().display());
@@ -605,7 +624,9 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
 
 #[test]
 fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         // Keep writable roots out of USERPROFILE exclusions such as AppData.
@@ -719,7 +740,9 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
         eprintln!("skipping cancellation regression test: PowerShell 7 is not installed");
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let cwd = sandbox_cwd();
     let codex_home = sandbox_home("legacy-capture-cancel");
     let descendant_marker = codex_home.path().join("descendant-survived");
@@ -898,7 +921,9 @@ fn legacy_tty_job_terminates_and_preserves_descendants() {
         eprintln!("skipping sandbox ConPTY lifecycle test: PowerShell 7 is not installed");
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     current_thread_runtime().block_on(async move {
         assert_legacy_tty_descendant_lifecycle(&pwsh, LegacyTtyDescendantLifecycle::Terminate)
             .await;
@@ -911,7 +936,9 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
-    let _guard = legacy_process_test_guard();
+    let Some(_guard) = legacy_process_test_guard() else {
+        return;
+    };
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
