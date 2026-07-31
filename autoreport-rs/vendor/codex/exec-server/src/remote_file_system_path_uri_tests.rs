@@ -1,9 +1,5 @@
 #![allow(clippy::expect_used)]
 
-use autoreport_exec_server_protocol::JSONRPCMessage;
-use autoreport_exec_server_protocol::JSONRPCResponse;
-use autoreport_http_client::HttpClientFactory;
-use autoreport_http_client::OutboundProxyPolicy;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_codex_protocol::permissions::FileSystemAccessMode;
 use autoreport_codex_protocol::permissions::FileSystemPath;
@@ -11,6 +7,10 @@ use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
 use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
 use autoreport_codex_protocol::permissions::FileSystemSpecialPath;
 use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_exec_server_protocol::JSONRPCMessage;
+use autoreport_exec_server_protocol::JSONRPCResponse;
+use autoreport_http_client::HttpClientFactory;
+use autoreport_http_client::OutboundProxyPolicy;
 use autoreport_utils_path_uri::PathUri;
 use futures::SinkExt;
 use futures::StreamExt;

@@ -9,9 +9,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bytes::Bytes;
 use autoreport_http_client::HttpError;
 use autoreport_http_client::HttpResponse;
+use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::Value;
 use serde_json::from_value;

@@ -1,9 +1,9 @@
-use autoreport_collaboration_mode_templates::DEFAULT as COLLABORATION_MODE_DEFAULT;
-use autoreport_collaboration_mode_templates::PLAN as COLLABORATION_MODE_PLAN;
 use autoreport_codex_protocol::config_types::CollaborationModeMask;
 use autoreport_codex_protocol::config_types::ModeKind;
 use autoreport_codex_protocol::config_types::TUI_VISIBLE_COLLABORATION_MODES;
 use autoreport_codex_protocol::openai_models::ReasoningEffort;
+use autoreport_collaboration_mode_templates::DEFAULT as COLLABORATION_MODE_DEFAULT;
+use autoreport_collaboration_mode_templates::PLAN as COLLABORATION_MODE_PLAN;
 use autoreport_utils_template::Template;
 use std::sync::LazyLock;
 

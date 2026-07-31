@@ -1,5 +1,5 @@
-use autoreport_plugin::PluginHookSource;
 use autoreport_codex_protocol::protocol::HookEventName;
+use autoreport_plugin::PluginHookSource;
 
 /// Minimal declaration metadata for one bundled plugin hook handler.
 #[derive(Debug, Clone, PartialEq, Eq)]

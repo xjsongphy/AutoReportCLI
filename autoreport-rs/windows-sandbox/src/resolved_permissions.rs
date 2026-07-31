@@ -177,7 +177,8 @@ impl ResolvedWindowsSandboxPermissions {
                 matches!(
                     path,
                     FileSystemPath::Special {
-                        value: autoreport_codex_protocol::permissions::FileSystemSpecialPath::Tmpdir,
+                        value:
+                            autoreport_codex_protocol::permissions::FileSystemSpecialPath::Tmpdir,
                     }
                 ) && access.can_write()
             })

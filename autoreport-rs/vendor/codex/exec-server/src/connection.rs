@@ -5,9 +5,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use autoreport_exec_server_protocol::JSONRPCMessage;
 use axum::extract::ws::Message as AxumWebSocketMessage;
 use axum::extract::ws::WebSocket as AxumWebSocket;
-use autoreport_exec_server_protocol::JSONRPCMessage;
 use futures::Sink;
 use futures::SinkExt;
 use futures::Stream;
@@ -155,7 +155,8 @@ fn terminate_process_tree(child_process: &mut Child, process_group_id: Option<u3
     };
 
     #[cfg(unix)]
-    if let Err(err) = autoreport_utils_pty::process_group::terminate_process_group(process_group_id) {
+    if let Err(err) = autoreport_utils_pty::process_group::terminate_process_group(process_group_id)
+    {
         warn!("failed to terminate exec-server stdio process group {process_group_id}: {err}");
         kill_direct_child(child_process, "terminate");
     }

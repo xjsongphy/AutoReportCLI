@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_exec_server_protocol::JSONRPCErrorError;
 use autoreport_network_proxy::CUSTOM_CA_ENV_KEYS;
 use autoreport_network_proxy::ManagedNetworkSandboxContext;
@@ -12,7 +13,6 @@ use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
 use autoreport_network_proxy::is_managed_mitm_ca_trust_bundle_path;
 #[cfg(target_os = "windows")]
 use autoreport_network_proxy::strip_managed_proxy_env;
-use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_sandboxing::SandboxCommand;
 use autoreport_sandboxing::SandboxDirectSpawnTransformRequest;
 use autoreport_sandboxing::SandboxManager;

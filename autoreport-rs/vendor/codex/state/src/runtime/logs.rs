@@ -546,8 +546,8 @@ mod tests {
     use crate::LogEntry;
     use crate::LogQuery;
     use crate::migrations::LOGS_MIGRATOR;
-    use chrono::Utc;
     use autoreport_utils_absolute_path::test_support::PathExt;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use sqlx::migrate::Migrator;

@@ -273,10 +273,12 @@ impl LocalThreadStore {
             )
             .await?
             {
-                Some(rollout_path) => autoreport_codex_rollout::read_session_meta_line(rollout_path.as_path())
-                    .await
-                    .ok()
-                    .map(|meta_line| meta_line.meta.history_mode),
+                Some(rollout_path) => {
+                    autoreport_codex_rollout::read_session_meta_line(rollout_path.as_path())
+                        .await
+                        .ok()
+                        .map(|meta_line| meta_line.meta.history_mode)
+                }
                 None => None,
             };
             if !matches!(history_mode, Some(ThreadHistoryMode::Legacy)) {

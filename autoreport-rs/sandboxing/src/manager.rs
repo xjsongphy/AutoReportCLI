@@ -13,14 +13,14 @@ use crate::resolve_windows_elevated_filesystem_overrides;
 use crate::resolve_windows_restricted_token_filesystem_overrides;
 #[cfg(target_os = "windows")]
 use crate::windows_sandbox_uses_elevated_backend;
-use autoreport_network_proxy::ManagedNetworkSandboxContext;
-use autoreport_network_proxy::NetworkProxy;
 use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
 use autoreport_codex_protocol::models::AdditionalPermissionProfile;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
 use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
 use autoreport_codex_protocol::protocol::SandboxPolicy;
+use autoreport_network_proxy::ManagedNetworkSandboxContext;
+use autoreport_network_proxy::NetworkProxy;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::PathUri;
 use std::collections::HashMap;
@@ -152,7 +152,8 @@ pub struct SandboxTransformRequest<'a> {
 pub struct SandboxDirectSpawnTransformRequest<'a> {
     pub transform: SandboxTransformRequest<'a>,
     pub workspace_roots: &'a [AbsolutePathBuf],
-    pub windows_sandbox_proxy_settings_mode: autoreport_windows_sandbox::WindowsSandboxProxySettingsMode,
+    pub windows_sandbox_proxy_settings_mode:
+        autoreport_windows_sandbox::WindowsSandboxProxySettingsMode,
 }
 
 // TODO(anp): Revisit this preparation type once this module's PathUri migration is complete.

@@ -24,14 +24,14 @@ use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 use crate::output_spill::AdditionalContextLimit;
 use crate::output_spill::HookOutputSpiller;
-use autoreport_config::ConfigLayerStack;
-use autoreport_plugin::PluginHookSource;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::protocol::HookEventName;
 use autoreport_codex_protocol::protocol::HookHandlerType;
 use autoreport_codex_protocol::protocol::HookRunSummary;
 use autoreport_codex_protocol::protocol::HookSource;
 use autoreport_codex_protocol::protocol::HookTrustStatus;
+use autoreport_config::ConfigLayerStack;
+use autoreport_plugin::PluginHookSource;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 
@@ -68,13 +68,17 @@ impl ConfiguredHandler {
     fn event_name_label(&self) -> &'static str {
         match self.event_name {
             autoreport_codex_protocol::protocol::HookEventName::PreToolUse => "pre-tool-use",
-            autoreport_codex_protocol::protocol::HookEventName::PermissionRequest => "permission-request",
+            autoreport_codex_protocol::protocol::HookEventName::PermissionRequest => {
+                "permission-request"
+            }
             autoreport_codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
             autoreport_codex_protocol::protocol::HookEventName::PreCompact => "pre-compact",
             autoreport_codex_protocol::protocol::HookEventName::PostCompact => "post-compact",
             autoreport_codex_protocol::protocol::HookEventName::SessionStart => "session-start",
             autoreport_codex_protocol::protocol::HookEventName::SessionEnd => "session-end",
-            autoreport_codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
+            autoreport_codex_protocol::protocol::HookEventName::UserPromptSubmit => {
+                "user-prompt-submit"
+            }
             autoreport_codex_protocol::protocol::HookEventName::SubagentStart => "subagent-start",
             autoreport_codex_protocol::protocol::HookEventName::SubagentStop => "subagent-stop",
             autoreport_codex_protocol::protocol::HookEventName::Stop => "stop",

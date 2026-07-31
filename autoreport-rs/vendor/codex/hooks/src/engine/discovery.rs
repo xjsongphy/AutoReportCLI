@@ -477,7 +477,9 @@ fn append_matcher_groups(
                     } else {
                         command
                     };
-                    if r#async && event_name != autoreport_codex_protocol::protocol::HookEventName::SessionEnd
+                    if r#async
+                        && event_name
+                            != autoreport_codex_protocol::protocol::HookEventName::SessionEnd
                     {
                         warnings.push(format!(
                             "skipping async hook in {}: async hooks are not supported yet",
@@ -719,12 +721,12 @@ fn hook_source_for_requirement_source(source: Option<&RequirementSource>) -> Hoo
 
 #[cfg(test)]
 mod tests {
+    use autoreport_codex_protocol::protocol::HookEventName;
+    use autoreport_codex_protocol::protocol::HookSource;
     use autoreport_config::ConfigLayerEntry;
     use autoreport_config::ConfigLayerSource;
     use autoreport_config::HookEventsToml;
     use autoreport_config::RequirementSource;
-    use autoreport_codex_protocol::protocol::HookEventName;
-    use autoreport_codex_protocol::protocol::HookSource;
     use autoreport_utils_absolute_path::AbsolutePathBuf;
     use autoreport_utils_absolute_path::test_support::PathBufExt;
     use autoreport_utils_absolute_path::test_support::test_path_buf;
@@ -735,11 +737,11 @@ mod tests {
     use super::append_matcher_groups;
     use crate::output_spill::AdditionalContextLimit;
     use crate::output_spill::DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT;
+    use autoreport_codex_protocol::protocol::HookTrustStatus;
     use autoreport_config::HookHandlerConfig;
     use autoreport_config::HookStateToml;
     use autoreport_config::MatcherGroup;
     use autoreport_config::TomlValue;
-    use autoreport_codex_protocol::protocol::HookTrustStatus;
 
     fn source_path() -> AbsolutePathBuf {
         test_path_buf("/tmp/hooks.json").abs()

@@ -1,7 +1,6 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use chrono::Utc;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::protocol::GitInfo;
 use autoreport_codex_protocol::protocol::RolloutItem;
@@ -15,6 +14,7 @@ use autoreport_codex_rollout::find_archived_thread_path_by_id_str;
 use autoreport_codex_rollout::find_thread_path_by_id_str;
 use autoreport_codex_rollout::read_session_meta_line;
 use autoreport_state::ThreadMetadataBuilder;
+use chrono::Utc;
 use tracing::warn;
 
 use super::LocalThreadStore;
@@ -242,7 +242,9 @@ pub(super) async fn update_thread_metadata(
 }
 
 async fn refresh_resolved_rollout_path(resolved: &mut ResolvedRolloutPath) {
-    if let Some(path) = autoreport_codex_rollout::existing_rollout_path(resolved.path.as_path()).await {
+    if let Some(path) =
+        autoreport_codex_rollout::existing_rollout_path(resolved.path.as_path()).await
+    {
         resolved.path = path;
     }
 }
@@ -2047,8 +2049,9 @@ mod tests {
         let child = workspace.join("child");
         std::fs::create_dir_all(child.as_path()).expect("create workspace");
         let unnormalized_cwd = child.join("..");
-        let normalized_cwd = autoreport_utils_path::normalize_for_path_comparison(workspace.as_path())
-            .expect("normalize cwd");
+        let normalized_cwd =
+            autoreport_utils_path::normalize_for_path_comparison(workspace.as_path())
+                .expect("normalize cwd");
 
         store
             .update_thread_metadata(UpdateThreadMetadataParams {

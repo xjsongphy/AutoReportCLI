@@ -7,13 +7,13 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use autoreport_exec_server_protocol::JSONRPCErrorError;
-use autoreport_network_proxy::NetworkProxyHandle;
 use autoreport_codex_protocol::config_types::EnvironmentVariablePattern;
 use autoreport_codex_protocol::config_types::ShellEnvironmentPolicy;
 use autoreport_codex_protocol::exec_output::ExecToolCallOutput;
 use autoreport_codex_protocol::exec_output::StreamOutput;
 use autoreport_codex_protocol::shell_environment;
+use autoreport_exec_server_protocol::JSONRPCErrorError;
+use autoreport_network_proxy::NetworkProxyHandle;
 use autoreport_sandboxing::SandboxType;
 use autoreport_sandboxing::is_likely_sandbox_denied;
 use autoreport_utils_pty::ExecCommandSession;
@@ -317,18 +317,19 @@ impl LocalProcess {
             );
         }
 
-        let spawned_result = autoreport_sandboxing::spawn_process(autoreport_sandboxing::SpawnRequest {
-            command: &prepared.command,
-            cwd: prepared.cwd.as_path(),
-            env: &prepared.env,
-            arg0: &prepared.arg0,
-            sandbox: prepared.sandbox,
-            windows_sandbox: prepared.windows_sandbox_spawn_request(),
-            tty: params.tty,
-            stdin_open: params.tty || params.pipe_stdin,
-            inherited_fds: &[],
-        })
-        .await;
+        let spawned_result =
+            autoreport_sandboxing::spawn_process(autoreport_sandboxing::SpawnRequest {
+                command: &prepared.command,
+                cwd: prepared.cwd.as_path(),
+                env: &prepared.env,
+                arg0: &prepared.arg0,
+                sandbox: prepared.sandbox,
+                windows_sandbox: prepared.windows_sandbox_spawn_request(),
+                tty: params.tty,
+                stdin_open: params.tty || params.pipe_stdin,
+                inherited_fds: &[],
+            })
+            .await;
         let spawned = match spawned_result {
             Ok(spawned) => spawned,
             Err(err) => {
@@ -1039,6 +1040,7 @@ fn notification_sender(inner: &Inner) -> Option<RpcNotificationSender> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use autoreport_codex_protocol::config_types::ShellEnvironmentPolicyInherit;
     use autoreport_exec_server_protocol::JSONRPCMessage;
     use autoreport_exec_server_protocol::JSONRPCResponse;
     use autoreport_exec_server_protocol::RequestId;
@@ -1048,7 +1050,6 @@ mod tests {
     use autoreport_network_proxy::RemoteNetworkProxyConfig;
     use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
     use autoreport_otel::MetricsConfig;
-    use autoreport_codex_protocol::config_types::ShellEnvironmentPolicyInherit;
     use autoreport_utils_path_uri::PathUri;
     use autoreport_utils_pty::ProcessDriver;
     use opentelemetry_sdk::metrics::InMemoryMetricExporter;

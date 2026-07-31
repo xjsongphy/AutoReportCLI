@@ -2378,8 +2378,9 @@ mod tests {
     }
 
     fn schema_root() -> Result<PathBuf> {
-        let typescript_index = autoreport_utils_cargo_bin::find_resource!("schema/typescript/index.ts")
-            .context("resolve TypeScript schema index.ts")?;
+        let typescript_index =
+            autoreport_utils_cargo_bin::find_resource!("schema/typescript/index.ts")
+                .context("resolve TypeScript schema index.ts")?;
         let schema_root = typescript_index
             .parent()
             .and_then(|parent| parent.parent())

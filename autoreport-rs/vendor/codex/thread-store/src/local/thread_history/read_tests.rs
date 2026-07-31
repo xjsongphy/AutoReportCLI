@@ -1,7 +1,6 @@
 use std::fs;
 use std::time::Duration;
 
-use chrono::Utc;
 use autoreport_app_server_protocol::CodexErrorInfo;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::protocol::EventMsg;
@@ -12,6 +11,7 @@ use autoreport_codex_protocol::protocol::SessionMeta;
 use autoreport_codex_protocol::protocol::SessionMetaLine;
 use autoreport_codex_protocol::protocol::SessionSource;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
+use chrono::Utc;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 

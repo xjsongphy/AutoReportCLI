@@ -3,22 +3,18 @@ mod bwrap;
 mod denial;
 pub mod landlock;
 mod manager;
+pub mod mode;
 pub mod policy_transforms;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 mod spawn;
 mod windows;
-pub mod mode;
 
+pub use autoreport_windows_sandbox::WindowsSandboxProxySettingsMode;
 #[cfg(target_os = "linux")]
 pub use bwrap::find_system_bwrap_in_path;
 #[cfg(target_os = "linux")]
 pub use bwrap::system_bwrap_warning;
-pub use autoreport_windows_sandbox::WindowsSandboxProxySettingsMode;
-pub use mode::SandboxMode;
-pub use mode::SandboxSpec;
-pub use mode::build_filesystem_policy;
-pub use mode::sandbox_command_argv;
 pub use denial::is_likely_sandbox_denied;
 pub use manager::SandboxCommand;
 pub use manager::SandboxDirectSpawnTransformRequest;
@@ -31,6 +27,10 @@ pub use manager::SandboxablePreference;
 pub use manager::compatibility_sandbox_policy_for_permission_profile;
 pub use manager::get_platform_sandbox;
 pub use manager::with_managed_mitm_ca_readable_root;
+pub use mode::SandboxMode;
+pub use mode::SandboxSpec;
+pub use mode::build_filesystem_policy;
+pub use mode::sandbox_command_argv;
 pub use spawn::SpawnRequest;
 pub use spawn::WindowsSandboxSpawnRequest;
 pub use spawn::spawn_process;

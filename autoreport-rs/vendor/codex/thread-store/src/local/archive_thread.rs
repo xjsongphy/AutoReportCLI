@@ -5,8 +5,8 @@ use crate::ArchiveThreadParams;
 use crate::ArchiveThreadsParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
-use chrono::Utc;
 use autoreport_codex_rollout::find_thread_path_by_id_str;
+use chrono::Utc;
 use tracing::warn;
 
 pub(super) async fn archive_threads(
@@ -79,7 +79,10 @@ pub(super) async fn archive_thread(
     })?;
 
     let canonical_rollout_path = scoped_rollout_path(
-        store.config.codex_home.join(autoreport_codex_rollout::SESSIONS_SUBDIR),
+        store
+            .config
+            .codex_home
+            .join(autoreport_codex_rollout::SESSIONS_SUBDIR),
         rollout_path.as_path(),
         "sessions",
     )?;
@@ -115,12 +118,12 @@ pub(super) async fn archive_thread(
 mod tests {
     use std::time::Duration;
 
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::protocol::SessionSource;
     use autoreport_codex_protocol::protocol::ThreadHistoryMode;
     use autoreport_codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
     use autoreport_utils_absolute_path::test_support::PathExt;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use uuid::Uuid;

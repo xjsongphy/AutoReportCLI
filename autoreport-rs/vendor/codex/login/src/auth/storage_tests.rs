@@ -1,12 +1,12 @@
 use super::*;
 use crate::token_data::IdTokenInfo;
 use anyhow::Context;
-use base64::Engine;
 use autoreport_secrets::LocalSecretsNamespace;
 use autoreport_secrets::SecretScope;
 use autoreport_secrets::SecretsBackendKind;
 use autoreport_secrets::SecretsManager;
 use autoreport_secrets::compute_keyring_account;
+use base64::Engine;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;

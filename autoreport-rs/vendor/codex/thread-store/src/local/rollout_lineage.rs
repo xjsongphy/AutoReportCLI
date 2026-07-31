@@ -84,14 +84,16 @@ impl LocalThreadStore {
                         rollout_path.as_path(),
                         "Codex home",
                     )?;
-                    autoreport_codex_rollout::materialize_rollout_for_reference(rollout_path.as_path())
-                        .await
-                        .map_err(|err| ThreadStoreError::Internal {
-                            message: format!(
-                                "failed to materialize referenced rollout {}: {err}",
-                                rollout_path.display()
-                            ),
-                        })?
+                    autoreport_codex_rollout::materialize_rollout_for_reference(
+                        rollout_path.as_path(),
+                    )
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!(
+                            "failed to materialize referenced rollout {}: {err}",
+                            rollout_path.display()
+                        ),
+                    })?
                 }
             };
             let meta = autoreport_codex_rollout::read_session_meta_line(rollout_path.as_path())

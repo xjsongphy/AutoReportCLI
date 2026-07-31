@@ -91,10 +91,10 @@ pub(super) async fn unarchive_thread(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::protocol::SessionSource;
     use autoreport_utils_absolute_path::test_support::PathExt;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use uuid::Uuid;

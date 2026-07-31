@@ -5,10 +5,10 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
-use autoreport_http_client::HttpClientFactory;
-use autoreport_http_client::OutboundProxyPolicy;
 use autoreport_codex_protocol::capabilities::CapabilityRootLocation;
 use autoreport_codex_protocol::capabilities::SelectedCapabilityRoot;
+use autoreport_http_client::HttpClientFactory;
+use autoreport_http_client::OutboundProxyPolicy;
 use futures::FutureExt;
 
 use crate::CapabilityRootsDiscoverParams;
@@ -1625,7 +1625,9 @@ mod tests {
         let path = autoreport_utils_path_uri::PathUri::from_abs_path(&path);
         let sandbox = crate::FileSystemSandboxContext::from_permission_profile(
             autoreport_codex_protocol::models::PermissionProfile::from_runtime_permissions(
-                &autoreport_codex_protocol::permissions::FileSystemSandboxPolicy::restricted(Vec::new()),
+                &autoreport_codex_protocol::permissions::FileSystemSandboxPolicy::restricted(
+                    Vec::new(),
+                ),
                 autoreport_codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
             ),
         );

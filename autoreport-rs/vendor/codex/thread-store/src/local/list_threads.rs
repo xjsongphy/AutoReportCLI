@@ -198,11 +198,11 @@ pub(super) async fn list_rollout_threads(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::protocol::SessionSource;
     use autoreport_codex_protocol::protocol::ThreadHistoryMode;
     use autoreport_utils_absolute_path::test_support::PathExt;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::fs;
     use tempfile::TempDir;

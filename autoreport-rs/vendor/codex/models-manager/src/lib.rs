@@ -11,7 +11,8 @@ pub use config::ModelsManagerConfig;
 
 /// Load the bundled model catalog shipped with `codex-models-manager`.
 pub fn bundled_models_response()
--> std::result::Result<autoreport_codex_protocol::openai_models::ModelsResponse, serde_json::Error> {
+-> std::result::Result<autoreport_codex_protocol::openai_models::ModelsResponse, serde_json::Error>
+{
     serde_json::from_str(include_str!("../models.json"))
 }
 

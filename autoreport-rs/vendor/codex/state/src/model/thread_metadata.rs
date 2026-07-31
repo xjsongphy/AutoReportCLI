@@ -1,6 +1,4 @@
 use anyhow::Result;
-use chrono::DateTime;
-use chrono::Utc;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::openai_models::ReasoningEffort;
 use autoreport_codex_protocol::protocol::AskForApproval;
@@ -8,6 +6,8 @@ use autoreport_codex_protocol::protocol::SandboxPolicy;
 use autoreport_codex_protocol::protocol::SessionSource;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_codex_protocol::protocol::ThreadSource;
+use chrono::DateTime;
+use chrono::Utc;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use std::collections::HashMap;
@@ -588,11 +588,11 @@ pub struct BackfillStats {
 mod tests {
     use super::ThreadMetadata;
     use super::ThreadRow;
-    use chrono::DateTime;
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::openai_models::ReasoningEffort;
     use autoreport_codex_protocol::protocol::ThreadHistoryMode;
+    use chrono::DateTime;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 

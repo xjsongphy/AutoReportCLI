@@ -2,13 +2,13 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use autoreport_otel::MetricsClient;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::items::TurnItem;
 use autoreport_codex_protocol::models::ResponseItem;
 use autoreport_codex_protocol::protocol::EventMsg;
 use autoreport_codex_protocol::protocol::RolloutItem;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
+use autoreport_otel::MetricsClient;
 
 use crate::policy::is_persisted_rollout_item;
 

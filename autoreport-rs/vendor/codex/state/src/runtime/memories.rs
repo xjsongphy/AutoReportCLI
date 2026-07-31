@@ -1677,11 +1677,11 @@ mod tests {
     use crate::model::Phase2JobClaimOutcome;
     use crate::model::Stage1JobClaimOutcome;
     use crate::model::Stage1StartupClaimParams;
-    use chrono::Duration;
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::protocol::ThreadHistoryMode;
     use autoreport_utils_absolute_path::test_support::PathExt;
+    use chrono::Duration;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use sqlx::Row;
     use std::sync::Arc;

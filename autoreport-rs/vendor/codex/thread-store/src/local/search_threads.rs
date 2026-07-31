@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use autoreport_install_context::InstallContext;
 use autoreport_codex_rollout::RolloutConfig;
 use autoreport_codex_rollout::first_rollout_content_match_snippet;
 use autoreport_codex_rollout::parse_cursor;
 use autoreport_codex_rollout::search_rollout_matches;
+use autoreport_install_context::InstallContext;
 
 use super::LocalThreadStore;
 use super::helpers::resolve_thread_names;

@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::OnceLock;
 
-use chrono::Utc;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_codex_protocol::protocol::AskForApproval;
@@ -17,6 +16,7 @@ use autoreport_codex_protocol::protocol::SessionMetaLine;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_codex_protocol::protocol::ThreadMemoryMode;
 use autoreport_codex_rollout::persisted_rollout_items;
+use chrono::Utc;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -901,7 +901,9 @@ fn history_mode_from_state(
         .unwrap_or_default()
 }
 
-fn git_info_from_patch(patch: &ThreadMetadataPatch) -> Option<autoreport_codex_protocol::protocol::GitInfo> {
+fn git_info_from_patch(
+    patch: &ThreadMetadataPatch,
+) -> Option<autoreport_codex_protocol::protocol::GitInfo> {
     let git_info = patch.git_info.as_ref()?;
     let sha = git_info.sha.clone().flatten();
     let branch = git_info.branch.clone().flatten();

@@ -1,9 +1,9 @@
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
-use autoreport_extension_items::ExtensionItem;
 use autoreport_codex_protocol::items::TurnItem;
 use autoreport_codex_protocol::models::ResponseItem;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
+use autoreport_extension_items::ExtensionItem;
 
 /// Whether a rollout `item` should be persisted in rollout files.
 pub fn is_persisted_rollout_item(item: &RolloutItem, history_mode: ThreadHistoryMode) -> bool {

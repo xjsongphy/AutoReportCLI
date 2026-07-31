@@ -1,5 +1,3 @@
-use chrono::DateTime;
-use chrono::Utc;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_codex_protocol::protocol::AskForApproval;
 use autoreport_codex_protocol::protocol::SessionMetaLine;
@@ -12,6 +10,8 @@ use autoreport_codex_rollout::find_thread_path_by_id_str;
 use autoreport_codex_rollout::read_session_meta_line;
 use autoreport_codex_rollout::read_thread_item_from_rollout;
 use autoreport_state::ThreadMetadata;
+use chrono::DateTime;
+use chrono::Utc;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
@@ -97,7 +97,10 @@ async fn sqlite_rollout_path_can_load_history_for_thread(
     path: &std::path::Path,
     thread_id: autoreport_codex_protocol::ThreadId,
 ) -> bool {
-    if autoreport_codex_rollout::existing_rollout_path(path).await.is_none() {
+    if autoreport_codex_rollout::existing_rollout_path(path)
+        .await
+        .is_none()
+    {
         return false;
     }
     // SQLite metadata can outlive a moved/recreated rollout path. When history is
@@ -352,7 +355,8 @@ async fn stored_thread_from_sqlite_metadata(
             });
         }
     };
-    let rollout_path = autoreport_codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
+    let rollout_path =
+        autoreport_codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
     let history_mode = session_meta
@@ -526,12 +530,12 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::protocol::SandboxPolicy;
     use autoreport_codex_protocol::protocol::SessionSource;
     use autoreport_codex_protocol::protocol::ThreadHistoryMode;
     use autoreport_state::ThreadMetadataBuilder;
+    use chrono::Utc;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
     use uuid::Uuid;

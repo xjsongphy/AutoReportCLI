@@ -7,9 +7,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use chrono::DateTime;
-use chrono::Utc;
-use autoreport_git_utils::GitSha;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_codex_protocol::protocol::AskForApproval;
@@ -21,7 +18,10 @@ use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use autoreport_codex_rollout::ThreadItem;
 use autoreport_codex_rollout::find_thread_names_by_ids;
+use autoreport_git_utils::GitSha;
 use autoreport_state::ThreadMetadata;
+use chrono::DateTime;
+use chrono::Utc;
 
 use super::LocalThreadStore;
 use crate::StoredThread;

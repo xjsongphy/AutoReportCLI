@@ -360,7 +360,9 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(
             tracing_opentelemetry::layer()
                 .with_tracer(tracer)
-                .with_filter(filter_fn(autoreport_otel::OtelProvider::trace_export_filter)),
+                .with_filter(filter_fn(
+                    autoreport_otel::OtelProvider::trace_export_filter,
+                )),
         );
         let trace_id = TraceId::from_hex("00000000000000000000000000000001").expect("trace id");
         let parent_span_id = SpanId::from_hex("0000000000000002").expect("span id");

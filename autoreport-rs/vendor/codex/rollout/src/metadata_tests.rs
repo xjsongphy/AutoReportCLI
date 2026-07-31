@@ -1,10 +1,6 @@
 #![allow(warnings, clippy::all)]
 
 use super::*;
-use chrono::DateTime;
-use chrono::NaiveDateTime;
-use chrono::Timelike;
-use chrono::Utc;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::protocol::CompactedItem;
 use autoreport_codex_protocol::protocol::GitInfo;
@@ -17,6 +13,10 @@ use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_state::BackfillStatus;
 use autoreport_state::ThreadMetadataBuilder;
 use autoreport_utils_absolute_path::test_support::PathExt;
+use chrono::DateTime;
+use chrono::NaiveDateTime;
+use chrono::Timelike;
+use chrono::Utc;
 use pretty_assertions::assert_eq;
 use std::fs::File;
 use std::io::Write;

@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
 use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
 use autoreport_codex_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
 use autoreport_codex_protocol::permissions::{
     FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSandboxPolicy,
     FileSystemSpecialPath,
@@ -101,13 +101,15 @@ pub fn build_filesystem_policy(
                     value: FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Read,
-                missing_path_behavior: None,            }];
+                missing_path_behavior: None,
+            }];
             if let Some(root) = spec.writable_root.as_deref() {
                 let root = resolve_agent_writable_root(root, workspace_root)?;
                 entries.push(FileSystemSandboxEntry {
                     path: FileSystemPath::Path { path: root },
                     access: FileSystemAccessMode::Write,
-                    missing_path_behavior: None,                });
+                    missing_path_behavior: None,
+                });
             }
             // Commands commonly need temporary files; these are outside the
             // workspace and are discarded by the Linux backend's tmpfs mount.
@@ -122,13 +124,15 @@ pub fn build_filesystem_policy(
                             value: FileSystemSpecialPath::SlashTmp,
                         },
                         access: FileSystemAccessMode::Write,
-                        missing_path_behavior: None,                    },
+                        missing_path_behavior: None,
+                    },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Special {
                             value: FileSystemSpecialPath::Tmpdir,
                         },
                         access: FileSystemAccessMode::Write,
-                        missing_path_behavior: None,                    },
+                        missing_path_behavior: None,
+                    },
                 ]);
             }
             Ok(FileSystemSandboxPolicy::restricted(entries))

@@ -1,11 +1,6 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use chrono::DateTime;
-use chrono::NaiveDateTime;
-use chrono::Utc;
-use autoreport_git_utils::collect_git_info;
-use autoreport_git_utils::get_git_repo_root;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::items::TurnItem;
 use autoreport_codex_protocol::protocol::EventMsg;
@@ -16,6 +11,11 @@ use autoreport_codex_protocol::protocol::ThreadMemoryMode;
 use autoreport_codex_protocol::protocol::UserMessageEvent;
 use autoreport_codex_protocol::protocol::strip_user_message_prefix;
 use autoreport_codex_protocol::protocol::user_message_preview;
+use autoreport_git_utils::collect_git_info;
+use autoreport_git_utils::get_git_repo_root;
+use chrono::DateTime;
+use chrono::NaiveDateTime;
+use chrono::Utc;
 
 use crate::CreateThreadParams;
 use crate::GitInfoPatch;

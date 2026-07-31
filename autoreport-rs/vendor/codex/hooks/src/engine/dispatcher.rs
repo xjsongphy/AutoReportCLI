@@ -194,7 +194,9 @@ pub(crate) fn hook_scope_label(scope: HookScope) -> &'static str {
     }
 }
 
-pub(crate) fn hook_source_label(source: autoreport_codex_protocol::protocol::HookSource) -> &'static str {
+pub(crate) fn hook_source_label(
+    source: autoreport_codex_protocol::protocol::HookSource,
+) -> &'static str {
     match source {
         autoreport_codex_protocol::protocol::HookSource::System => "system",
         autoreport_codex_protocol::protocol::HookSource::User => "user",
@@ -203,11 +205,15 @@ pub(crate) fn hook_source_label(source: autoreport_codex_protocol::protocol::Hoo
         autoreport_codex_protocol::protocol::HookSource::SessionFlags => "session_flags",
         autoreport_codex_protocol::protocol::HookSource::Plugin => "plugin",
         autoreport_codex_protocol::protocol::HookSource::CloudRequirements => "cloud_requirements",
-        autoreport_codex_protocol::protocol::HookSource::CloudManagedConfig => "cloud_managed_config",
+        autoreport_codex_protocol::protocol::HookSource::CloudManagedConfig => {
+            "cloud_managed_config"
+        }
         autoreport_codex_protocol::protocol::HookSource::LegacyManagedConfigFile => {
             "legacy_managed_config_file"
         }
-        autoreport_codex_protocol::protocol::HookSource::LegacyManagedConfigMdm => "legacy_managed_config_mdm",
+        autoreport_codex_protocol::protocol::HookSource::LegacyManagedConfigMdm => {
+            "legacy_managed_config_mdm"
+        }
         autoreport_codex_protocol::protocol::HookSource::Unknown => "unknown",
     }
 }

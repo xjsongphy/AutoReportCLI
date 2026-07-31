@@ -13,12 +13,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use chrono::SecondsFormat;
 use autoreport_codex_protocol::SessionId;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::capabilities::SelectedCapabilityRoot;
 use autoreport_codex_protocol::dynamic_tools::DynamicToolSpec;
 use autoreport_codex_protocol::models::BaseInstructions;
+use chrono::SecondsFormat;
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::FormatItem;
@@ -55,8 +55,6 @@ use super::session_index::find_thread_names_by_ids;
 use crate::config::RolloutConfigView;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
-use autoreport_git_utils::collect_git_info;
-use autoreport_git_utils::get_git_repo_root;
 use autoreport_codex_protocol::protocol::GitInfo as ProtocolGitInfo;
 use autoreport_codex_protocol::protocol::HistoryPosition;
 use autoreport_codex_protocol::protocol::InitialHistory;
@@ -70,6 +68,8 @@ use autoreport_codex_protocol::protocol::SessionMetaLine;
 use autoreport_codex_protocol::protocol::SessionSource;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_codex_protocol::protocol::ThreadSource;
+use autoreport_git_utils::collect_git_info;
+use autoreport_git_utils::get_git_repo_root;
 use autoreport_state::StateRuntime;
 use autoreport_utils_path as path_utils;
 
@@ -692,7 +692,11 @@ impl RolloutRecorder {
         // If SQLite listing still fails, return the filesystem page rather than failing the list.
         tracing::error!("Falling back on rollout system");
         tracing::warn!("state db discrepancy during list_threads_with_db_fallback: falling_back");
-        autoreport_state::record_fallback("list_threads", "db_error", /*telemetry_override*/ None);
+        autoreport_state::record_fallback(
+            "list_threads",
+            "db_error",
+            /*telemetry_override*/ None,
+        );
         Ok(page_from_filesystem_scan(
             fs_page,
             sort_direction,

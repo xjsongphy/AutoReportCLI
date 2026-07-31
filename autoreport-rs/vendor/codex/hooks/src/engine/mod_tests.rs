@@ -2,6 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use autoreport_codex_protocol::ThreadId;
+use autoreport_codex_protocol::protocol::HookOutputEntry;
+use autoreport_codex_protocol::protocol::HookOutputEntryKind;
+use autoreport_codex_protocol::protocol::HookRunStatus;
+use autoreport_codex_protocol::protocol::HookSource;
+use autoreport_codex_protocol::protocol::HookTrustStatus;
 use autoreport_config::AbsolutePathBuf;
 use autoreport_config::ConfigLayerEntry;
 use autoreport_config::ConfigLayerSource;
@@ -19,12 +25,6 @@ use autoreport_config::Sourced;
 use autoreport_config::TomlValue;
 use autoreport_plugin::PluginHookSource;
 use autoreport_plugin::PluginId;
-use autoreport_codex_protocol::ThreadId;
-use autoreport_codex_protocol::protocol::HookOutputEntry;
-use autoreport_codex_protocol::protocol::HookOutputEntryKind;
-use autoreport_codex_protocol::protocol::HookRunStatus;
-use autoreport_codex_protocol::protocol::HookSource;
-use autoreport_codex_protocol::protocol::HookTrustStatus;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 

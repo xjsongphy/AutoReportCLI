@@ -1,7 +1,7 @@
+use autoreport_codex_protocol::auth::PlanType;
 use base64::Engine;
 use chrono::DateTime;
 use chrono::Utc;
-use autoreport_codex_protocol::auth::PlanType;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

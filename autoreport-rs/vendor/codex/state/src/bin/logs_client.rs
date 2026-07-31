@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
-use chrono::DateTime;
-use clap::Parser;
-use clap::ValueEnum;
 use autoreport_state::LogQuery;
 use autoreport_state::LogRow;
 use autoreport_state::SqliteConfig;
 use autoreport_state::StateRuntime;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
+use chrono::DateTime;
+use clap::Parser;
+use clap::ValueEnum;
 use dirs::home_dir;
 use owo_colors::OwoColorize;
 

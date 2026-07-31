@@ -20,7 +20,6 @@ use super::SESSIONS_SUBDIR;
 use super::compression;
 use crate::protocol::EventMsg;
 use crate::state_db;
-use autoreport_file_search as file_search;
 use autoreport_codex_protocol::ThreadId;
 use autoreport_codex_protocol::items::TurnItem;
 use autoreport_codex_protocol::protocol::RolloutItem;
@@ -29,6 +28,7 @@ use autoreport_codex_protocol::protocol::SessionMetaLine;
 use autoreport_codex_protocol::protocol::SessionSource;
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
 use autoreport_codex_protocol::protocol::user_message_preview;
+use autoreport_file_search as file_search;
 use serde_json::Value;
 
 /// Returned page of thread (thread) summaries.

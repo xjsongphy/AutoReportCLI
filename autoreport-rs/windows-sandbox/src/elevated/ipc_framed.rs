@@ -8,10 +8,10 @@
 //! through the elevated runner.
 
 use anyhow::Result;
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;

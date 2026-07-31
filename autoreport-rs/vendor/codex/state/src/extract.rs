@@ -166,8 +166,6 @@ mod tests {
     use super::apply_rollout_item;
     use super::rollout_item_affects_thread_metadata;
     use crate::model::ThreadMetadata;
-    use chrono::DateTime;
-    use chrono::Utc;
     use autoreport_codex_protocol::ThreadId;
     use autoreport_codex_protocol::config_types::ApprovalsReviewer;
     use autoreport_codex_protocol::config_types::CollaborationMode;
@@ -198,6 +196,8 @@ mod tests {
     use autoreport_codex_protocol::protocol::USER_MESSAGE_BEGIN;
     use autoreport_codex_protocol::protocol::UserMessageEvent;
     use autoreport_codex_protocol::user_input::UserInput;
+    use chrono::DateTime;
+    use chrono::Utc;
 
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;

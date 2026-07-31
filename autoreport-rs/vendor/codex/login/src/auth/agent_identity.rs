@@ -14,9 +14,9 @@ use autoreport_agent_identity::is_retryable_registration_error;
 use autoreport_agent_identity::public_key_ssh_from_private_key_pkcs8_base64;
 use autoreport_agent_identity::register_agent_identity;
 use autoreport_agent_identity::register_agent_task;
-use autoreport_http_client::HttpClient;
 use autoreport_codex_protocol::account::PlanType as AccountPlanType;
 use autoreport_codex_protocol::protocol::SessionSource;
+use autoreport_http_client::HttpClient;
 use thiserror::Error;
 
 use crate::default_client::create_default_auth_client;

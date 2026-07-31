@@ -1,6 +1,6 @@
+use autoreport_codex_protocol::ThreadId;
 use chrono::DateTime;
 use chrono::Utc;
-use autoreport_codex_protocol::ThreadId;
 use std::path::PathBuf;
 
 use super::ThreadMetadata;

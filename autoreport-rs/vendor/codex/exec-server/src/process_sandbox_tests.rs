@@ -2,16 +2,16 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+#[cfg(windows)]
+use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
+#[cfg(any(unix, windows))]
+use autoreport_codex_protocol::models::PermissionProfile;
 #[cfg(target_os = "macos")]
 use autoreport_network_proxy::ManagedNetworkSandboxContext;
 use autoreport_network_proxy::NetworkProxyConfig;
 use autoreport_network_proxy::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 use autoreport_network_proxy::RemoteNetworkProxyConfig;
 use autoreport_network_proxy::RemoteNetworkProxyLaunchConfig;
-#[cfg(windows)]
-use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
-#[cfg(any(unix, windows))]
-use autoreport_codex_protocol::models::PermissionProfile;
 #[cfg(target_os = "linux")]
 use autoreport_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use autoreport_utils_absolute_path::AbsolutePathBuf;

@@ -17,8 +17,8 @@ use std::time::Instant;
 use std::time::SystemTime;
 
 use arc_swap::ArcSwapOption;
-use autoreport_login::CodexAuth;
 use autoreport_codex_protocol::mcp::McpServerInfo;
+use autoreport_login::CodexAuth;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

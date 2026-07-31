@@ -36,7 +36,8 @@ use crate::local::test_support::write_session_file_with_history_mode;
 async fn loads_latest_checkpoint_with_required_turn_metadata() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1001);
-    let thread_id = autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let thread_id =
+        autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
     write_paginated_rollout(
         home.path(),
         "2025-01-03T13-00-00",
@@ -123,7 +124,8 @@ async fn fork_context_excludes_items_after_frozen_cutoff() {
 async fn loads_turn_metadata_across_an_older_checkpoint() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1006);
-    let thread_id = autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let thread_id =
+        autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
     write_paginated_rollout(
         home.path(),
         "2025-01-03T13-00-05",
@@ -212,7 +214,8 @@ async fn returns_scanned_full_history_at_bof_without_checkpoint() {
 async fn uses_agent_message_turn_context_without_scanning_older_turn() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1004);
-    let thread_id = autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let thread_id =
+        autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
     write_paginated_rollout(
         home.path(),
         "2025-01-03T13-00-03",
@@ -252,7 +255,8 @@ async fn uses_agent_message_turn_context_without_scanning_older_turn() {
 async fn ignores_contextual_user_messages_when_selecting_turn_context() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1005);
-    let thread_id = autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let thread_id =
+        autoreport_codex_protocol::ThreadId::from_string(&uuid.to_string()).expect("thread id");
     write_paginated_rollout(
         home.path(),
         "2025-01-03T13-00-04",
@@ -558,8 +562,10 @@ fn contextual_user_message() -> RolloutItem {
 
 fn completed_user_message(turn_id: &str, message: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
-        thread_id: autoreport_codex_protocol::ThreadId::from_string("00000000-0000-0000-0000-000000000000")
-            .expect("fixture thread id"),
+        thread_id: autoreport_codex_protocol::ThreadId::from_string(
+            "00000000-0000-0000-0000-000000000000",
+        )
+        .expect("fixture thread id"),
         turn_id: turn_id.to_string(),
         item: TurnItem::UserMessage(UserMessageItem {
             id: format!("user-{turn_id}"),

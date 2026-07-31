@@ -1,6 +1,6 @@
-use autoreport_http_client::HttpClient;
 use autoreport_codex_protocol::account::PlanType as AccountPlanType;
 use autoreport_codex_protocol::auth::PlanType as InternalPlanType;
+use autoreport_http_client::HttpClient;
 use serde::Deserialize;
 use std::env;
 use std::fmt;

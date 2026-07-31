@@ -1,6 +1,7 @@
 use super::*;
 use crate::ModelsManagerConfig;
-use chrono::Utc;
+use autoreport_codex_protocol::auth::AuthMode;
+use autoreport_codex_protocol::openai_models::ModelsResponse;
 use autoreport_http_client::HttpClientFactory;
 use autoreport_http_client::OutboundProxyPolicy;
 use autoreport_login::AuthCredentialsStoreMode;
@@ -10,8 +11,7 @@ use autoreport_login::CodexAuth;
 use autoreport_login::ExternalAuth;
 use autoreport_login::ExternalAuthRefreshContext;
 use autoreport_login::TokenData;
-use autoreport_codex_protocol::auth::AuthMode;
-use autoreport_codex_protocol::openai_models::ModelsResponse;
+use chrono::Utc;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;

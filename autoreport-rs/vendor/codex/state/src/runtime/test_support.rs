@@ -1,8 +1,4 @@
 #[cfg(test)]
-use chrono::DateTime;
-#[cfg(test)]
-use chrono::Utc;
-#[cfg(test)]
 use autoreport_codex_protocol::ThreadId;
 #[cfg(test)]
 use autoreport_codex_protocol::openai_models::ReasoningEffort;
@@ -12,6 +8,10 @@ use autoreport_codex_protocol::protocol::AskForApproval;
 use autoreport_codex_protocol::protocol::SandboxPolicy;
 #[cfg(test)]
 use autoreport_codex_protocol::protocol::ThreadHistoryMode;
+#[cfg(test)]
+use chrono::DateTime;
+#[cfg(test)]
+use chrono::Utc;
 #[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
