@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use codex_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
-use codex_windows_sandbox::path_mask_allows;
+use autoreport_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
+use autoreport_windows_sandbox::path_mask_allows;
 use windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 use windows_sys::Win32::Security::OBJECT_INHERIT_ACE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
