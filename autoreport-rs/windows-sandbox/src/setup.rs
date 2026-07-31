@@ -51,7 +51,7 @@ pub const ONLINE_USERNAME: &str = "CodexSandboxOnline";
 const ERROR_CANCELLED: u32 = 1223;
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x0000_0020;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x0000_0220;
-const SETUP_EXE_FILENAME: &str = "codex-windows-sandbox-setup.exe";
+const SETUP_EXE_FILENAME: &str = "autoreport-windows-sandbox-setup.exe";
 const USERPROFILE_ROOT_EXCLUSIONS: &[&str] = &[
     ".ssh",
     ".tsh",
@@ -1581,7 +1581,7 @@ mod tests {
         fs::create_dir_all(&bin_dir).expect("create bin dir");
         fs::create_dir_all(&resources_dir).expect("create resources dir");
         let exe = bin_dir.join("codex.exe");
-        let setup_exe = resources_dir.join("codex-windows-sandbox-setup.exe");
+        let setup_exe = resources_dir.join("autoreport-windows-sandbox-setup.exe");
         fs::write(&exe, b"codex").expect("write exe");
         fs::write(&setup_exe, b"setup").expect("write setup");
 
