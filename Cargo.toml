@@ -18,6 +18,7 @@ members = [
     "autoreport-rs/vendor/codex/file-search",
     "autoreport-rs/vendor/codex/memories-read",
     "autoreport-rs/vendor/codex/models-manager",
+    "autoreport-rs/vendor/codex/rollout",
     "autoreport-rs/vendor/codex/git-utils",
     "autoreport-rs/vendor/codex/agent-identity",
     "autoreport-rs/vendor/codex/code-mode-protocol",
@@ -108,6 +109,7 @@ autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
 autoreport-file-search = { path = "autoreport-rs/vendor/codex/file-search" }
 autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
 autoreport-models-manager = { path = "autoreport-rs/vendor/codex/models-manager" }
+autoreport-codex-rollout = { path = "autoreport-rs/vendor/codex/rollout" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
 autoreport-agent-identity = { path = "autoreport-rs/vendor/codex/agent-identity" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
@@ -249,7 +251,7 @@ serde_with = { version = "3", features = ["macros", "base64"] }
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 textwrap = "0.16"
 thiserror = "1"
-time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "local-offset"] }
 tiny_http = "0.12"
 webbrowser = "1.0"
 tokio = { version = "1", features = ["full"] }
