@@ -1,0 +1,20 @@
+[package]
+name = "autoreport-prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_prompts"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-context-fragments = { workspace = true }
+autoreport-git-utils = { workspace = true }
+autoreport-execpolicy = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-template = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

@@ -7,6 +7,7 @@ incremental = true
 debug = 1
 
 [profile.release]
+incremental = false  # 发布构建不保留增量缓存，避免 target 长期膨胀
 strip = true  # 移除符号表
 lto = true    # 链接时优化，减小二进制大小
 codegen-units = 1  # 更好的优化，但编译稍慢

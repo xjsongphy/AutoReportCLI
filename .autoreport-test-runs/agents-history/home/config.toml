@@ -1,0 +1,23 @@
+context_window = 128000
+
+[providers.deepseek]
+kind = "deepseek"
+api_key = "test-key-not-used"
+api_base = "https://api.deepseek.com/v1"
+temperature = 0.1
+max_tokens = 256
+
+[models.main]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+
+[models.sub]
+provider = "deepseek"
+model = "deepseek-v4-flash"
+
+[agents]
+max_tool_iterations = 2
+compact_threshold = 0.8
+temperature = 0.1
+max_tokens = 256
+exec_timeout_secs = 10

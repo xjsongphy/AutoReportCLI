@@ -28,7 +28,7 @@ impl OpenAICompatProvider {
             model
         };
         Self {
-            client: reqwest::Client::new(),
+            client: crate::user_agent::http_client(),
             api_key,
             api_base,
             id: format!("{kind}/{model}"),

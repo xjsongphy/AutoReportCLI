@@ -10,10 +10,11 @@
 mod backends;
 
 use anyhow::Result;
-use autoreport_protocol::config_types::WindowsSandboxLevel;
-use autoreport_protocol::models::PermissionProfile;
+use anyhow::bail;
+use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
+use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
-use autoreport_utils_pty::SpawnedProcess;
+use codex_utils_pty::SpawnedProcess;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -25,12 +26,13 @@ use std::path::PathBuf;
 pub struct WindowsSandboxSessionRequest<'a> {
     pub permission_profile: &'a PermissionProfile,
     pub workspace_roots: &'a [AbsolutePathBuf],
-    pub autoreport_home: &'a Path,
+    pub codex_home: &'a Path,
     pub command: Vec<String>,
     pub cwd: &'a Path,
     pub env_map: HashMap<String, String>,
     pub windows_sandbox_level: WindowsSandboxLevel,
     pub proxy_enforced: bool,
+    pub network_proxy_restricting_sid: Option<String>,
     pub proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
     pub timeout_ms: Option<u64>,
     pub read_roots_override: Option<&'a [PathBuf]>,
@@ -52,11 +54,12 @@ pub async fn spawn_windows_sandbox_session_for_level(
         backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile(
             request.permission_profile,
             request.workspace_roots,
-            request.autoreport_home,
+            request.codex_home,
             request.command,
             request.cwd,
             request.env_map,
             request.proxy_enforced,
+            request.network_proxy_restricting_sid,
             request.proxy_settings_mode,
             request.timeout_ms,
             request.read_roots_override,
@@ -70,10 +73,13 @@ pub async fn spawn_windows_sandbox_session_for_level(
         )
         .await
     } else {
+        if request.network_proxy_restricting_sid.is_some() {
+            bail!("network proxy restricting SID requires the elevated Windows sandbox backend");
+        }
         spawn_windows_sandbox_session_legacy(
             request.permission_profile,
             request.workspace_roots,
-            request.autoreport_home,
+            request.codex_home,
             request.command,
             request.cwd,
             request.env_map,
@@ -92,7 +98,7 @@ pub async fn spawn_windows_sandbox_session_for_level(
 pub async fn spawn_windows_sandbox_session_legacy(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
-    autoreport_home: &Path,
+    codex_home: &Path,
     command: Vec<String>,
     cwd: &Path,
     env_map: HashMap<String, String>,
@@ -106,7 +112,7 @@ pub async fn spawn_windows_sandbox_session_legacy(
     backends::legacy::spawn_windows_sandbox_session_legacy(
         permission_profile,
         workspace_roots,
-        autoreport_home,
+        codex_home,
         command,
         cwd,
         env_map,
@@ -124,11 +130,12 @@ pub async fn spawn_windows_sandbox_session_legacy(
 pub async fn spawn_windows_sandbox_session_elevated_for_permission_profile(
     permission_profile: &PermissionProfile,
     workspace_roots: &[AbsolutePathBuf],
-    autoreport_home: &Path,
+    codex_home: &Path,
     command: Vec<String>,
     cwd: &Path,
     env_map: HashMap<String, String>,
     proxy_enforced: bool,
+    network_proxy_restricting_sid: Option<String>,
     timeout_ms: Option<u64>,
     read_roots_override: Option<&[PathBuf]>,
     read_roots_include_platform_defaults: bool,
@@ -142,11 +149,12 @@ pub async fn spawn_windows_sandbox_session_elevated_for_permission_profile(
     backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile(
         permission_profile,
         workspace_roots,
-        autoreport_home,
+        codex_home,
         command,
         cwd,
         env_map,
         proxy_enforced,
+        network_proxy_restricting_sid,
         crate::WindowsSandboxProxySettingsMode::Reconcile,
         timeout_ms,
         read_roots_override,

@@ -1,0 +1,37 @@
+[package]
+name = "autoreport-thread-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_thread_store"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-app-server-protocol = { workspace = true }
+autoreport-git-utils = { workspace = true }
+autoreport-install-context = { workspace = true }
+autoreport-otel = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-codex-rollout = { workspace = true }
+autoreport-state = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
+pulldown-cmark = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true }
+zstd = { workspace = true }

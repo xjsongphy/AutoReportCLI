@@ -1,0 +1,20 @@
+[package]
+name = "autoreport-utils-plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_utils_plugins"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-exec-server = { workspace = true }
+autoreport-exec-server-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

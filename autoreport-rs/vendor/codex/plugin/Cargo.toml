@@ -1,0 +1,19 @@
+[package]
+name = "autoreport-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_plugin"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-config = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path-uri = { workspace = true }
+autoreport-utils-plugins = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

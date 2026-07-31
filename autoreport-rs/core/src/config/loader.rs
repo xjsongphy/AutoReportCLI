@@ -26,7 +26,7 @@ pub const REQUIRED_DIRS: &[&str] = &[
     "Plots",
     "Plots/Fig",
     "Plots/Scripts",
-    "Tex",
+    "Report",
     "Outline",
 ];
 
@@ -63,7 +63,17 @@ pub fn find_autoreport_home() -> Result<PathBuf> {
 pub fn ensure_autoreport_home(home: &Path) -> Result<()> {
     std::fs::create_dir_all(home)
         .with_context(|| format!("creating AutoReport home {}", home.display()))?;
-    for dir in ["skills", "external", "templates", "agents", "workspaces"] {
+    for dir in [
+        "resources/latex/skills",
+        "resources/latex/templates",
+        "resources/latex/themes",
+        "resources/typst/skills",
+        "resources/typst/templates",
+        "resources/typst/themes",
+        "external/providers",
+        "agents",
+        "workspaces",
+    ] {
         std::fs::create_dir_all(home.join(dir))
             .with_context(|| format!("creating {}", home.join(dir).display()))?;
     }
@@ -199,7 +209,7 @@ pub fn resolve_model<'a>(
     label: &str,
 ) -> Result<(&'a crate::config::schema::ProviderConfig, &'a str)> {
     if model.provider.trim().is_empty() || model.model.trim().is_empty() {
-        return Err(anyhow!("{label} model is not configured; run /models"));
+        return Err(anyhow!("{label} model is not configured; run /model"));
     }
     let provider = settings
         .providers
@@ -359,8 +369,8 @@ mod tests {
     fn workspace_is_incomplete_when_a_required_path_is_not_a_directory() {
         let dir = tempdir().unwrap();
         ensure_workspace(dir.path()).unwrap();
-        std::fs::remove_dir(dir.path().join("Tex")).unwrap();
-        std::fs::write(dir.path().join("Tex"), "not a directory").unwrap();
+        std::fs::remove_dir(dir.path().join("Report")).unwrap();
+        std::fs::write(dir.path().join("Report"), "not a directory").unwrap();
 
         assert!(!workspace_is_complete(dir.path()));
     }

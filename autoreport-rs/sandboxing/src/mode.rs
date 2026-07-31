@@ -1,7 +1,7 @@
 //! High-level sandbox integration for the `exec` tool.
 //!
 //! Maps a coarse [`SandboxMode`] preset to the native AutoReport-derived
-//! [`crate::sandboxing::SandboxManager`] request model. Restrictive modes fail
+//! [`crate::SandboxManager`] request model. Restrictive modes fail
 //! closed on platforms without a backend instead of silently running an
 //! unrestricted command.
 
@@ -9,22 +9,22 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use autoreport_protocol::NetworkSandboxPolicy;
-use autoreport_protocol::config_types::WindowsSandboxLevel;
-use autoreport_protocol::models::PermissionProfile;
-use autoreport_protocol::{
+use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
+use autoreport_codex_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_codex_protocol::permissions::{
     FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSandboxPolicy,
     FileSystemSpecialPath,
 };
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use autoreport_utils_path_uri::PathUri;
 
-use crate::sandboxing::SandboxCommand;
-use crate::sandboxing::SandboxDirectSpawnTransformRequest;
-use crate::sandboxing::SandboxManager;
-use crate::sandboxing::SandboxTransformRequest;
-use crate::sandboxing::SandboxablePreference;
-use crate::windows_sandbox::WindowsSandboxProxySettingsMode;
+use crate::SandboxCommand;
+use crate::SandboxDirectSpawnTransformRequest;
+use crate::SandboxManager;
+use crate::SandboxTransformRequest;
+use crate::SandboxablePreference;
+use crate::WindowsSandboxProxySettingsMode;
 
 /// Coarse sandbox preset, mirroring the codex `PermissionProfile` flavors that
 /// matter for an unattended report-writing CLI.
@@ -101,12 +101,14 @@ pub fn build_filesystem_policy(
                     value: FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             }];
             if let Some(root) = spec.writable_root.as_deref() {
                 let root = resolve_agent_writable_root(root, workspace_root)?;
                 entries.push(FileSystemSandboxEntry {
                     path: FileSystemPath::Path { path: root },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 });
             }
             // Commands commonly need temporary files; these are outside the
@@ -122,12 +124,14 @@ pub fn build_filesystem_policy(
                             value: FileSystemSpecialPath::SlashTmp,
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Special {
                             value: FileSystemSpecialPath::Tmpdir,
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                 ]);
             }
@@ -293,7 +297,7 @@ pub fn sandbox_command_argv(
                 environment_id: None,
                 network: None,
                 sandbox_policy_cwd: &cwd_uri,
-                autoreport_linux_sandbox_exe: linux_helper.as_deref(),
+                codex_linux_sandbox_exe: linux_helper.as_deref(),
                 use_legacy_landlock: false,
                 windows_sandbox_level,
                 windows_sandbox_private_desktop: false,
@@ -358,7 +362,7 @@ mod tests {
     use super::build_filesystem_policy;
     use super::build_network_policy;
     use super::default_windows_sandbox_level;
-    use autoreport_protocol::NetworkSandboxPolicy;
+    use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
 
     #[test]
     fn workspace_write_preserves_metadata_protection() {

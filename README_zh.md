@@ -12,7 +12,7 @@
 
 </div>
 
-一款**codex 风格的多智能体命令行工具**，用于自动用 LaTeX 撰写物理实验报告。它是
+一款**codex 风格的多智能体命令行工具**，用于自动用 LaTeX 或 Typst 撰写物理实验报告。它是
 [AutoReport](../AutoReport) 桌面应用的 Rust 重写版本 —— 没有 GUI，没有 MCP，没有图像识别。
 终端即是界面，工作目录即是项目。
 
@@ -53,7 +53,7 @@ codex 风格的 TUI 协调五个智能体完成整份报告。
 - **Codex 审批键位** — 命令执行审批使用 codex 键位（`y` / `a` / `p` / `d` / `Esc` / `n` / `c`）
 - **持久化会话** — 每个智能体各自维护上下文，下次启动可继续之前的对话
 - **`@` 文件提及** — 在输入框中模糊搜索工作区文件并直接注入上下文
-- **斜杠命令** — `/agent(s)`、`/switch`、`/config`、`/model(s)`、`/env`、`/compact`、`/pager`、`/new`、`/clear`、`/copy`、`/manifest`、`/index`、`/ide`、`/help`、`/quit`
+- **斜杠命令** — `/model`、`/env`
 
 ## 快速开始
 
@@ -108,9 +108,9 @@ Provider 可以通过以下任一方式配置：
 - 设置环境变量，例如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、`GEMINI_API_KEY`
 - 将 `autoreport.config.example.toml` 复制为全局
   `~/.autoreport/config.toml`（也可通过 `AUTOREPORT_HOME` 修改位置），或直接使用
-  `/config` 配置。
+  `/model` 配置。
 - 在首次启动时使用全屏配置页交互式完成设置
-- `/config` 只配置 API：预设是可重复添加的模板，同一种 Provider 可以添加多条 API 配置；每条配置默认使用预设名，也可以覆盖 alias 以便区分。再用 `/models` 先选择已经填好 API Key 的配置、后填写模型名，分别绑定主 agent 与四个 sub agent。
+- `/model` 配置 API 和 Main/Sub 模型；`/env` 配置全局 Python 环境以及当前项目的 LaTeX/Typst 报告语言。
 
 常用 CLI 参数：
 
@@ -127,7 +127,7 @@ Provider 可以通过以下任一方式配置：
 ├── References/      论文、图片、模板、自定义 skills
 ├── Theory/          Theory 智能体输出
 ├── Plots/           绘图图表（Plots/Fig）与脚本（Plots/Scripts）
-├── Tex/             LaTeX 源文件与编译后的 PDF
+├── Report/             当前 LaTeX/Typst 源文件与编译后的 PDF
 ├── Outline/         Main 智能体的大纲与规划
 └── （不再写入 AutoReport 隐藏目录；程序状态统一保存在 ~/.autoreport/）
 ```
@@ -139,11 +139,12 @@ Provider 可以通过以下任一方式配置：
 ├── config.toml                         配置
 ├── auth.json                           Provider 凭据（支持的平台上权限为 0600）
 ├── history.jsonl                       追加式对话历史
-├── skills/                             全局/同步 skills
-├── external/                           同步的 Provider 预设
-├── templates/                          内置报告模板
+├── environment.toml                    全局 Python 环境
+├── venv/                               AutoReport 管理的 Python 环境（可选）
+├── resources/                          按语言隔离的 skills、模板、主题
+├── external/providers/                 同步的 Provider 预设
 ├── agents/                             全局提示词覆盖
-└── workspaces/<id>/                    项目 manifest、规则等状态
+└── workspaces/<id>/                    项目 manifest、规则、project.toml 等状态
 ```
 
 ## 开发

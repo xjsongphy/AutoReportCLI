@@ -1,4 +1,4 @@
-//! Internal `autoreport.exe --run-as-windows-sandbox` wrapper.
+//! Internal `codex.exe --run-as-windows-sandbox` wrapper.
 //!
 //! This gives direct-spawn callers an argv-shaped Windows sandbox launcher,
 //! analogous to the macOS seatbelt and Linux sandbox wrapper paths. The wrapper
@@ -13,17 +13,18 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
-use autoreport_protocol::config_types::WindowsSandboxLevel;
-use autoreport_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::config_types::WindowsSandboxLevel;
+use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 
 pub const AUTOREPORT_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
 
 const COMMAND_CWD_FLAG: &str = "--command-cwd";
-const AUTOREPORT_HOME_FLAG: &str = "--autoreport-home";
+const CODEX_HOME_FLAG: &str = "--codex-home";
 const DENY_READ_PATHS_JSON_FLAG: &str = "--deny-read-paths-json";
 const DENY_WRITE_PATHS_JSON_FLAG: &str = "--deny-write-paths-json";
 const ENV_JSON_FLAG: &str = "--env-json";
+const NETWORK_PROXY_RESTRICTING_SID_FLAG: &str = "--network-proxy-restricting-sid";
 const PERMISSION_PROFILE_FLAG: &str = "--permission-profile";
 const PRIVATE_DESKTOP_FLAG: &str = "--windows-sandbox-private-desktop";
 const PRESERVE_PROXY_SETTINGS_FLAG: &str = "--preserve-proxy-settings";
@@ -44,13 +45,14 @@ pub fn create_windows_sandbox_command_args_for_permission_profile(
     windows_sandbox_level: WindowsSandboxLevel,
     windows_sandbox_private_desktop: bool,
     proxy_enforced: bool,
+    network_proxy_restricting_sid: Option<&str>,
     proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
     read_roots_override: Option<&[PathBuf]>,
     read_roots_include_platform_defaults: bool,
     write_roots_override: Option<&[PathBuf]>,
     deny_read_paths_override: &[AbsolutePathBuf],
     deny_write_paths_override: &[AbsolutePathBuf],
-    autoreport_home: &Path,
+    codex_home: &Path,
 ) -> Vec<String> {
     let permission_profile_json = serde_json::to_string(permission_profile)
         .unwrap_or_else(|err| panic!("failed to serialize permission profile: {err}"));
@@ -58,8 +60,8 @@ pub fn create_windows_sandbox_command_args_for_permission_profile(
         .unwrap_or_else(|err| panic!("failed to serialize env: {err}"));
     let mut args = vec![
         AUTOREPORT_WINDOWS_SANDBOX_ARG1.to_string(),
-        AUTOREPORT_HOME_FLAG.to_string(),
-        autoreport_home.to_string_lossy().into_owned(),
+        CODEX_HOME_FLAG.to_string(),
+        codex_home.to_string_lossy().into_owned(),
         COMMAND_CWD_FLAG.to_string(),
         command_cwd.as_path().to_string_lossy().into_owned(),
         PERMISSION_PROFILE_FLAG.to_string(),
@@ -83,6 +85,10 @@ pub fn create_windows_sandbox_command_args_for_permission_profile(
     }
     if proxy_enforced {
         args.push(PROXY_ENFORCED_FLAG.to_string());
+    }
+    if let Some(network_proxy_restricting_sid) = network_proxy_restricting_sid {
+        args.push(NETWORK_PROXY_RESTRICTING_SID_FLAG.to_string());
+        args.push(network_proxy_restricting_sid.to_string());
     }
     if proxy_settings_mode == crate::WindowsSandboxProxySettingsMode::Preserve {
         args.push(PRESERVE_PROXY_SETTINGS_FLAG.to_string());
@@ -151,7 +157,7 @@ async fn run_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<i32> {
 }
 
 struct WindowsSandboxWrapperRequest {
-    autoreport_home: PathBuf,
+    codex_home: PathBuf,
     command_cwd: AbsolutePathBuf,
     workspace_roots: Vec<AbsolutePathBuf>,
     env_map: HashMap<String, String>,
@@ -159,6 +165,7 @@ struct WindowsSandboxWrapperRequest {
     windows_sandbox_level: WindowsSandboxLevel,
     windows_sandbox_private_desktop: bool,
     proxy_enforced: bool,
+    network_proxy_restricting_sid: Option<String>,
     proxy_settings_mode: crate::WindowsSandboxProxySettingsMode,
     read_roots_override: Option<Vec<PathBuf>>,
     read_roots_include_platform_defaults: bool,
@@ -176,12 +183,13 @@ async fn run_windows_sandbox_wrapper_request(request: WindowsSandboxWrapperReque
         crate::spawn_windows_sandbox_session_for_level(crate::WindowsSandboxSessionRequest {
             permission_profile: &request.permission_profile,
             workspace_roots: request.workspace_roots.as_slice(),
-            autoreport_home: request.autoreport_home.as_path(),
+            codex_home: request.codex_home.as_path(),
             command: request.command,
             cwd: request.command_cwd.as_path(),
             env_map: request.env_map,
             windows_sandbox_level: request.windows_sandbox_level,
             proxy_enforced: request.proxy_enforced,
+            network_proxy_restricting_sid: request.network_proxy_restricting_sid,
             proxy_settings_mode: request.proxy_settings_mode,
             timeout_ms: None,
             read_roots_override: request.read_roots_override.as_deref(),
@@ -200,7 +208,7 @@ async fn run_windows_sandbox_wrapper_request(request: WindowsSandboxWrapperReque
 
 fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandboxWrapperRequest> {
     let mut args = args.into_iter();
-    let mut autoreport_home = None;
+    let mut codex_home = None;
     let mut command_cwd = None;
     let mut workspace_roots = Vec::new();
     let mut env_map = None;
@@ -208,6 +216,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
     let mut windows_sandbox_level = None;
     let mut windows_sandbox_private_desktop = false;
     let mut proxy_enforced = false;
+    let mut network_proxy_restricting_sid = None;
     let mut proxy_settings_mode = crate::WindowsSandboxProxySettingsMode::Reconcile;
     let mut read_roots_override = None;
     let mut read_roots_include_platform_defaults = false;
@@ -218,9 +227,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            AUTOREPORT_HOME_FLAG => {
-                autoreport_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
-            }
+            CODEX_HOME_FLAG => codex_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             COMMAND_CWD_FLAG => {
                 command_cwd = Some(absolute_path_arg(next_flag_value(&mut args, &arg)?, &arg)?);
             }
@@ -254,6 +261,9 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
                 proxy_settings_mode = crate::WindowsSandboxProxySettingsMode::Preserve;
             }
             PROXY_ENFORCED_FLAG => proxy_enforced = true,
+            NETWORK_PROXY_RESTRICTING_SID_FLAG => {
+                network_proxy_restricting_sid = Some(next_flag_value(&mut args, &arg)?);
+            }
             READ_ROOTS_INCLUDE_PLATFORM_DEFAULTS_FLAG => {
                 read_roots_include_platform_defaults = true;
             }
@@ -273,12 +283,11 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
         }
     }
 
-    let autoreport_home =
-        autoreport_home.ok_or_else(|| anyhow!("missing required {AUTOREPORT_HOME_FLAG}"))?;
-    if !autoreport_home.is_absolute() {
+    let codex_home = codex_home.ok_or_else(|| anyhow!("missing required {CODEX_HOME_FLAG}"))?;
+    if !codex_home.is_absolute() {
         bail!(
-            "{AUTOREPORT_HOME_FLAG} must be absolute: {}",
-            autoreport_home.display()
+            "{CODEX_HOME_FLAG} must be absolute: {}",
+            codex_home.display()
         );
     }
     let command_cwd = command_cwd.ok_or_else(|| anyhow!("missing required {COMMAND_CWD_FLAG}"))?;
@@ -286,7 +295,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
         workspace_roots.push(command_cwd.clone());
     }
     Ok(WindowsSandboxWrapperRequest {
-        autoreport_home,
+        codex_home,
         command_cwd,
         workspace_roots,
         env_map: env_map.ok_or_else(|| anyhow!("missing required {ENV_JSON_FLAG}"))?,
@@ -296,6 +305,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
             .ok_or_else(|| anyhow!("missing required {SANDBOX_LEVEL_FLAG}"))?,
         windows_sandbox_private_desktop,
         proxy_enforced,
+        network_proxy_restricting_sid,
         proxy_settings_mode,
         read_roots_override,
         read_roots_include_platform_defaults,

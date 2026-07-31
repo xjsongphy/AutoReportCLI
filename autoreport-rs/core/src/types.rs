@@ -98,7 +98,7 @@ impl AgentType {
             AgentType::DataAnalysis => Some("Data/Processed"),
             AgentType::Plotting => Some("Plots"),
             AgentType::Theory => Some("Theory"),
-            AgentType::Report => Some("Tex"),
+            AgentType::Report => Some("Report"),
         }
     }
 }

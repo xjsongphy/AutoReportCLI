@@ -8,7 +8,7 @@
 //! through the elevated runner.
 
 use anyhow::Result;
-use autoreport_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::models::PermissionProfile;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -26,7 +26,7 @@ use std::path::PathBuf;
 const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
 
 /// Protocol version shared by the parent process and elevated command runner.
-pub const IPC_PROTOCOL_VERSION: u8 = 4;
+pub const IPC_PROTOCOL_VERSION: u8 = 5;
 
 /// Length-prefixed, JSON-encoded frame.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -62,9 +62,12 @@ pub struct SpawnRequest {
     pub env: HashMap<String, String>,
     pub permission_profile: PermissionProfile,
     pub workspace_roots: Vec<AbsolutePathBuf>,
-    pub autoreport_home: PathBuf,
-    pub real_autoreport_home: PathBuf,
+    pub codex_home: PathBuf,
+    pub real_codex_home: PathBuf,
     pub cap_sids: Vec<String>,
+    /// Optional managed-network identity added only to the child's restricting SID set.
+    #[serde(default)]
+    pub network_proxy_restricting_sid: Option<String>,
     pub timeout_ms: Option<u64>,
     pub tty: bool,
     #[serde(default)]
@@ -221,9 +224,10 @@ mod tests {
                     env: HashMap::new(),
                     permission_profile: PermissionProfile::read_only(),
                     workspace_roots: workspace_roots.clone(),
-                    autoreport_home: PathBuf::from(r"C:\codex"),
-                    real_autoreport_home: PathBuf::from(r"C:\Users\codex"),
+                    codex_home: PathBuf::from(r"C:\codex"),
+                    real_codex_home: PathBuf::from(r"C:\Users\codex"),
                     cap_sids: vec!["S-1-15-3-1024-1".to_string()],
+                    network_proxy_restricting_sid: Some("S-1-5-21-100-200-300-400".to_string()),
                     timeout_ms: Some(1000),
                     tty: false,
                     stdin_open: false,
@@ -245,6 +249,10 @@ mod tests {
         };
         assert_eq!(PermissionProfile::read_only(), payload.permission_profile);
         assert_eq!(workspace_roots, payload.workspace_roots);
+        assert_eq!(
+            Some("S-1-5-21-100-200-300-400"),
+            payload.network_proxy_restricting_sid.as_deref()
+        );
     }
 
     #[test]

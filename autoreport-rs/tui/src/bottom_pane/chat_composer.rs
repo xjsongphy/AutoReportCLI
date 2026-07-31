@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, WidgetRef};
+use std::cell::Cell;
 use unicode_width::UnicodeWidthStr;
 
 // Same separator vocabulary as Codex's textarea word-motion helpers. Word
@@ -38,6 +39,8 @@ pub(crate) struct ChatComposer {
     /// Codex-style reverse/forward-i-search session. `None` outside a search.
     history_search: Option<super::history_search::HistorySearchSession>,
     killed_text: Option<String>,
+    input_width: Cell<usize>,
+    preferred_column: Option<usize>,
 }
 
 impl ChatComposer {
@@ -54,6 +57,8 @@ impl ChatComposer {
             draft_before_history: None,
             history_search: None,
             killed_text: None,
+            input_width: Cell::new(80),
+            preferred_column: None,
         }
     }
 
@@ -76,6 +81,7 @@ impl ChatComposer {
         self.text = text;
         self.cursor = self.clamp_cursor(cursor.min(self.text.len()));
         self.history_search = None;
+        self.preferred_column = None;
     }
 
     /// Remove a UTF-8-safe range immediately before the cursor. This is the
@@ -87,11 +93,13 @@ impl ChatComposer {
         let removed = self.text[start..self.cursor].to_string();
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
+        self.preferred_column = None;
         Some(removed)
     }
 
     pub(crate) fn take_text(&mut self) -> String {
         self.cursor = 0;
+        self.preferred_column = None;
         self.history_index = None;
         self.draft_before_history = None;
         self.history_search = None;
@@ -111,6 +119,7 @@ impl ChatComposer {
         }
         let cleared = std::mem::take(&mut self.text);
         self.cursor = 0;
+        self.preferred_column = None;
         self.history_index = None;
         self.draft_before_history = None;
         self.history_search = None;
@@ -123,6 +132,7 @@ impl ChatComposer {
         self.history_search = None;
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
+        self.preferred_column = None;
     }
 
     pub(crate) fn insert_text(&mut self, text: &str) {
@@ -131,6 +141,7 @@ impl ChatComposer {
         self.history_search = None;
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();
+        self.preferred_column = None;
     }
 
     /// Codex treats Shift+Enter as an editor newline while plain Enter submits.
@@ -152,6 +163,7 @@ impl ChatComposer {
         self.killed_text = Some(previous.to_string());
         self.cursor -= previous.len_utf8();
         self.text.remove(self.cursor);
+        self.preferred_column = None;
     }
 
     pub(crate) fn delete_next(&mut self) {
@@ -167,6 +179,7 @@ impl ChatComposer {
             .expect("cursor is before a character");
         self.killed_text = Some(next.to_string());
         self.text.drain(self.cursor..self.cursor + next.len_utf8());
+        self.preferred_column = None;
     }
 
     pub(crate) fn move_left(&mut self) {
@@ -177,6 +190,7 @@ impl ChatComposer {
                 .expect("cursor is after a character")
                 .len_utf8();
         }
+        self.preferred_column = None;
     }
 
     pub(crate) fn history_previous(&mut self) -> bool {
@@ -192,6 +206,7 @@ impl ChatComposer {
         self.text = self.history[index].clone();
         self.cursor = self.text.len();
         self.history_search = None;
+        self.preferred_column = None;
         true
     }
 
@@ -208,6 +223,7 @@ impl ChatComposer {
         }
         self.cursor = self.text.len();
         self.history_search = None;
+        self.preferred_column = None;
         true
     }
 
@@ -282,6 +298,7 @@ impl ChatComposer {
         if let Some(session) = self.history_search.take() {
             self.text = session.original_draft().to_string();
             self.cursor = session.original_cursor();
+            self.preferred_column = None;
         }
     }
 
@@ -293,54 +310,53 @@ impl ChatComposer {
                 .expect("cursor is before a character")
                 .len_utf8();
         }
+        self.preferred_column = None;
     }
 
     pub(crate) fn move_up(&mut self) -> bool {
-        let line_start = self.text[..self.cursor]
-            .rfind('\n')
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        if line_start == 0 {
+        let lines = visual_line_ranges(&self.text, self.input_width.get());
+        let Some(index) = current_visual_line(&lines, self.cursor) else {
+            return false;
+        };
+        if index == 0 {
             return false;
         }
-        let column = UnicodeWidthStr::width(&self.text[line_start..self.cursor]);
-        let previous_end = line_start.saturating_sub(1);
-        let previous_start = self.text[..previous_end]
-            .rfind('\n')
-            .map(|index| index + 1)
-            .unwrap_or(0);
+        let (start, _) = lines[index];
+        let column = self
+            .preferred_column
+            .unwrap_or_else(|| UnicodeWidthStr::width(&self.text[start..self.cursor]));
+        self.preferred_column = Some(column);
+        let (previous_start, previous_end) = lines[index - 1];
         self.cursor = visual_column_cursor(&self.text, previous_start, previous_end, column);
         true
     }
 
     pub(crate) fn move_down(&mut self) -> bool {
-        let line_end = self.text[self.cursor..]
-            .find('\n')
-            .map(|index| self.cursor + index)
-            .unwrap_or(self.text.len());
-        if line_end == self.text.len() {
+        let lines = visual_line_ranges(&self.text, self.input_width.get());
+        let Some(index) = current_visual_line(&lines, self.cursor) else {
+            return false;
+        };
+        if index + 1 >= lines.len() {
             return false;
         }
-        let line_start = self.text[..self.cursor]
-            .rfind('\n')
-            .map(|index| index + 1)
-            .unwrap_or(0);
-        let column = UnicodeWidthStr::width(&self.text[line_start..self.cursor]);
-        let next_start = line_end + 1;
-        let next_end = self.text[next_start..]
-            .find('\n')
-            .map(|index| next_start + index)
-            .unwrap_or(self.text.len());
+        let (start, _) = lines[index];
+        let column = self
+            .preferred_column
+            .unwrap_or_else(|| UnicodeWidthStr::width(&self.text[start..self.cursor]));
+        self.preferred_column = Some(column);
+        let (next_start, next_end) = lines[index + 1];
         self.cursor = visual_column_cursor(&self.text, next_start, next_end, column);
         true
     }
 
     pub(crate) fn move_word_left(&mut self) {
         self.cursor = beginning_of_previous_word(&self.text, self.cursor);
+        self.preferred_column = None;
     }
 
     pub(crate) fn move_word_right(&mut self) {
         self.cursor = end_of_next_word(&self.text, self.cursor);
+        self.preferred_column = None;
     }
 
     pub(crate) fn move_home(&mut self) {
@@ -348,6 +364,7 @@ impl ChatComposer {
             .rfind('\n')
             .map(|index| index + 1)
             .unwrap_or(0);
+        self.preferred_column = None;
     }
 
     pub(crate) fn move_end(&mut self) {
@@ -355,6 +372,7 @@ impl ChatComposer {
             .find('\n')
             .map(|index| self.cursor + index)
             .unwrap_or(self.text.len());
+        self.preferred_column = None;
     }
 
     pub(crate) fn delete_word_previous(&mut self) {
@@ -455,8 +473,9 @@ impl Renderable for ChatComposer {
         // the first row and continuation rows use the same two-column indent.
         let prompt = Span::from("›").bold();
         let input_width = usize::from(area.width.saturating_sub(4).max(1));
+        self.input_width.set(input_width);
         let input_lines = if self.text.is_empty() {
-            vec!["Use /skills to list available skills".to_string()]
+            vec!["Implement {feature}".to_string()]
         } else {
             self.text
                 .split('\n')
@@ -464,7 +483,12 @@ impl Renderable for ChatComposer {
                 .collect()
         };
         let max_input_lines = usize::from(area.height.saturating_sub(3)).max(1);
-        for (row, text) in input_lines.iter().take(max_input_lines).enumerate() {
+        let cursor_line = cursor_visual_line(&self.text, self.cursor, input_width);
+        let input_start = cursor_line
+            .saturating_add(1)
+            .saturating_sub(max_input_lines);
+        let visible_input_lines = input_lines.iter().skip(input_start).take(max_input_lines);
+        for (row, text) in visible_input_lines.enumerate() {
             let line = if row == 0 {
                 let span = if self.text.is_empty() {
                     Span::from(text.clone()).dim()
@@ -521,10 +545,10 @@ impl Renderable for ChatComposer {
             Line::from(vec![
                 Span::raw("  ").dim(),
                 Span::styled(self.focused_agent.clone(), accent_style()),
-                Span::raw("  Tab switch agent   Enter send   @ files   / commands").dim(),
+                Span::raw("  Tab switch agent   Enter send   @ files   /model").dim(),
             ])
         } else {
-            Line::from(Span::from("  Enter send   @ files   / commands").dim())
+            Line::from(Span::from("  Enter send   @ files   /model").dim())
         };
         // Codex truncates footer/status lines before painting them.  In
         // particular this keeps a long provider/model id from running past
@@ -538,7 +562,13 @@ impl Renderable for ChatComposer {
                 area.x,
                 area.y
                     + 1
-                    + u16::try_from(input_lines.len().min(max_input_lines)).unwrap_or(u16::MAX),
+                    + u16::try_from(
+                        input_lines
+                            .len()
+                            .saturating_sub(input_start)
+                            .min(max_input_lines),
+                    )
+                    .unwrap_or(u16::MAX),
                 area.width,
                 1,
             ),
@@ -565,6 +595,8 @@ impl Renderable for ChatComposer {
     }
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        self.input_width
+            .set(usize::from(area.width.saturating_sub(4).max(1)));
         let prefix_width = UnicodeWidthStr::width("› ") as u16;
         let before_cursor = &self.text[..self.cursor];
         let (line_index, line_text) = before_cursor
@@ -574,6 +606,18 @@ impl Renderable for ChatComposer {
         let input_width = usize::from(area.width.saturating_sub(4).max(1));
         let wrapped_before = wrap_input_line(line_text, input_width);
         let visual_row = line_index + wrapped_before.len().saturating_sub(1);
+        let total_lines = self
+            .text
+            .split('\n')
+            .flat_map(|line| wrap_input_line(line, input_width))
+            .count()
+            .max(1);
+        let max_input_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        let input_start = visual_row
+            .saturating_add(1)
+            .saturating_sub(max_input_lines)
+            .min(total_lines.saturating_sub(1));
+        let visible_row = visual_row.saturating_sub(input_start);
         let cursor_width = UnicodeWidthStr::width(
             wrapped_before
                 .last()
@@ -589,9 +633,18 @@ impl Renderable for ChatComposer {
                 .min(area.right().saturating_sub(1)),
             area.y
                 .saturating_add(1)
-                .saturating_add(u16::try_from(visual_row.min(7)).unwrap_or(u16::MAX)),
+                .saturating_add(u16::try_from(visible_row).unwrap_or(u16::MAX)),
         ))
     }
+}
+
+fn cursor_visual_line(text: &str, cursor: usize, width: usize) -> usize {
+    let before_cursor = &text[..cursor.min(text.len())];
+    let (line_index, line_text) = before_cursor
+        .rsplit_once('\n')
+        .map(|(prefix, line)| (prefix.matches('\n').count() + 1, line))
+        .unwrap_or((0, before_cursor));
+    line_index + wrap_input_line(line_text, width).len().saturating_sub(1)
 }
 
 fn beginning_of_previous_word(text: &str, cursor: usize) -> usize {
@@ -652,6 +705,44 @@ fn end_of_next_word(text: &str, cursor: usize) -> usize {
 /// Convert a visual column back to a UTF-8 byte cursor on one logical line.
 /// Codex's textarea uses display width rather than byte offsets, which keeps
 /// vertical motion stable for CJK and wide glyphs.
+fn visual_line_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut row_width = 0;
+    for (offset, ch) in text.char_indices() {
+        if ch == '\n' {
+            ranges.push((start, offset));
+            start = offset + ch.len_utf8();
+            row_width = 0;
+            continue;
+        }
+        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+        if start != offset && row_width + ch_width > width {
+            ranges.push((start, offset));
+            start = offset;
+            row_width = 0;
+        }
+        row_width += ch_width;
+    }
+    ranges.push((start, text.len()));
+    ranges
+}
+
+fn current_visual_line(lines: &[(usize, usize)], cursor: usize) -> Option<usize> {
+    lines.iter().enumerate().position(|(index, &(start, end))| {
+        if start == end {
+            return cursor == start;
+        }
+        if cursor < start || cursor > end {
+            return false;
+        }
+        // At a wrap boundary the cursor belongs to the next visual row; at
+        // an explicit newline it still belongs to the row before the newline.
+        cursor < end || index + 1 >= lines.len() || lines[index + 1].0 != end
+    })
+}
+
 fn visual_column_cursor(text: &str, line_start: usize, line_end: usize, target: usize) -> usize {
     let line = &text[line_start..line_end];
     let mut width = 0usize;
@@ -765,6 +856,39 @@ mod tests {
         assert_eq!(composer.desired_height(10), 5);
         let cursor = composer.cursor_pos(ratatui::layout::Rect::new(0, 0, 10, 8));
         assert_eq!(cursor.map(|(_, y)| y), Some(2));
+    }
+
+    #[test]
+    fn multiline_input_scrolls_to_keep_the_cursor_visible() {
+        let mut composer = ChatComposer::new("Main");
+        composer.insert_text("one\ntwo\nthree\nfour\nfive\nsix");
+        let area = ratatui::layout::Rect::new(0, 0, 40, 7);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        composer.render(area, &mut buffer);
+        let rendered = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(!rendered.contains("one"));
+        assert!(rendered.contains("six"));
+        let cursor = composer.cursor_pos(area).expect("cursor");
+        assert_eq!(cursor.1, 4);
+    }
+
+    #[test]
+    fn vertical_motion_follows_wrapped_visual_lines() {
+        let mut composer = ChatComposer::new("Main");
+        composer.input_width.set(6);
+        composer.insert_text("abcdefghi\njklmnop");
+        composer.cursor = "abcdefghi\njklmn".len();
+
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), 9);
+        assert!(composer.move_up());
+        assert_eq!(composer.cursor(), 5);
+        assert!(composer.move_down());
+        assert_eq!(composer.cursor(), 9);
     }
 
     #[test]
@@ -938,7 +1062,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(rendered.contains("Use /skills to list available skills"));
+        assert!(rendered.contains("Implement {feature}"));
         assert!(rendered.contains("gpt-5.6-luna"));
         assert!(rendered.contains("~"));
     }

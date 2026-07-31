@@ -3,23 +3,21 @@ mod read_acl_mutex;
 
 use anyhow::Context;
 use anyhow::Result;
-use autoreport_otel::StatsigMetricsSettings;
 use autoreport_windows_sandbox::SETUP_VERSION;
 use autoreport_windows_sandbox::SetupErrorCode;
 use autoreport_windows_sandbox::SetupErrorReport;
 use autoreport_windows_sandbox::SetupFailure;
 use autoreport_windows_sandbox::add_deny_write_ace;
-use autoreport_windows_sandbox::canonicalize_path;
 use autoreport_windows_sandbox::convert_string_sid_to_sid;
 use autoreport_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
 use autoreport_windows_sandbox::ensure_allow_write_aces;
 use autoreport_windows_sandbox::extract_setup_failure;
 use autoreport_windows_sandbox::hide_newly_created_users;
 use autoreport_windows_sandbox::install_wfp_filters;
-use autoreport_windows_sandbox::is_command_cwd_root;
 use autoreport_windows_sandbox::log_note;
 use autoreport_windows_sandbox::log_writer;
 use autoreport_windows_sandbox::path_mask_allows;
+use autoreport_windows_sandbox::path_write_aces_need_refresh;
 use autoreport_windows_sandbox::sandbox_bin_dir;
 use autoreport_windows_sandbox::sandbox_dir;
 use autoreport_windows_sandbox::sandbox_secrets_dir;
@@ -31,6 +29,7 @@ use autoreport_windows_sandbox::workspace_write_root_overlaps_path;
 use autoreport_windows_sandbox::write_setup_error_report;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use codex_otel::StatsigMetricsSettings;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -59,12 +58,12 @@ use windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OBJECT_INHERIT_ACE;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
-use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_EXECUTE;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
 
 const DENY_ACCESS: i32 = 3;
+#[cfg(test)]
 const WRITE_ROOT_ALLOW_MASK: u32 =
     FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
 
@@ -84,7 +83,7 @@ struct Payload {
     version: u32,
     offline_username: String,
     online_username: String,
-    autoreport_home: PathBuf,
+    codex_home: PathBuf,
     command_cwd: PathBuf,
     read_roots: Vec<PathBuf>,
     write_roots: Vec<PathBuf>,
@@ -125,7 +124,7 @@ fn log_line(log: &mut dyn Write, msg: &str) -> Result<()> {
 }
 
 fn workspace_write_cap_sids_for_path(
-    autoreport_home: &Path,
+    codex_home: &Path,
     command_cwd: &Path,
     write_roots: &[PathBuf],
     path: &Path,
@@ -134,7 +133,7 @@ fn workspace_write_cap_sids_for_path(
     for root in write_roots {
         if workspace_write_root_overlaps_path(root, path) {
             sid_strs.push(workspace_write_cap_sid_for_root(
-                autoreport_home,
+                codex_home,
                 command_cwd,
                 root,
             )?);
@@ -143,14 +142,14 @@ fn workspace_write_cap_sids_for_path(
     if sid_strs.is_empty() {
         if write_roots.is_empty() {
             sid_strs.push(workspace_write_cap_sid_for_root(
-                autoreport_home,
+                codex_home,
                 command_cwd,
                 command_cwd,
             )?);
         } else {
             for root in write_roots {
                 sid_strs.push(workspace_write_cap_sid_for_root(
-                    autoreport_home,
+                    codex_home,
                     command_cwd,
                     root,
                 )?);
@@ -158,23 +157,6 @@ fn workspace_write_cap_sids_for_path(
         }
     }
     Ok(sid_strs)
-}
-
-fn write_root_needs_refresh(root: &Path, psid: *mut c_void) -> Result<bool> {
-    if !path_mask_allows(
-        root,
-        &[psid],
-        WRITE_ROOT_ALLOW_MASK,
-        /*require_all_bits*/ true,
-    )? {
-        return Ok(true);
-    }
-    path_mask_allows(
-        root,
-        &[psid],
-        FILE_DELETE_CHILD,
-        /*require_all_bits*/ false,
-    )
 }
 
 fn spawn_read_acl_helper(payload: &Payload, _log: &mut dyn Write) -> Result<()> {
@@ -409,8 +391,8 @@ pub fn main() -> Result<()> {
     let ret = real_main();
     if let Err(e) = &ret {
         // Best-effort: log unexpected top-level errors.
-        if let Ok(autoreport_home) = std::env::var("AUTOREPORT_HOME") {
-            let sbx_dir = sandbox_dir(Path::new(&autoreport_home));
+        if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+            let sbx_dir = sandbox_dir(Path::new(&codex_home));
             let _ = std::fs::create_dir_all(&sbx_dir);
             if let Some(mut f) = log_writer(&sbx_dir) {
                 let _ = writeln!(
@@ -455,7 +437,7 @@ fn real_main() -> Result<()> {
             ),
         )));
     }
-    let sbx_dir = sandbox_dir(&payload.autoreport_home);
+    let sbx_dir = sandbox_dir(&payload.codex_home);
     std::fs::create_dir_all(&sbx_dir).map_err(|err| {
         anyhow::Error::new(SetupFailure::new(
             SetupErrorCode::HelperSandboxDirCreateFailed,
@@ -481,7 +463,7 @@ fn real_main() -> Result<()> {
             code: failure.code,
             message: failure.message,
         };
-        if let Err(write_err) = write_setup_error_report(&payload.autoreport_home, &report) {
+        if let Err(write_err) = write_setup_error_report(&payload.codex_home, &report) {
             let _ = log_line(
                 &mut log,
                 &format!("setup error report write failed: {write_err}"),
@@ -498,7 +480,7 @@ fn real_main() -> Result<()> {
 fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<()> {
     let writes_setup_marker = !payload.refresh_only && payload.mode != SetupMode::ReadAclsOnly;
     if writes_setup_marker {
-        prepare_setup_marker(&payload.autoreport_home, &payload.real_user)?;
+        prepare_setup_marker(&payload.codex_home, &payload.real_user)?;
     }
     match payload.mode {
         SetupMode::ReadAclsOnly => run_read_acl_only(payload, log),
@@ -507,7 +489,7 @@ fn run_setup(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Result<(
     }?;
     if writes_setup_marker {
         commit_setup_marker(
-            &payload.autoreport_home,
+            &payload.codex_home,
             &payload.offline_username,
             &payload.online_username,
             &payload.proxy_ports,
@@ -586,7 +568,7 @@ fn provision_and_hide_sandbox_users(
     sbx_dir: &Path,
 ) -> Result<()> {
     let provision_result = provision_sandbox_users(
-        &payload.autoreport_home,
+        &payload.codex_home,
         &payload.offline_username,
         &payload.online_username,
         log,
@@ -639,7 +621,7 @@ fn configure_offline_sandbox_network(
         )));
     }
     install_wfp_filters(
-        &payload.autoreport_home,
+        &payload.codex_home,
         &payload.offline_username,
         payload.otel.as_ref(),
         |message| {
@@ -655,7 +637,7 @@ fn lock_persistent_sandbox_dirs(
     log: &mut dyn Write,
 ) -> Result<()> {
     lock_sandbox_dir(
-        &sandbox_dir(&payload.autoreport_home),
+        &sandbox_dir(&payload.codex_home),
         &payload.real_user,
         sandbox_group_sid,
         GRANT_ACCESS,
@@ -668,12 +650,12 @@ fn lock_persistent_sandbox_dirs(
             SetupErrorCode::HelperSandboxLockFailed,
             format!(
                 "lock sandbox dir {} failed: {err}",
-                sandbox_dir(&payload.autoreport_home).display()
+                sandbox_dir(&payload.codex_home).display()
             ),
         ))
     })?;
     lock_sandbox_dir(
-        &sandbox_secrets_dir(&payload.autoreport_home),
+        &sandbox_secrets_dir(&payload.codex_home),
         &payload.real_user,
         sandbox_group_sid,
         DENY_ACCESS,
@@ -686,11 +668,11 @@ fn lock_persistent_sandbox_dirs(
             SetupErrorCode::HelperSandboxLockFailed,
             format!(
                 "lock sandbox secrets dir {} failed: {err}",
-                sandbox_secrets_dir(&payload.autoreport_home).display()
+                sandbox_secrets_dir(&payload.codex_home).display()
             ),
         ))
     })?;
-    let legacy_users = sandbox_dir(&payload.autoreport_home).join("sandbox_users.json");
+    let legacy_users = sandbox_dir(&payload.codex_home).join("sandbox_users.json");
     if legacy_users.exists() {
         let _ = std::fs::remove_file(&legacy_users);
     }
@@ -703,7 +685,7 @@ fn lock_sandbox_bin_dir(
     log: &mut dyn Write,
 ) -> Result<()> {
     lock_sandbox_dir(
-        &sandbox_bin_dir(&payload.autoreport_home),
+        &sandbox_bin_dir(&payload.codex_home),
         &payload.real_user,
         sandbox_group_sid,
         GRANT_ACCESS,
@@ -716,7 +698,7 @@ fn lock_sandbox_bin_dir(
             SetupErrorCode::HelperSandboxLockFailed,
             format!(
                 "lock sandbox bin dir {} failed: {err}",
-                sandbox_bin_dir(&payload.autoreport_home).display()
+                sandbox_bin_dir(&payload.codex_home).display()
             ),
         ))
     })
@@ -791,7 +773,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     // helper used for read grants.
     let applied_deny_read_paths = unsafe {
         sync_persistent_deny_read_acls(
-            &payload.autoreport_home,
+            &payload.codex_home,
             &sandbox_group_sid_str,
             &payload.deny_read_paths,
             sandbox_group_psid,
@@ -838,7 +820,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     }
 
     if refresh_only {
-        setup_runtime_bin::ensure_autoreport_app_runtime_paths_readable(
+        setup_runtime_bin::ensure_codex_app_runtime_paths_readable(
             sandbox_group_psid,
             &mut refresh_errors,
             log,
@@ -849,8 +831,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 
     let mut seen_deny_paths: HashSet<PathBuf> = HashSet::new();
     let mut seen_write_roots: HashSet<PathBuf> = HashSet::new();
-    let canonical_command_cwd = canonicalize_path(&payload.command_cwd);
-
     for root in &payload.write_roots {
         if !seen_write_roots.insert(root.clone()) {
             continue;
@@ -862,35 +842,25 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
             )?;
             continue;
         }
-        let mut need_grant = false;
-        let is_command_cwd = is_command_cwd_root(root, &canonical_command_cwd);
-        let cap_label = if is_command_cwd {
-            "workspace_cap"
-        } else {
-            "root_cap"
-        };
         let root_cap_sid_str =
-            workspace_write_cap_sid_for_root(&payload.autoreport_home, &payload.command_cwd, root)?;
+            workspace_write_cap_sid_for_root(&payload.codex_home, &payload.command_cwd, root)?;
         let root_cap_psid = unsafe {
             convert_string_sid_to_sid(&root_cap_sid_str)
                 .ok_or_else(|| anyhow::anyhow!("convert write root capability SID failed"))?
         };
-        for (label, psid) in [
-            ("sandbox_group", sandbox_group_psid),
-            (cap_label, root_cap_psid),
-        ] {
-            let needs_refresh = match write_root_needs_refresh(root, psid) {
+        let need_grant =
+            match path_write_aces_need_refresh(root, &[sandbox_group_psid, root_cap_psid]) {
                 Ok(needs_refresh) => needs_refresh,
                 Err(e) => {
                     refresh_errors.push(format!(
-                        "write ACE check failed on {} for {label}: {}",
+                        "write ACE check failed on {}: {}",
                         root.display(),
                         e
                     ));
                     log_line(
                         log,
                         &format!(
-                            "write ACE check failed on {} for {label}: {}; continuing",
+                            "write ACE check failed on {}: {}; continuing",
                             root.display(),
                             e
                         ),
@@ -898,10 +868,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
                     true
                 }
             };
-            if needs_refresh {
-                need_grant = true;
-            }
-        }
         unsafe {
             LocalFree(root_cap_psid as HLOCAL);
         }
@@ -970,7 +936,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
 
         // These are deny-write carveouts, not deny-read paths. They may come from explicit
         // read-only-under-a-writable-root carveouts in the transformed sandbox policy, or from
-        // legacy protected children such as `.git`, `.autoreport`, and `.agents`.
+        // legacy protected children such as `.git`, `.codex`, and `.agents`.
         //
         // Deny ACEs attach to filesystem objects; if an explicit policy carveout does not exist
         // during setup, the sandbox could otherwise create it later under a writable parent and
@@ -983,7 +949,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         }
 
         let deny_sid_strs = workspace_write_cap_sids_for_path(
-            &payload.autoreport_home,
+            &payload.codex_home,
             &payload.command_cwd,
             &payload.write_roots,
             path,
@@ -1055,12 +1021,13 @@ mod tests {
     use super::WRITE_ROOT_ALLOW_MASK;
     use super::convert_string_sid_to_sid;
     use super::workspace_write_cap_sids_for_path;
-    use super::write_root_needs_refresh;
-    use autoreport_otel::StatsigMetricsSettings;
     use autoreport_windows_sandbox::ensure_allow_mask_aces;
     use autoreport_windows_sandbox::ensure_allow_write_aces;
     use autoreport_windows_sandbox::load_or_create_cap_sids;
+    use autoreport_windows_sandbox::path_mask_allows;
+    use autoreport_windows_sandbox::path_write_aces_need_refresh;
     use autoreport_windows_sandbox::workspace_write_cap_sid_for_root;
+    use codex_otel::StatsigMetricsSettings;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::fs;
@@ -1071,9 +1038,9 @@ mod tests {
     fn payload_json() -> serde_json::Value {
         json!({
             "version": SETUP_VERSION,
-            "offline_username": "AutoReportSandboxOffline",
-            "online_username": "AutoReportSandboxOnline",
-            "autoreport_home": "C:\\autoreport-home",
+            "offline_username": "CodexSandboxOffline",
+            "online_username": "CodexSandboxOnline",
+            "codex_home": "C:\\codex-home",
             "command_cwd": "C:\\workspace",
             "read_roots": [],
             "write_roots": [],
@@ -1117,23 +1084,23 @@ mod tests {
     #[test]
     fn write_root_refresh_replaces_stale_delete_child_grant() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let autoreport_home = temp.path().join("autoreport-home");
+        let codex_home = temp.path().join("codex-home");
         let workspace = temp.path().join("workspace");
-        fs::create_dir_all(&autoreport_home).expect("create autoreport home");
+        fs::create_dir_all(&codex_home).expect("create codex home");
         fs::create_dir_all(&workspace).expect("create workspace");
 
-        let sid = workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &workspace)
+        let sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
             .expect("workspace sid");
         let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
         let stale_write_mask = WRITE_ROOT_ALLOW_MASK | FILE_DELETE_CHILD;
         let seeded = unsafe { ensure_allow_mask_aces(&workspace, &[psid], stale_write_mask) }
             .expect("seed stale write ACE");
         let needs_refresh_before =
-            write_root_needs_refresh(&workspace, psid).expect("check stale write ACE");
+            path_write_aces_need_refresh(&workspace, &[psid]).expect("check stale write ACE");
         let replaced = unsafe { ensure_allow_write_aces(&workspace, &[psid]) }
             .expect("replace stale write ACE");
         let needs_refresh_after =
-            write_root_needs_refresh(&workspace, psid).expect("check refreshed write ACE");
+            path_write_aces_need_refresh(&workspace, &[psid]).expect("check refreshed write ACE");
         unsafe {
             LocalFree(psid as HLOCAL);
         }
@@ -1145,31 +1112,119 @@ mod tests {
     }
 
     #[test]
+    fn write_root_refresh_checks_each_sid() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join("codex-home");
+        let workspace = temp.path().join("workspace");
+        let other_root = temp.path().join("other-root");
+        fs::create_dir_all(&codex_home).expect("create codex home");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&other_root).expect("create other root");
+
+        let workspace_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let other_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &other_root)
+            .expect("other root sid");
+        let workspace_psid =
+            unsafe { convert_string_sid_to_sid(&workspace_sid).expect("convert workspace sid") };
+        let other_psid =
+            unsafe { convert_string_sid_to_sid(&other_sid).expect("convert other root sid") };
+
+        let seeded = unsafe { ensure_allow_write_aces(&workspace, &[workspace_psid]) }
+            .expect("seed workspace SID");
+        let needs_refresh_before =
+            path_write_aces_need_refresh(&workspace, &[workspace_psid, other_psid])
+                .expect("check both SIDs");
+        let refreshed =
+            unsafe { ensure_allow_write_aces(&workspace, &[workspace_psid, other_psid]) }
+                .expect("refresh both SIDs");
+        let needs_refresh_after =
+            path_write_aces_need_refresh(&workspace, &[workspace_psid, other_psid])
+                .expect("recheck both SIDs");
+        unsafe {
+            LocalFree(workspace_psid as HLOCAL);
+            LocalFree(other_psid as HLOCAL);
+        }
+
+        assert_eq!(
+            (seeded, needs_refresh_before, refreshed, needs_refresh_after,),
+            (true, true, true, false)
+        );
+    }
+
+    #[test]
+    fn write_root_refresh_ignores_inherited_delete_child_grant() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join("codex-home");
+        let parent = temp.path().join("parent");
+        let workspace = parent.join("workspace");
+        fs::create_dir_all(&codex_home).expect("create codex home");
+        fs::create_dir_all(&workspace).expect("create workspace");
+
+        let sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let psid = unsafe { convert_string_sid_to_sid(&sid).expect("convert workspace sid") };
+        let seeded_explicit =
+            unsafe { ensure_allow_mask_aces(&workspace, &[psid], WRITE_ROOT_ALLOW_MASK) }
+                .expect("seed explicit write ACE");
+        let seeded_parent = unsafe {
+            ensure_allow_mask_aces(&parent, &[psid], WRITE_ROOT_ALLOW_MASK | FILE_DELETE_CHILD)
+        }
+        .expect("seed inherited stale write ACE");
+        let has_inherited_delete_child = path_mask_allows(
+            &workspace,
+            &[psid],
+            FILE_DELETE_CHILD,
+            /*require_all_bits*/ false,
+        )
+        .expect("check inherited stale write ACE");
+        let needs_refresh = path_write_aces_need_refresh(&workspace, &[psid])
+            .expect("check inherited stale write ACE");
+        let first_refresh = unsafe { ensure_allow_write_aces(&workspace, &[psid]) }
+            .expect("first inherited write ACE refresh");
+        let second_refresh = unsafe { ensure_allow_write_aces(&workspace, &[psid]) }
+            .expect("second inherited write ACE refresh");
+        unsafe {
+            LocalFree(psid as HLOCAL);
+        }
+
+        assert_eq!(
+            (
+                seeded_explicit,
+                seeded_parent,
+                has_inherited_delete_child,
+                needs_refresh,
+                first_refresh,
+                second_refresh,
+            ),
+            (true, true, true, false, false, false)
+        );
+    }
+
+    #[test]
     fn deny_path_under_active_root_uses_only_matching_root_sid() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let autoreport_home = temp.path().join("autoreport-home");
+        let codex_home = temp.path().join("codex-home");
         let workspace = temp.path().join("workspace");
         let active_root = temp.path().join("active-root");
         let stale_root = temp.path().join("stale-root");
         let deny_path = active_root.join("protected");
-        fs::create_dir_all(&autoreport_home).expect("create autoreport home");
+        fs::create_dir_all(&codex_home).expect("create codex home");
         fs::create_dir_all(&workspace).expect("create workspace");
         fs::create_dir_all(&active_root).expect("create active root");
         fs::create_dir_all(&stale_root).expect("create stale root");
         fs::create_dir_all(&deny_path).expect("create deny path");
 
-        let stale_sid = workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &stale_root)
+        let stale_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &stale_root)
             .expect("stale sid");
-        let active_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &active_root)
-                .expect("active sid");
-        let workspace_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &workspace)
-                .expect("workspace sid");
-        let caps = load_or_create_cap_sids(&autoreport_home).expect("load caps");
+        let active_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &active_root)
+            .expect("active sid");
+        let workspace_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let caps = load_or_create_cap_sids(&codex_home).expect("load caps");
 
         let deny_sids = workspace_write_cap_sids_for_path(
-            &autoreport_home,
+            &codex_home,
             &workspace,
             &[workspace.clone(), active_root],
             &deny_path,
@@ -1185,29 +1240,27 @@ mod tests {
     #[test]
     fn deny_path_outside_active_roots_falls_back_to_all_active_root_sids() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let autoreport_home = temp.path().join("autoreport-home");
+        let codex_home = temp.path().join("codex-home");
         let workspace = temp.path().join("workspace");
         let active_root = temp.path().join("active-root");
         let stale_root = temp.path().join("stale-root");
         let deny_path = temp.path().join("outside-deny");
-        fs::create_dir_all(&autoreport_home).expect("create autoreport home");
+        fs::create_dir_all(&codex_home).expect("create codex home");
         fs::create_dir_all(&workspace).expect("create workspace");
         fs::create_dir_all(&active_root).expect("create active root");
         fs::create_dir_all(&stale_root).expect("create stale root");
         fs::create_dir_all(&deny_path).expect("create deny path");
 
-        let stale_sid = workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &stale_root)
+        let stale_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &stale_root)
             .expect("stale sid");
-        let active_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &active_root)
-                .expect("active sid");
-        let workspace_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &workspace)
-                .expect("workspace sid");
-        let caps = load_or_create_cap_sids(&autoreport_home).expect("load caps");
+        let active_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &active_root)
+            .expect("active sid");
+        let workspace_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let caps = load_or_create_cap_sids(&codex_home).expect("load caps");
 
         let deny_sids = workspace_write_cap_sids_for_path(
-            &autoreport_home,
+            &codex_home,
             &workspace,
             &[workspace.clone(), active_root],
             &deny_path,
@@ -1224,23 +1277,21 @@ mod tests {
     #[test]
     fn deny_path_includes_nested_active_root_sid() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let autoreport_home = temp.path().join("autoreport-home");
+        let codex_home = temp.path().join("codex-home");
         let workspace = temp.path().join("workspace");
-        let protected_dir = workspace.join(".autoreport");
+        let protected_dir = workspace.join(".codex");
         let nested_root = protected_dir.join("nested-root");
-        fs::create_dir_all(&autoreport_home).expect("create autoreport home");
+        fs::create_dir_all(&codex_home).expect("create codex home");
         fs::create_dir_all(&workspace).expect("create workspace");
         fs::create_dir_all(&nested_root).expect("create nested root");
 
-        let workspace_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &workspace)
-                .expect("workspace sid");
-        let nested_sid =
-            workspace_write_cap_sid_for_root(&autoreport_home, &workspace, &nested_root)
-                .expect("nested sid");
+        let workspace_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &workspace)
+            .expect("workspace sid");
+        let nested_sid = workspace_write_cap_sid_for_root(&codex_home, &workspace, &nested_root)
+            .expect("nested sid");
 
         let deny_sids = workspace_write_cap_sids_for_path(
-            &autoreport_home,
+            &codex_home,
             &workspace,
             &[workspace.clone(), nested_root],
             &protected_dir,

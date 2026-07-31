@@ -134,9 +134,9 @@ mod tests {
     fn fuzzy_matches_filename() {
         let dir = std::env::temp_dir().join(format!("fs-{}", stamp()));
         std::fs::create_dir_all(dir.join("Data/Processed")).unwrap();
-        std::fs::create_dir_all(dir.join("Tex")).unwrap();
+        std::fs::create_dir_all(dir.join("Report")).unwrap();
         std::fs::write(dir.join("Data/Processed/out.csv"), "x").unwrap();
-        std::fs::write(dir.join("Tex/main.tex"), "x").unwrap();
+        std::fs::write(dir.join("Report/main.tex"), "x").unwrap();
         let idx = FileIndex::new(&dir);
         idx.refresh();
         let m = idx.search("out", 10);

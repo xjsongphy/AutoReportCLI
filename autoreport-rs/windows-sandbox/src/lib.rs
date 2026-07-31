@@ -35,7 +35,16 @@ impl fmt::Debug for WindowsSandboxCancellationToken {
     }
 }
 
-pub use autoreport_protocol::WindowsSandboxProxySettingsMode;
+pub use autoreport_codex_protocol::config_types::WindowsSandboxProxySettingsMode;
+
+/// Network settings installed by an administrator during managed Windows sandbox setup.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowsSandboxProvisioningSettings {
+    /// Loopback proxy ports permitted for the offline sandbox identity.
+    pub proxy_ports: Vec<u16>,
+    /// Whether the offline sandbox identity may exchange arbitrary loopback traffic.
+    pub allow_local_binding: bool,
+}
 
 #[cfg(target_os = "windows")]
 mod acl;
@@ -141,6 +150,8 @@ pub use acl::fetch_dacl_handle;
 #[cfg(target_os = "windows")]
 pub use acl::path_mask_allows;
 #[cfg(target_os = "windows")]
+pub use acl::path_write_aces_need_refresh;
+#[cfg(target_os = "windows")]
 pub use audit::apply_world_writable_scan_and_denies_for_permissions;
 #[cfg(target_os = "windows")]
 pub use cap::load_or_create_cap_sids;
@@ -218,7 +229,7 @@ pub use ipc_framed::write_frame;
 #[cfg(target_os = "windows")]
 pub use logging::current_log_file_path;
 #[cfg(target_os = "windows")]
-pub use logging::current_log_file_path_for_autoreport_home;
+pub use logging::current_log_file_path_for_codex_home;
 #[cfg(target_os = "windows")]
 pub use logging::log_file_path_for_utc_date;
 #[cfg(target_os = "windows")]
@@ -227,6 +238,8 @@ pub use logging::log_note;
 pub use logging::log_writer;
 #[cfg(target_os = "windows")]
 pub use path_normalization::canonicalize_path;
+#[cfg(target_os = "windows")]
+pub use process::ConsoleMode;
 #[cfg(target_os = "windows")]
 pub use process::PipeSpawnHandles;
 #[cfg(target_os = "windows")]
@@ -344,9 +357,11 @@ pub use stub::run_windows_sandbox_legacy_preflight;
 mod windows_impl {
     use super::WindowsSandboxCancellationToken;
     use super::logging::log_failure;
+    use super::logging::log_note;
     use super::logging::log_success;
+    use super::process::ConsoleMode;
     use super::process::create_process_as_user;
-    use super::sandbox_utils::ensure_autoreport_home_exists;
+    use super::sandbox_utils::ensure_codex_home_exists;
     use super::spawn_prep::LegacyAclSids;
     use super::spawn_prep::SpawnPrepOptions;
     use super::spawn_prep::allow_null_device_for_workspace_write;
@@ -356,12 +371,13 @@ mod windows_impl {
     use super::spawn_prep::prepare_legacy_spawn_context;
     use super::spawn_prep::root_capability_sids;
     use anyhow::Result;
-    use autoreport_protocol::models::PermissionProfile;
+    use autoreport_codex_protocol::models::PermissionProfile;
     use autoreport_utils_absolute_path::AbsolutePathBuf;
     use std::collections::HashMap;
     use std::io;
     use std::path::Path;
     use std::ptr;
+    use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
     use windows_sys::Win32::Foundation::CloseHandle;
@@ -459,7 +475,7 @@ mod windows_impl {
     pub fn run_windows_sandbox_capture(
         permission_profile: &PermissionProfile,
         workspace_roots: &[AbsolutePathBuf],
-        autoreport_home: &Path,
+        codex_home: &Path,
         command: Vec<String>,
         cwd: &Path,
         env_map: HashMap<String, String>,
@@ -470,7 +486,7 @@ mod windows_impl {
         run_windows_sandbox_capture_with_filesystem_overrides(
             permission_profile,
             workspace_roots,
-            autoreport_home,
+            codex_home,
             command,
             cwd,
             env_map,
@@ -486,7 +502,7 @@ mod windows_impl {
     pub fn run_windows_sandbox_capture_with_filesystem_overrides(
         permission_profile: &PermissionProfile,
         workspace_roots: &[AbsolutePathBuf],
-        autoreport_home: &Path,
+        codex_home: &Path,
         command: Vec<String>,
         cwd: &Path,
         mut env_map: HashMap<String, String>,
@@ -507,7 +523,7 @@ mod windows_impl {
         let common = prepare_legacy_spawn_context(
             permission_profile,
             workspace_roots,
-            autoreport_home,
+            codex_home,
             cwd,
             &mut env_map,
             &command,
@@ -531,17 +547,17 @@ mod windows_impl {
             anyhow::bail!("deny-read overrides require the elevated Windows sandbox backend");
         }
         let capability_roots =
-            legacy_session_capability_roots(&permissions, &current_dir, &env_map, autoreport_home);
+            legacy_session_capability_roots(&permissions, &current_dir, &env_map, codex_home);
         let security = prepare_legacy_session_security(
             uses_write_capabilities,
-            autoreport_home,
+            codex_home,
             cwd,
             capability_roots,
         )?;
         allow_null_device_for_workspace_write(uses_write_capabilities);
         apply_legacy_session_acl_rules(
             &permissions,
-            autoreport_home,
+            codex_home,
             &current_dir,
             &env_map,
             &additional_deny_read_paths,
@@ -562,6 +578,7 @@ mod windows_impl {
                 &env_map,
                 logs_base_dir,
                 Some((in_r, out_w, err_w)),
+                ConsoleMode::Inherit,
                 use_private_desktop,
             )
         };
@@ -581,6 +598,7 @@ mod windows_impl {
             }
         };
         let pi = created.process_info;
+        let job = Arc::clone(&created.job);
         let _desktop = created;
 
         unsafe {
@@ -644,10 +662,30 @@ mod windows_impl {
             unsafe {
                 GetExitCodeProcess(pi.hProcess, &mut exit_code_u32);
             }
-        } else {
-            unsafe {
-                windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1);
+        }
+        if timed_out || cancelled {
+            if let Err(job_err) = job.terminate() {
+                log_note(
+                    &format!("capture failed to terminate process tree: {job_err}"),
+                    logs_base_dir,
+                );
+                let root_result = unsafe {
+                    windows_sys::Win32::System::Threading::TerminateProcess(pi.hProcess, 1)
+                };
+                if root_result == 0 {
+                    log_note(
+                        &format!("capture failed to terminate root process: {}", unsafe {
+                            GetLastError()
+                        }),
+                        logs_base_dir,
+                    );
+                }
             }
+        } else if let Err(err) = job.preserve_descendants() {
+            log_note(
+                &format!("capture failed to preserve descendants after root exit: {err}"),
+                logs_base_dir,
+            );
         }
 
         unsafe {
@@ -686,7 +724,7 @@ mod windows_impl {
     pub fn run_windows_sandbox_legacy_preflight(
         permission_profile: &PermissionProfile,
         workspace_roots: &[AbsolutePathBuf],
-        autoreport_home: &Path,
+        codex_home: &Path,
         cwd: &Path,
         env_map: &HashMap<String, String>,
     ) -> Result<()> {
@@ -700,14 +738,14 @@ mod windows_impl {
             return Ok(());
         }
 
-        ensure_autoreport_home_exists(autoreport_home)?;
+        ensure_codex_home_exists(codex_home)?;
         let current_dir = cwd.to_path_buf();
         let capability_roots =
-            legacy_session_capability_roots(&permissions, &current_dir, env_map, autoreport_home);
-        let write_root_sids = root_capability_sids(autoreport_home, cwd, capability_roots)?;
+            legacy_session_capability_roots(&permissions, &current_dir, env_map, codex_home);
+        let write_root_sids = root_capability_sids(codex_home, cwd, capability_roots)?;
         apply_legacy_session_acl_rules(
             &permissions,
-            autoreport_home,
+            codex_home,
             &current_dir,
             env_map,
             &[],
@@ -725,8 +763,8 @@ mod windows_impl {
     #[cfg(test)]
     mod tests {
         use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
-        use autoreport_protocol::models::PermissionProfile;
-        use autoreport_protocol::permissions::NetworkSandboxPolicy;
+        use autoreport_codex_protocol::models::PermissionProfile;
+        use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
         use std::collections::HashMap;
         use std::path::Path;
 
@@ -793,7 +831,7 @@ mod stub {
     use super::WindowsSandboxCancellationToken;
     use anyhow::Result;
     use anyhow::bail;
-    use autoreport_protocol::models::PermissionProfile;
+    use autoreport_codex_protocol::models::PermissionProfile;
     use autoreport_utils_absolute_path::AbsolutePathBuf;
     use std::collections::HashMap;
     use std::path::Path;
@@ -810,7 +848,7 @@ mod stub {
     pub fn run_windows_sandbox_capture(
         _permission_profile: &PermissionProfile,
         _workspace_roots: &[AbsolutePathBuf],
-        _autoreport_home: &Path,
+        _codex_home: &Path,
         _command: Vec<String>,
         _cwd: &Path,
         _env_map: HashMap<String, String>,
@@ -824,7 +862,7 @@ mod stub {
     pub fn run_windows_sandbox_legacy_preflight(
         _permission_profile: &PermissionProfile,
         _workspace_roots: &[AbsolutePathBuf],
-        _autoreport_home: &Path,
+        _codex_home: &Path,
         _cwd: &Path,
         _env_map: &HashMap<String, String>,
     ) -> Result<()> {

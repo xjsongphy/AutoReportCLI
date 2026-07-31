@@ -1,7 +1,7 @@
 //! Full-screen API configuration screen.
 //!
 //! Two lifecycle modes share one render + key-handling implementation:
-//! `run_fullscreen` (first-run wizard, standalone loop) and the `/config`
+//! `run_fullscreen` (first-run wizard, standalone loop) and the `/model`
 //! overlay (driven by `tui.rs`).
 
 use crate::custom_terminal::Frame;
@@ -1108,10 +1108,16 @@ impl ConfigScreen {
         loop {
             terminal.draw(|f| self.draw(f))?;
             // Blocking read: nothing else streams during the wizard.
-            if let event::Event::Key(key) = event::read()? {
-                if let Some(outcome) = self.handle_key(key) {
-                    return Ok(outcome);
+            match event::read()? {
+                event::Event::Resize(width, height) => {
+                    terminal.resize(ratatui::layout::Size::new(width, height))?;
                 }
+                event::Event::Key(key) => {
+                    if let Some(outcome) = self.handle_key(key) {
+                        return Ok(outcome);
+                    }
+                }
+                _ => {}
             }
         }
     }

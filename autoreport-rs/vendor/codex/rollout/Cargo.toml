@@ -1,0 +1,34 @@
+[package]
+name = "autoreport-codex-rollout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_codex_rollout"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+autoreport-extension-items = { workspace = true }
+autoreport-file-search = { workspace = true }
+autoreport-git-utils = { workspace = true }
+autoreport-otel = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+autoreport-state = { workspace = true }
+autoreport-utils-absolute-path = { workspace = true }
+autoreport-utils-path = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

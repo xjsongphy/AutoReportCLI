@@ -1,0 +1,23 @@
+[package]
+name = "autoreport-websocket-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_websocket_client"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-http-client = { workspace = true }
+futures = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+tokio-rustls = { workspace = true }
+tokio-tungstenite = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+autoreport-utils-rustls-provider = { workspace = true }
+pretty_assertions = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true, features = ["macros", "test-util"] }

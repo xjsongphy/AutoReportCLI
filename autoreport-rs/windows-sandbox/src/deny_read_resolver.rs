@@ -1,8 +1,8 @@
-use autoreport_protocol::permissions::FileSystemAccessMode;
-use autoreport_protocol::permissions::FileSystemPath;
-use autoreport_protocol::permissions::FileSystemSandboxEntry;
-use autoreport_protocol::permissions::FileSystemSandboxPolicy;
-use autoreport_protocol::permissions::ReadDenyMatcher;
+use autoreport_codex_protocol::permissions::FileSystemAccessMode;
+use autoreport_codex_protocol::permissions::FileSystemPath;
+use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
+use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
+use autoreport_codex_protocol::permissions::ReadDenyMatcher;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashSet;
 use std::path::Path;
@@ -15,7 +15,7 @@ struct GlobScanPlan {
 
 /// Resolve split filesystem `None` read entries into concrete Windows ACL targets.
 ///
-/// Windows ACLs do not understand AutoReport filesystem glob patterns directly. Exact
+/// Windows ACLs do not understand Codex filesystem glob patterns directly. Exact
 /// unreadable roots can be passed through as-is, including paths that do not
 /// exist yet. Glob entries are snapshot-expanded to the files/directories that
 /// already exist under their literal scan root; future exact paths are handled
@@ -44,6 +44,7 @@ pub fn resolve_windows_deny_read_paths(
                     pattern: pattern.clone(),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             })
             .collect(),
     );
@@ -189,10 +190,10 @@ fn effective_glob_scan_max_depth(
 mod tests {
     use super::glob_scan_plan;
     use super::resolve_windows_deny_read_paths;
-    use autoreport_protocol::permissions::FileSystemAccessMode;
-    use autoreport_protocol::permissions::FileSystemPath;
-    use autoreport_protocol::permissions::FileSystemSandboxEntry;
-    use autoreport_protocol::permissions::FileSystemSandboxPolicy;
+    use autoreport_codex_protocol::permissions::FileSystemAccessMode;
+    use autoreport_codex_protocol::permissions::FileSystemPath;
+    use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
+    use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
     use autoreport_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::collections::HashSet;
@@ -206,6 +207,7 @@ mod tests {
         FileSystemSandboxEntry {
             path: FileSystemPath::GlobPattern { pattern },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         }
     }
 
@@ -215,6 +217,7 @@ mod tests {
                 path: AbsolutePathBuf::from_absolute_path(path).expect("absolute path"),
             },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         }
     }
 

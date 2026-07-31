@@ -1,10 +1,10 @@
 use anyhow::Result;
-use autoreport_protocol::models::PermissionProfile;
-use autoreport_protocol::permissions::FileSystemPath;
-use autoreport_protocol::permissions::FileSystemSandboxEntry;
-use autoreport_protocol::permissions::FileSystemSandboxKind;
-use autoreport_protocol::permissions::FileSystemSandboxPolicy;
-use autoreport_protocol::permissions::NetworkSandboxPolicy;
+use autoreport_codex_protocol::models::PermissionProfile;
+use autoreport_codex_protocol::permissions::FileSystemPath;
+use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
+use autoreport_codex_protocol::permissions::FileSystemSandboxKind;
+use autoreport_codex_protocol::permissions::FileSystemSandboxPolicy;
+use autoreport_codex_protocol::permissions::NetworkSandboxPolicy;
 use autoreport_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::path::Path;
@@ -138,8 +138,8 @@ impl ResolvedWindowsSandboxPermissions {
                 !matches!(
                     path,
                     FileSystemPath::Special {
-                        value: autoreport_protocol::permissions::FileSystemSpecialPath::Tmpdir
-                            | autoreport_protocol::permissions::FileSystemSpecialPath::SlashTmp,
+                        value: autoreport_codex_protocol::permissions::FileSystemSpecialPath::Tmpdir
+                            | autoreport_codex_protocol::permissions::FileSystemSpecialPath::SlashTmp,
                     }
                 )
             });
@@ -173,11 +173,12 @@ impl ResolvedWindowsSandboxPermissions {
         self.file_system
             .entries
             .iter()
-            .any(|FileSystemSandboxEntry { path, access }| {
+            .any(|FileSystemSandboxEntry { path, access, .. }| {
                 matches!(
                     path,
                     FileSystemPath::Special {
-                        value: autoreport_protocol::permissions::FileSystemSpecialPath::Tmpdir,
+                        value:
+                            autoreport_codex_protocol::permissions::FileSystemSpecialPath::Tmpdir,
                     }
                 ) && access.can_write()
             })
@@ -200,11 +201,11 @@ fn windows_temp_env_roots(env_map: &HashMap<String, String>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autoreport_protocol::models::ManagedFileSystemPermissions;
-    use autoreport_protocol::permissions::FileSystemAccessMode;
-    use autoreport_protocol::permissions::FileSystemSandboxEntry;
-    use autoreport_protocol::permissions::FileSystemSpecialPath;
-    use autoreport_protocol::permissions::project_roots_glob_pattern;
+    use autoreport_codex_protocol::models::ManagedFileSystemPermissions;
+    use autoreport_codex_protocol::permissions::FileSystemAccessMode;
+    use autoreport_codex_protocol::permissions::FileSystemSandboxEntry;
+    use autoreport_codex_protocol::permissions::FileSystemSpecialPath;
+    use autoreport_codex_protocol::permissions::project_roots_glob_pattern;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -258,6 +259,7 @@ mod tests {
                         value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 }],
                 glob_scan_max_depth: None,
             },
@@ -298,18 +300,21 @@ mod tests {
                             value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Special {
                             value: FileSystemSpecialPath::project_roots(Some(".git".into())),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::GlobPattern {
                             pattern: project_roots_glob_pattern(Path::new("**/*.env")),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: None,
@@ -332,24 +337,28 @@ mod tests {
                         path: first.clone(),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
                         path: second.clone(),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
                         path: first.join(".git"),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
                         path: second.join(".git"),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
@@ -361,6 +370,7 @@ mod tests {
                         .into_owned(),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
@@ -372,6 +382,7 @@ mod tests {
                         .into_owned(),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
             ])
         );
@@ -455,6 +466,7 @@ mod tests {
                         value: FileSystemSpecialPath::Root,
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 }],
                 glob_scan_max_depth: None,
             },

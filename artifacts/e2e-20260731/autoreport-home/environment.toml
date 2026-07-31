@@ -1,0 +1,5 @@
+[python]
+source = "conda"
+executable = "/Applications/miniforge3/bin/python3.13"
+package_manager = "uv"
+label = "Conda · /Applications/miniforge3"

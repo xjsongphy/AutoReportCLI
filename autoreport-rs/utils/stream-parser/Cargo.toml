@@ -1,0 +1,12 @@
+[package]
+name = "autoreport-utils-stream-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_utils_stream_parser"
+path = "src/lib.rs"
+doctest = false
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

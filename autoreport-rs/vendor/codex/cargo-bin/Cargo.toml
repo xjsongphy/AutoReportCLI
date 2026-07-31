@@ -1,0 +1,10 @@
+[package]
+name = "autoreport-utils-cargo-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "autoreport_utils_cargo_bin"
+test = false
+doctest = false
