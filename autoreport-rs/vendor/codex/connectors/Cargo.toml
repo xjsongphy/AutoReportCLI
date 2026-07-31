@@ -23,3 +23,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
