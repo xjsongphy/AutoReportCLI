@@ -19,6 +19,7 @@ members = [
     "autoreport-rs/vendor/codex/memories-read",
     "autoreport-rs/vendor/codex/models-manager",
     "autoreport-rs/vendor/codex/rollout",
+    "autoreport-rs/vendor/codex/thread-store",
     "autoreport-rs/vendor/codex/git-utils",
     "autoreport-rs/vendor/codex/agent-identity",
     "autoreport-rs/vendor/codex/code-mode-protocol",
@@ -33,6 +34,7 @@ members = [
     "autoreport-rs/vendor/codex/skills",
     "autoreport-rs/vendor/codex/agent-graph-store",
     "autoreport-rs/vendor/codex/utils-plugins",
+    "autoreport-rs/vendor/codex/cargo-bin",
     "autoreport-rs/vendor/codex/apply-patch",
     "autoreport-rs/vendor/codex/collaboration-mode-templates",
     "autoreport-rs/vendor/codex/utils-template",
@@ -110,6 +112,7 @@ autoreport-file-search = { path = "autoreport-rs/vendor/codex/file-search" }
 autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
 autoreport-models-manager = { path = "autoreport-rs/vendor/codex/models-manager" }
 autoreport-codex-rollout = { path = "autoreport-rs/vendor/codex/rollout" }
+autoreport-thread-store = { path = "autoreport-rs/vendor/codex/thread-store" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
 autoreport-agent-identity = { path = "autoreport-rs/vendor/codex/agent-identity" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
@@ -125,6 +128,7 @@ autoreport-skills = { path = "autoreport-rs/vendor/codex/skills" }
 autoreport-agent-graph-store = { path = "autoreport-rs/vendor/codex/agent-graph-store" }
 autoreport-utils-plugins = { path = "autoreport-rs/vendor/codex/utils-plugins" }
 autoreport-apply-patch = { path = "autoreport-rs/vendor/codex/apply-patch" }
+autoreport-utils-cargo-bin = { path = "autoreport-rs/vendor/codex/cargo-bin" }
 autoreport-collaboration-mode-templates = { path = "autoreport-rs/vendor/codex/collaboration-mode-templates" }
 autoreport-utils-template = { path = "autoreport-rs/vendor/codex/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
@@ -147,6 +151,7 @@ autoreport-uds = { path = "autoreport-rs/uds" }
 autoreport-terminal-detection = { path = "autoreport-rs/terminal-detection" }
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
+assert_cmd = "2"
 assert_matches = "1.5.0"
 async-io = "2.6.0"
 async-channel = "2.3"
@@ -156,6 +161,7 @@ base64 = "0.22"
 constant_time_eq = "0.3"
 crypto_box = { version = "0.9", features = ["seal"] }
 crossbeam-channel = "0.5"
+ctor = "0.6.3"
 bytes = "1"
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -176,6 +182,7 @@ inventory = "0.3"
 rmcp = { version = "1.8", default-features = false }
 sha1 = "0.10"
 similar = "2.7.0"
+serial_test = "3.2.0"
 scopeguard = "1.2.0"
 sys-locale = "0.3"
 wildmatch = "2"
@@ -205,6 +212,7 @@ nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "4253de9faa
 os_info = "3"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", features = ["unstable-widget-ref", "unstable-rendered-line-info"] }
+runfiles = "0.3.0"
 regex = "1"
 regex-lite = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "stream", "rustls-tls"] }
@@ -226,10 +234,12 @@ rcgen = { version = "0.14.7", default-features = false, features = ["aws_lc_rs",
 serde_ignored = "0.1"
 serde_path_to_error = "0.1"
 tempfile = "3"
+test-case = "3.3.1"
 toml = "0.8"
 jsonwebtoken = "9.3"
 eventsource-stream = "0.2"
 opentelemetry = "0.31"
+opentelemetry_sdk = "0.31"
 rand = "0.9"
 rustls-native-certs = "0.8"
 rustls-pki-types = "1.14"
