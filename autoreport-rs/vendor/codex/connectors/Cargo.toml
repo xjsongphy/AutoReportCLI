@@ -1,0 +1,25 @@
+[package]
+name = "autoreport-connectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+name = "autoreport_connectors"
+path = "src/lib.rs"
+doctest = false
+[dependencies]
+autoreport-config = { workspace = true }
+autoreport-login = { workspace = true }
+autoreport-otel = { workspace = true }
+autoreport-plugin = { workspace = true }
+autoreport-codex-protocol = { workspace = true }
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+urlencoding = { workspace = true }

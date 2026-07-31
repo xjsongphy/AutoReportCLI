@@ -26,6 +26,8 @@ members = [
     "autoreport-rs/vendor/codex/prompts",
     "autoreport-rs/vendor/codex/secrets",
     "autoreport-rs/vendor/codex/plugin",
+    "autoreport-rs/vendor/codex/hooks",
+    "autoreport-rs/vendor/codex/connectors",
     "autoreport-rs/vendor/codex/skills",
     "autoreport-rs/vendor/codex/agent-graph-store",
     "autoreport-rs/vendor/codex/utils-plugins",
@@ -113,6 +115,8 @@ autoreport-login = { path = "autoreport-rs/vendor/codex/login" }
 autoreport-prompts = { path = "autoreport-rs/vendor/codex/prompts" }
 autoreport-secrets = { path = "autoreport-rs/vendor/codex/secrets" }
 autoreport-plugin = { path = "autoreport-rs/vendor/codex/plugin" }
+autoreport-hooks = { path = "autoreport-rs/vendor/codex/hooks" }
+autoreport-connectors = { path = "autoreport-rs/vendor/codex/connectors" }
 autoreport-skills = { path = "autoreport-rs/vendor/codex/skills" }
 autoreport-agent-graph-store = { path = "autoreport-rs/vendor/codex/agent-graph-store" }
 autoreport-utils-plugins = { path = "autoreport-rs/vendor/codex/utils-plugins" }
