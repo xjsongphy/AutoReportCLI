@@ -15,6 +15,7 @@ members = [
     "autoreport-rs/vendor/codex/response-debug-context",
     "autoreport-rs/vendor/codex/model-provider-info",
     "autoreport-rs/vendor/codex/file-system",
+    "autoreport-rs/vendor/codex/file-search",
     "autoreport-rs/vendor/codex/memories-read",
     "autoreport-rs/vendor/codex/models-manager",
     "autoreport-rs/vendor/codex/git-utils",
@@ -104,6 +105,7 @@ autoreport-features = { path = "autoreport-rs/vendor/codex/features" }
 autoreport-response-debug-context = { path = "autoreport-rs/vendor/codex/response-debug-context" }
 autoreport-model-provider-info = { path = "autoreport-rs/vendor/codex/model-provider-info" }
 autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
+autoreport-file-search = { path = "autoreport-rs/vendor/codex/file-search" }
 autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
 autoreport-models-manager = { path = "autoreport-rs/vendor/codex/models-manager" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
@@ -151,6 +153,7 @@ axum = { version = "0.8", default-features = false, features = ["ws", "http1", "
 base64 = "0.22"
 constant_time_eq = "0.3"
 crypto_box = { version = "0.9", features = ["seal"] }
+crossbeam-channel = "0.5"
 bytes = "1"
 chardetng = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -196,7 +199,7 @@ libc = "0.2"
 once_cell = "1"
 landlock = "0.4.4"
 log = "0.4"
-nucleo = "0.5"
+nucleo = { git = "https://github.com/helix-editor/nucleo.git", rev = "4253de9faabb4e5c6d81d946a5e35a90f87347ee" }
 os_info = "3"
 pulldown-cmark = { version = "0.12", default-features = false }
 ratatui = { version = "0.29", features = ["unstable-widget-ref", "unstable-rendered-line-info"] }
