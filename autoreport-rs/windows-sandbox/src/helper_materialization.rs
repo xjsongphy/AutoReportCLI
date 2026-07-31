@@ -569,6 +569,6 @@ mod tests {
     fn materialized_file_name_adds_suffix_before_extension() {
         let file_name = materialized_file_name(HelperExecutable::CommandRunner, "test-suffix");
 
-        assert_eq!(file_name, "codex-command-runner-test-suffix.exe");
+        assert_eq!(file_name, "autoreport-command-runner-test-suffix.exe");
     }
 }

@@ -10,6 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows sandbox test helpers
+        shell: bash
+        run: |
+          cargo build -p autoreport-windows-sandbox \
+            --bin autoreport-windows-sandbox-setup \
+            --bin autoreport-command-runner
+          # Unit tests run from target/debug/deps; place the runtime helpers
+          # beside the test binaries so the sandbox lookup can resolve them.
+          cp target/debug/autoreport-windows-sandbox-setup.exe target/debug/deps/
+          cp target/debug/autoreport-command-runner.exe target/debug/deps/
       - name: Test native Windows sandbox backend
         shell: bash
         run: |
