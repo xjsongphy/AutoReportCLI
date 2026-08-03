@@ -3,70 +3,231 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
-# Cancel in-progress runs on the same ref when a new commit is pushed.
+permissions:
+  contents: read
+
+# A newer commit on the same branch or pull request supersedes older work.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   fmt:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
+          cache-key: ci-format
           components: rustfmt
-      - name: Cache cargo registry + build artifacts
-        uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  lint-test:
-    name: clippy + test (${{ matrix.os }})
+  platform-check:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    name: platform-check (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - platform: linux
+            os: ubuntu-latest
+            components: clippy
+          - platform: macos
+            os: macos-latest
+            components: ""
+          - platform: windows
+            os: windows-latest
+            components: ""
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
-          components: clippy
-      - name: Cache cargo registry + build artifacts
-        uses: Swatinem/rust-cache@v2
-      - name: Install Linux sandbox build deps
-        if: runner.os == 'Linux'
+          cache-key: ci-${{ matrix.platform }}
+          components: ${{ matrix.components }}
+
+      - name: Install Linux sandbox dependencies
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes bubblewrap libcap-dev pkg-config
-      # Clippy's `correctness`/`suspicious` lint groups are deny-by-default,
-      # so this still fails on real lint errors without treating every style
-      # warning (e.g. provisional dead_code during feature work) as fatal.
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets
+
+      - name: Run Linux Clippy
+        if: matrix.platform == 'linux'
+        run: cargo clippy --locked --workspace --all-targets
+
       - name: Build Linux sandbox helper for tools isolation test
-        # The autoreport-tools `isolation` integration test spawns sandboxed
-        # exec, which on Linux needs the autoreport-linux-sandbox binary.
-        # `cargo test --workspace` doesn't place workspace bin targets into
-        # deps/, so build it and point the ExecTool at it via the env var it
-        # already reads (mirrors codex's rust-ci-full-nextest-platform.yml,
-        # which builds codex-linux-sandbox and hands it to the test harness).
-        if: runner.os == 'Linux'
+        if: matrix.platform == 'linux'
         run: |
-          cargo build -p autoreport-linux-sandbox
+          cargo build --locked -p autoreport-linux-sandbox
           echo "AUTOREPORT_LINUX_SANDBOX_EXE=${PWD}/target/debug/autoreport-linux-sandbox" >> "$GITHUB_ENV"
-      - name: Test
-        # The four sandbox crates are tested natively on their own OS in the
-        # linux-sandbox / macos-sandbox / windows-sandbox workflows; exclude
-        # them here to avoid the overlap. They still compile (core/cli/runtime
-        # depend on autoreport-sandboxing) — we just skip their test binaries.
-        run: >
-          cargo test --workspace
-          --exclude autoreport-sandboxing
-          --exclude autoreport-bwrap
-          --exclude autoreport-linux-sandbox
-          --exclude autoreport-windows-sandbox
+
+      - name: Test Linux workspace
+        if: matrix.platform == 'linux'
+        run: |
+          cargo test --locked --workspace \
+            --exclude autoreport-sandboxing \
+            --exclude autoreport-bwrap \
+            --exclude autoreport-linux-sandbox \
+            --exclude autoreport-windows-sandbox
+
+      - name: Test native Linux sandbox
+        if: matrix.platform == 'linux'
+        run: cargo test --locked -p autoreport-bwrap -p autoreport-linux-sandbox -p autoreport-sandboxing
+
+      - name: Check macOS workspace
+        if: matrix.platform == 'macos'
+        run: cargo check --locked --workspace --all-targets
+
+      - name: Test native macOS sandbox
+        if: matrix.platform == 'macos'
+        run: |
+          cargo test --locked -p autoreport-sandboxing
+          cargo test --locked -p autoreport-tools --test isolation
+
+      - name: Build Windows sandbox test helpers
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          cargo build --locked -p autoreport-windows-sandbox \
+            --bin autoreport-windows-sandbox-setup \
+            --bin autoreport-command-runner
+          # Unit tests run from target/debug/deps; place runtime helpers beside
+          # the test binaries so the sandbox lookup can resolve them.
+          cp target/debug/autoreport-windows-sandbox-setup.exe target/debug/deps/
+          cp target/debug/autoreport-command-runner.exe target/debug/deps/
+
+      - name: Check Windows CLI
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: cargo check --locked -p autoreport-cli
+
+      - name: Test native Windows sandbox
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: cargo test --locked -p autoreport-windows-sandbox -p autoreport-sandboxing
+
+  package:
+    if: github.event_name != 'pull_request'
+    name: package (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - platform: macos
+            os: macos-latest
+            target: ""
+          - platform: windows
+            os: windows-latest
+            target: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: package-${{ matrix.platform }}
+          target: ${{ matrix.target }}
+
+      - name: Install Linux package dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap libcap-dev pkg-config
+
+      - name: Install Zig
+        if: matrix.platform == 'linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: matrix.platform == 'linux'
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        run: bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Build Linux release payload
+        if: matrix.platform == 'linux'
+        run: |
+          cargo build --locked --profile dist --target x86_64-unknown-linux-musl \
+            -p autoreport-cli -p autoreport-linux-sandbox -p autoreport-bwrap
+
+      - name: Stage Linux npm payload
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p .sandbox-payload/x86_64-unknown-linux-musl/bin
+          cp target/x86_64-unknown-linux-musl/dist/autoreport \
+            .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          cp target/x86_64-unknown-linux-musl/dist/autoreport-linux-sandbox \
+            .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          cp target/x86_64-unknown-linux-musl/dist/bwrap \
+            .sandbox-payload/x86_64-unknown-linux-musl/bin/
+          python3 autoreport-cli/scripts/build_npm_package.py \
+            --package linux-x64 --vendor-src .sandbox-payload --force
+
+      - name: Verify Linux npm payload
+        if: matrix.platform == 'linux'
+        run: |
+          test -x dist/npm/linux-x64/vendor/x86_64-unknown-linux-musl/bin/autoreport-linux-sandbox
+          test -x dist/npm/linux-x64/vendor/x86_64-unknown-linux-musl/autoreport-resources/bwrap
+
+      - name: Build Windows release payload
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          cargo build --locked --profile dist -p autoreport-cli
+          cargo build --locked --profile dist -p autoreport-windows-sandbox \
+            --bin autoreport-windows-sandbox-setup \
+            --bin autoreport-command-runner
+
+      - name: Verify Windows CLI dispatch
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          set +e
+          target/dist/autoreport.exe --run-as-windows-sandbox 2> wrapper-stderr.txt
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -q "windows sandbox failed:" wrapper-stderr.txt
+
+      - name: Stage Windows npm payload
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          mkdir -p .sandbox-payload/x86_64-pc-windows-msvc/bin
+          cp target/dist/autoreport.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          cp target/dist/autoreport-windows-sandbox-setup.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          cp target/dist/autoreport-command-runner.exe .sandbox-payload/x86_64-pc-windows-msvc/bin/
+          python autoreport-cli/scripts/build_npm_package.py \
+            --package win32-x64 --vendor-src .sandbox-payload --force
+
+      - name: Verify Windows npm payload
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/autoreport-resources/autoreport-windows-sandbox-setup.exe
+          test -f dist/npm/win32-x64/vendor/x86_64-pc-windows-msvc/autoreport-resources/autoreport-command-runner.exe
+
+      - name: Build macOS host package
+        if: matrix.platform == 'macos'
+        run: python3 autoreport-cli/scripts/build_npm_package.py --package host --force
+
+      - name: Verify macOS host package
+        if: matrix.platform == 'macos'
+        run: |
+          package_dir="dist/npm/$(python3 -c 'import platform; print("darwin-arm64" if platform.machine().lower() == "arm64" else "darwin-x64")')"
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -f "$package_dir/vendor/$target/autoreport-package.json"
