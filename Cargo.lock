@@ -932,6 +932,7 @@ dependencies = [
  "diffy",
  "futures",
  "libc",
+ "log",
  "serde",
  "serde_json",
  "tempfile",

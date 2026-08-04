@@ -585,6 +585,14 @@ async fn wait_for_report(
                     summary,
                     content,
                 } if agent_type == target && tid == task_id => {
+                    // Drain the durable record `respond` wrote via
+                    // `record_report`. The broadcast already delivered this
+                    // report; without the drain, a later re-dispatch of the
+                    // same `task_id` (board.start only resets status, never
+                    // clears reports) would hit the board fallback at the top
+                    // of the loop and return THIS stale report immediately,
+                    // never waiting for the sub's new response.
+                    let _ = board.take_report(task_id);
                     return WaitOutcome::Report {
                         report_type,
                         summary,
@@ -705,17 +713,13 @@ impl Tool for RespondTool {
             brief: task.brief.clone(),
         });
 
-        // Single reply channel: resolves Main's wait + marks this turn reported.
-        self.bus.publish(BusMessage::Report {
-            agent_type: self.agent,
-            task_id: task_id.clone(),
-            report_type: report_type.clone(),
-            summary: summary.clone(),
-            content: content.clone(),
-        });
-        // Also record the report on the board as the durable source of truth,
-        // so a dispatcher that misses the broadcast (Lagged overflow) can still
-        // recover it via `wait_for_report`'s board fallback.
+        // Record the report on the board FIRST as the durable source of truth,
+        // then publish the broadcast. Order matters: if a dispatcher in
+        // `wait_for_report` processes a `Lagged` between the two calls, its
+        // board fallback check must already find the record (otherwise it
+        // spuriously waits up to the idle budget). The broadcast is the
+        // single reply channel that resolves Main's wait + marks this turn
+        // reported.
         self.board.record_report(
             &task_id,
             autoreport_core::taskboard::ReportRecord {
@@ -724,6 +728,13 @@ impl Tool for RespondTool {
                 content: content.clone(),
             },
         );
+        self.bus.publish(BusMessage::Report {
+            agent_type: self.agent,
+            task_id: task_id.clone(),
+            report_type: report_type.clone(),
+            summary: summary.clone(),
+            content: content.clone(),
+        });
 
         ToolOutput::ok(json!({
             "status": "ok",
@@ -981,5 +992,78 @@ mod tests {
             .get_task(task_id, Some(AgentType::Plotting), false)
             .unwrap();
         assert_eq!(task.status, TaskStatus::InProgress);
+    }
+
+    /// Regression: when `wait_for_report` resolves via the broadcast arm, it
+    /// must drain the durable board record that `respond` wrote via
+    /// `record_report`. Without the drain, a later re-dispatch of the same
+    /// `task_id` (board.start only resets status, never clears reports) would
+    /// hit the board fallback at the top of the loop and return the STALE
+    /// report immediately, never waiting for the sub's new response.
+    #[tokio::test]
+    async fn wait_for_report_drains_board_so_redispatch_is_not_stale() {
+        let bus = Bus::new();
+        let board = TaskBoard::new();
+        let task = board.create(
+            AgentType::Main,
+            AgentType::Theory,
+            "derive formulas".into(),
+            true,
+            None,
+        );
+        board.start(&task.task_id);
+
+        // Subscribe BEFORE publishing so the broadcast is not lost.
+        let mut rx = bus.subscribe();
+        // Simulate `respond` with the post-fix order: record on the board
+        // FIRST, then publish the broadcast.
+        board.record_report(
+            &task.task_id,
+            autoreport_core::taskboard::ReportRecord {
+                report_type: "reply".into(),
+                summary: "first reply".into(),
+                content: "first content".into(),
+            },
+        );
+        bus.publish(BusMessage::Report {
+            agent_type: AgentType::Theory,
+            task_id: task.task_id.clone(),
+            report_type: "reply".into(),
+            summary: "first reply".into(),
+            content: "first content".into(),
+        });
+
+        // First wait resolves via the broadcast arm (not the board fallback).
+        match wait_for_report(&mut rx, &board, AgentType::Theory, &task.task_id, 120).await {
+            WaitOutcome::Report { summary, content, .. } => {
+                assert_eq!(summary, "first reply");
+                assert_eq!(content, "first content");
+            }
+            _ => panic!("first wait should resolve on the broadcast Report, got a non-Report outcome"),
+        }
+
+        // The drain is the fix: the board record is gone after the broadcast
+        // path delivered the report.
+        assert!(
+            board.take_report(&task.task_id).is_none(),
+            "board record should have been drained by the broadcast arm"
+        );
+
+        // Re-dispatch the same task_id (board.start only resets status). With
+        // the drain in place, the board fallback at the top of the loop is
+        // empty, so wait_for_report must NOT return immediately with the
+        // stale "first reply". Wrap in a short external timeout: with the
+        // bug it returns instantly (Ok with a stale Report); with the fix it
+        // blocks past the deadline (Err = elapsed).
+        while rx.try_recv().is_ok() {}
+        let redispatch = tokio::time::timeout(
+            Duration::from_millis(200),
+            wait_for_report(&mut rx, &board, AgentType::Theory, &task.task_id, 120),
+        )
+        .await;
+        assert!(
+            redispatch.is_err(),
+            "re-dispatch returned immediately with a stale report"
+        );
     }
 }

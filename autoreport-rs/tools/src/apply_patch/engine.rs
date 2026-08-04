@@ -46,7 +46,12 @@ const EMPTY_CHANGE_CONTEXT_MARKER: &str = "@@";
 // ---- parser ----
 
 pub fn parse(patch: &str) -> Result<Vec<Hunk>, String> {
-    let lines: Vec<&str> = patch.lines().collect();
+    // Trim leading/trailing whitespace (codex `parse_patch_text`,
+    // apply-patch/src/parser.rs:179 — `patch.trim().lines().collect()`).
+    // A leading newline (`"\n*** Begin Patch\n..."`) or two+ trailing
+    // newlines after `*** End Patch` would otherwise be rejected by the
+    // strict boundary check below even though codex accepts them.
+    let lines: Vec<&str> = patch.trim().lines().collect();
     // Verify patch boundaries (codex `check_patch_boundaries`,
     // apply-patch/src/parser.rs). Two modes:
     //   - strict:  first trimmed line == `*** Begin Patch`,
@@ -76,10 +81,18 @@ pub fn parse(patch: &str) -> Result<Vec<Hunk>, String> {
                 return Err("apply_patch environment_id cannot be empty".into());
             }
             start = 1;
-        }
-        if let Some(second) = body.get(1) {
-            if second.trim().starts_with(ENVIRONMENT_ID_MARKER) {
-                return Err("apply_patch environment_id cannot be specified more than once".into());
+            // Only enforce uniqueness against a second env_id line when the
+            // first line was itself an env_id preamble. Without this guard a
+            // misplaced first-occurrence env_id after a hunk header (e.g.
+            // `*** Update File: foo` followed by `*** Environment ID:`) is
+            // mis-reported as "cannot be specified more than once" instead of
+            // being surfaced as an invalid hunk header by the main loop.
+            if let Some(second) = body.get(1) {
+                if second.trim().starts_with(ENVIRONMENT_ID_MARKER) {
+                    return Err(
+                        "apply_patch environment_id cannot be specified more than once".into()
+                    );
+                }
             }
         }
     }
@@ -615,9 +628,38 @@ pub fn apply(patch: &str, ctx: &FsCtx) -> Result<Vec<serde_json::Value>, String>
             } => {
                 let resolved = resolve_within(&path.to_string_lossy(), &ctx.workspace)?;
                 ctx.assert_write_allowed(&resolved)?;
-                let original = std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?;
+                // Chain multiple `Update File` hunks (and `Add File` then
+                // `Update File`) on the same path: when a prior hunk already
+                // has pending in-memory contents for this path, compute
+                // replacements against THAT rather than re-reading the
+                // original on-disk file. The apply loop writes each pending
+                // change once, in order, so without this chaining two
+                // `Update File` hunks on the same path would both derive
+                // from the original and the second write would silently
+                // clobber the first. Matches codex's single-loop semantics
+                // (`apply-patch/src/lib.rs:390-559`,
+                // `apply_hunks_to_files` → `derive_new_contents_from_chunks`
+                // reads the current file then writes immediately, so the
+                // next hunk observes the post-write state) while preserving
+                // AutoReport's validate-all-then-apply-all model: every hunk
+                // is still validated before any disk write, and a later
+                // validation failure still leaves earlier hunks un-applied.
+                let (base_contents, existing_idx) = match find_pending_for_path(&changes, &resolved)
+                {
+                    Some(idx) => (
+                        changes[idx]
+                            .pending_contents()
+                            .expect("non-Delete pending change carries contents")
+                            .to_owned(),
+                        Some(idx),
+                    ),
+                    None => (
+                        std::fs::read_to_string(&resolved).map_err(|e| e.to_string())?,
+                        None,
+                    ),
+                };
                 let mut original_lines: Vec<String> =
-                    original.split('\n').map(String::from).collect();
+                    base_contents.split('\n').map(String::from).collect();
                 if original_lines.last().is_some_and(String::is_empty) {
                     original_lines.pop();
                 }
@@ -628,7 +670,31 @@ pub fn apply(patch: &str, ctx: &FsCtx) -> Result<Vec<serde_json::Value>, String>
                 }
                 let new_contents = new_lines.join("\n");
 
-                if let Some(dest) = move_path {
+                if let Some(idx) = existing_idx {
+                    // Fold this hunk's edits into the existing pending change
+                    // so the apply loop writes the combined contents once.
+                    if let Some(dest) = move_path {
+                        let dest_abs = resolve_within(&dest.to_string_lossy(), &ctx.workspace)?;
+                        ctx.assert_write_allowed(&dest_abs)?;
+                        if resolved == dest_abs {
+                            return Err(format!("cannot move {} onto itself", resolved.display()));
+                        }
+                        if std::fs::symlink_metadata(&dest_abs)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                        {
+                            return Err(format!("{} is a directory", dest_abs.display()));
+                        }
+                        changes[idx].set_pending_contents(new_contents.clone());
+                        changes.push(PreparedChange::Move {
+                            from: resolved,
+                            to: dest_abs,
+                            contents: new_contents,
+                        });
+                    } else {
+                        changes[idx].set_pending_contents(new_contents);
+                    }
+                } else if let Some(dest) = move_path {
                     let dest_abs = resolve_within(&dest.to_string_lossy(), &ctx.workspace)?;
                     ctx.assert_write_allowed(&dest_abs)?;
                     if resolved == dest_abs {
@@ -721,6 +787,42 @@ impl PreparedChange {
             Self::Move { from, to, .. } => vec![from, to],
         }
     }
+
+    /// In-memory contents this pending change will write to its target, or
+    /// `None` for `Delete`. Used to chain multiple `Update File` hunks (and
+    /// `Add File` then `Update File`) on the same path during validation so
+    /// the apply loop writes the combined contents exactly once.
+    fn pending_contents(&self) -> Option<&str> {
+        match self {
+            Self::Add { contents, .. } | Self::Update { contents, .. } | Self::Move {
+                contents,
+                ..
+            } => Some(contents),
+            Self::Delete { .. } => None,
+        }
+    }
+
+    fn set_pending_contents(&mut self, new_contents: String) {
+        match self {
+            Self::Add { contents, .. }
+            | Self::Update { contents, .. }
+            | Self::Move { contents, .. } => *contents = new_contents,
+            Self::Delete { .. } => {}
+        }
+    }
+}
+
+/// Index of the most recent pending change whose result will live at
+/// `target` — an `Add`/`Update` on `target`, or a `Move` whose destination is
+/// `target`. `Delete` and a `Move`'s source are NOT chaining targets (the
+/// file is being removed in both cases). Returns the latest match so the most
+/// recent pending state is the chaining base.
+fn find_pending_for_path(changes: &[PreparedChange], target: &Path) -> Option<usize> {
+    changes.iter().rposition(|c| match c {
+        PreparedChange::Add { path, .. } | PreparedChange::Update { path, .. } => path == target,
+        PreparedChange::Move { to, .. } => to == target,
+        PreparedChange::Delete { .. } => false,
+    })
 }
 
 fn restore_backups(backups: &HashMap<PathBuf, Option<Vec<u8>>>) -> Result<(), String> {
@@ -975,6 +1077,118 @@ mod tests {
 
     #[allow(dead_code)]
     fn _pb(_: PathBuf) {}
+
+    #[test]
+    fn leading_newline_before_begin_patch_is_accepted() {
+        // Regression (Bug I3): codex does `patch.trim().lines().collect()`
+        // (`apply-patch/src/parser.rs:179`), so a leading `\n` before
+        // `*** Begin Patch` (and/or two+ trailing newlines after
+        // `*** End Patch`) must parse. Without the trim the strict boundary
+        // check rejected these even though codex-trained models emit them.
+        let dir = std::env::temp_dir().join(format!("ap-trim-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
+        let patch = "\n*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+ALPHA\n*** End Patch\n\n";
+        apply(patch, &ctx(&dir)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "ALPHA\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn trim_strips_surrounding_blank_lines_at_parse_layer() {
+        // Parse-layer coverage for Bug I3: a body that is otherwise empty
+        // must yield zero hunks once the surrounding blank lines are trimmed.
+        let patch = "\n*** Begin Patch\n*** End Patch\n\n";
+        let hunks = parse(patch).unwrap();
+        assert!(hunks.is_empty(), "expected no hunks, got {hunks:?}");
+    }
+
+    #[test]
+    fn two_update_hunks_on_same_file_chain() {
+        // Regression (Bug I4): two `*** Update File` hunks editing different
+        // lines of the same file must BOTH land. Previously the validate-all
+        // loop read the ORIGINAL file for each hunk, so the apply loop wrote
+        // both in order and the second silently clobbered the first.
+        let dir = std::env::temp_dir().join(format!("ap-chain-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let patch = "*** Begin Patch
+*** Update File: c.txt
+@@
+-alpha
++ALPHA
+*** Update File: c.txt
+@@
+-delta
++DELTA
+*** End Patch";
+        apply(patch, &ctx(&dir)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("c.txt")).unwrap(),
+            "ALPHA\nbeta\ngamma\nDELTA\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn add_then_update_on_same_file_chains() {
+        // Regression (Bug I4, Add-then-Update variant): an `Add File`
+        // immediately followed by `Update File` on the same path must read
+        // the just-added in-memory contents. Without chaining the Update
+        // read the (non-existent) on-disk file and failed with NotFound.
+        let dir = std::env::temp_dir().join(format!("ap-addup-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let patch = "*** Begin Patch
+*** Add File: d.txt
++one
++two
+*** Update File: d.txt
+@@
+-one
++ONE
+*** End Patch";
+        apply(patch, &ctx(&dir)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("d.txt")).unwrap(),
+            "ONE\ntwo\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn chained_update_hunks_still_rollback_on_later_failure() {
+        // Chaining must not weaken validate-all-then-apply-all: a later
+        // hunk that fails validation must leave the file untouched, even
+        // when earlier chained Update hunks on the same path had pending
+        // contents computed.
+        let dir = std::env::temp_dir().join(format!("ap-crollback-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c.txt"), "alpha\nbeta\n").unwrap();
+        let patch = "*** Begin Patch
+*** Update File: c.txt
+@@
+-alpha
++ALPHA
+*** Update File: c.txt
+@@
+-missing
++changed
+*** End Patch";
+        let err = apply(patch, &ctx(&dir)).unwrap_err();
+        assert!(
+            err.contains("Failed to find expected lines"),
+            "expected seek failure, got: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("c.txt")).unwrap(),
+            "alpha\nbeta\n",
+            "no partial write on validation failure"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[test]

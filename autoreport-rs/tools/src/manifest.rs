@@ -248,7 +248,7 @@ impl ManifestStore {
         let manifest = self.load_from_disk(agent);
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(agent.as_str().to_string(), manifest.clone());
         manifest
     }
@@ -259,7 +259,7 @@ impl ManifestStore {
         manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(agent.as_str().to_string(), manifest.clone());
         self.persist(agent, &manifest);
     }
@@ -654,5 +654,32 @@ mod tests {
         let store = ManifestStore::new(workspace.path(), workspace.path());
         let manifest = store.load(AgentType::Plotting);
         assert!(manifest.files.is_empty());
+    }
+
+    #[test]
+    fn load_and_save_survive_poisoned_cache() {
+        // A panic on another thread while holding the cache lock poisons it.
+        // Every subsequent cache acquisition must recover (match `taskboard.rs`)
+        // instead of cascading the poison panic into all manifest operations.
+        let workspace = temp_workspace();
+        let store = ManifestStore::new(workspace.path(), workspace.path());
+        let cache = Arc::clone(&store.cache);
+        let handle = std::thread::spawn(move || {
+            let _guard = cache.lock().unwrap();
+            panic!("intentional poison");
+        });
+        let join_err = handle.join();
+        assert!(join_err.is_err(), "spawned thread should have panicked");
+
+        // `load` reads the cache (miss), falls through to a second lock to
+        // insert — both must recover from the poison rather than panicking.
+        let manifest = store.load(AgentType::Main);
+        assert_eq!(manifest.agent_type, "main");
+
+        // `save` also takes the cache lock; it must recover too.
+        store.save(AgentType::Main, manifest);
+        // And a subsequent load reflects the saved state.
+        let reloaded = store.load(AgentType::Main);
+        assert_eq!(reloaded.agent_type, "main");
     }
 }
