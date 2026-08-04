@@ -16,17 +16,12 @@ members = [
     "autoreport-rs/vendor/codex/model-provider-info",
     "autoreport-rs/vendor/codex/file-system",
     "autoreport-rs/vendor/codex/file-search",
-    "autoreport-rs/vendor/codex/memories-read",
     "autoreport-rs/vendor/codex/rollout",
     "autoreport-rs/vendor/codex/thread-store",
     "autoreport-rs/vendor/codex/git-utils",
     "autoreport-rs/vendor/codex/code-mode-protocol",
     "autoreport-rs/vendor/codex/exec-server-protocol",
-    "autoreport-rs/vendor/codex/prompts",
-    "autoreport-rs/vendor/codex/plugin",
-    "autoreport-rs/vendor/codex/hooks",
     "autoreport-rs/vendor/codex/skills",
-    "autoreport-rs/vendor/codex/agent-graph-store",
     "autoreport-rs/vendor/codex/utils-plugins",
     "autoreport-rs/vendor/codex/cargo-bin",
     "autoreport-rs/vendor/codex/apply-patch",
@@ -102,17 +97,12 @@ autoreport-response-debug-context = { path = "autoreport-rs/vendor/codex/respons
 autoreport-model-provider-info = { path = "autoreport-rs/vendor/codex/model-provider-info" }
 autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
 autoreport-file-search = { path = "autoreport-rs/vendor/codex/file-search" }
-autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
 autoreport-codex-rollout = { path = "autoreport-rs/vendor/codex/rollout" }
 autoreport-thread-store = { path = "autoreport-rs/vendor/codex/thread-store" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
 autoreport-exec-server-protocol = { path = "autoreport-rs/vendor/codex/exec-server-protocol" }
-autoreport-prompts = { path = "autoreport-rs/vendor/codex/prompts" }
-autoreport-plugin = { path = "autoreport-rs/vendor/codex/plugin" }
-autoreport-hooks = { path = "autoreport-rs/vendor/codex/hooks" }
 autoreport-skills = { path = "autoreport-rs/vendor/codex/skills" }
-autoreport-agent-graph-store = { path = "autoreport-rs/vendor/codex/agent-graph-store" }
 autoreport-utils-plugins = { path = "autoreport-rs/vendor/codex/utils-plugins" }
 autoreport-apply-patch = { path = "autoreport-rs/vendor/codex/apply-patch" }
 autoreport-utils-cargo-bin = { path = "autoreport-rs/vendor/codex/cargo-bin" }
