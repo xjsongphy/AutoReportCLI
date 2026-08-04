@@ -1,9 +1,9 @@
 //! State owned by the terminal application.
 
 use crate::config_update::{ConfigScreen, Outcome};
+use crate::configuration_flow::ConfigurationFlow;
 use crate::custom_terminal::Frame;
 use crate::environment_setup::EnvironmentScreen;
-use crate::model_migration::ModelScreen;
 use autoreport_core::request_user_input::{RequestUserInputAnswer, RequestUserInputQuestion};
 use autoreport_core::types::{AgentType, TaskStatus};
 use serde_json::Value;
@@ -106,7 +106,7 @@ pub(crate) struct Mention {
 
 pub(crate) enum Overlay {
     Api(ConfigScreen),
-    Models(ModelScreen),
+    Configuration(ConfigurationFlow),
     Environment(EnvironmentScreen),
 }
 
@@ -123,7 +123,7 @@ impl Overlay {
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>) {
         match self {
             Self::Api(screen) => screen.draw(frame),
-            Self::Models(screen) => screen.draw(frame),
+            Self::Configuration(screen) => screen.draw(frame),
             Self::Environment(screen) => screen.draw(frame),
         }
     }
@@ -131,7 +131,7 @@ impl Overlay {
     pub(crate) fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<Outcome> {
         match self {
             Self::Api(screen) => screen.handle_key(key),
-            Self::Models(screen) => screen.handle_key(key),
+            Self::Configuration(screen) => screen.handle_key(key),
             Self::Environment(screen) => screen.handle_key(key),
         }
     }
@@ -139,7 +139,7 @@ impl Overlay {
     pub(crate) fn settings(&self) -> &autoreport_core::config::Settings {
         match self {
             Self::Api(screen) => &screen.settings,
-            Self::Models(screen) => &screen.settings,
+            Self::Configuration(screen) => screen.settings(),
             Self::Environment(_) => panic!("environment overlay has no API settings"),
         }
     }

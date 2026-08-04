@@ -1,22 +1,27 @@
 //! Approval overlay adapted from Codex's bottom-pane approval surface.
 
 use crate::app_state::PendingApproval;
-use crate::custom_terminal::Frame;
+use crate::render::renderable::Renderable;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, WidgetRef};
 use std::collections::VecDeque;
 
-pub(crate) struct ApprovalOverlay;
+pub(crate) struct ApprovalOverlay<'a> {
+    pending_approvals: &'a VecDeque<PendingApproval>,
+}
 
-impl ApprovalOverlay {
-    pub(crate) fn draw(f: &mut Frame<'_>, pending_approvals: &VecDeque<PendingApproval>) {
-        let Some(req) = pending_approvals.front() else {
-            return;
+impl<'a> ApprovalOverlay<'a> {
+    pub(crate) fn new(pending_approvals: &'a VecDeque<PendingApproval>) -> Self {
+        Self { pending_approvals }
+    }
+
+    fn lines(&self) -> Vec<Line<'static>> {
+        let Some(req) = self.pending_approvals.front() else {
+            return Vec::new();
         };
-        let area = f.area();
-        let width = 64u16.min(area.width.saturating_sub(4));
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             format!(" {} agent wants to run a command ", req.agent.label()),
@@ -38,7 +43,6 @@ impl ApprovalOverlay {
             )));
         }
         lines.push(Line::raw(""));
-        // `$ <command>` like codex's transcript exec cell.
         let cmd = if req.command.is_empty() {
             "(no command)".to_string()
         } else {
@@ -58,9 +62,6 @@ impl ApprovalOverlay {
             )));
         }
         lines.push(Line::raw(""));
-        // Keymap mirrors codex's default ApprovalKeymap (keymap.rs):
-        // y approve · a approve-for-session · p persist-prefix · d deny ·
-        // c cancel · Esc/n decline.
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled("[y]", Style::default().fg(Color::Green)),
@@ -74,29 +75,57 @@ impl ApprovalOverlay {
             Span::styled("[c]/[n]/Esc", Style::default().fg(Color::DarkGray)),
             Span::raw(" cancel"),
         ]));
-        if pending_approvals.len() > 1 {
+        if self.pending_approvals.len() > 1 {
             lines.push(Line::from(Span::styled(
-                format!("  +{} more pending", pending_approvals.len() - 1),
+                format!("  +{} more pending", self.pending_approvals.len() - 1),
                 Style::default().fg(Color::DarkGray),
             )));
         }
-        let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
+        lines
+    }
+
+    pub(crate) fn desired_height(&self, _width: u16) -> u16 {
+        if self.pending_approvals.is_empty() {
+            0
+        } else {
+            self.lines().len() as u16 + 2
+        }
+    }
+}
+
+impl Renderable for ApprovalOverlay<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() || self.pending_approvals.is_empty() {
+            return;
+        }
+        let lines = self.lines();
+        let height = self.desired_height(area.width).min(area.height);
+        let width = 64u16.min(area.width.saturating_sub(4)).max(1);
         let popup_area = Rect {
-            x: area.x + (area.width - width) / 2,
+            x: area.x + area.width.saturating_sub(width) / 2,
             y: area.y + (area.height.saturating_sub(height)) / 2,
             width,
             height,
         };
-        f.render_widget(Clear, popup_area);
-        let title = if pending_approvals.len() > 1 {
-            format!(" approval required (1/{}) ", pending_approvals.len())
+        Clear.render_ref(popup_area, buf);
+        let title = if self.pending_approvals.len() > 1 {
+            format!(" approval required (1/{}) ", self.pending_approvals.len())
         } else {
             " approval required ".to_string()
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .title(Span::styled(title, Style::default().fg(Color::Yellow)));
-        let para = Paragraph::new(lines).block(block);
-        f.render_widget(para, popup_area);
+        Paragraph::new(lines)
+            .block(block)
+            .render_ref(popup_area, buf);
+    }
+
+    fn desired_height(&self, _width: u16) -> u16 {
+        if self.pending_approvals.is_empty() {
+            0
+        } else {
+            self.lines().len() as u16 + 2
+        }
     }
 }

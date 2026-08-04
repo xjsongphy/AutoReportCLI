@@ -270,4 +270,32 @@ mod tests {
             FlushResult::Typed('a')
         ));
     }
+
+    #[test]
+    fn flush_before_modified_input_empties_the_buffer_so_it_cannot_reinject() {
+        // Regression guard for the `/new`-does-not-clear bug: a fast-typed
+        // command is buffered outside the composer. Submitting must flush that
+        // buffer into the composer AND leave the burst inert, so the buffered
+        // text cannot be re-injected after the composer is cleared.
+        let mut burst = PasteBurst::default();
+        let start = Instant::now();
+        burst.begin_with_retro_grabbed("new".to_string(), start);
+        assert!(burst.is_active());
+
+        // `flush_paste_burst_before_modified_input` (the Tui submission helper)
+        // runs these two steps: drain the buffer into the composer, then clear
+        // the suppression window so the consumed text cannot re-inject.
+        let flushed = burst.flush_before_modified_input();
+        burst.clear_window_after_non_char();
+        assert_eq!(flushed.as_deref(), Some("new"));
+
+        // The burst is now inert: Enter is no longer suppressed and a later
+        // timed flush has nothing left to re-inject.
+        assert!(!burst.is_active());
+        assert!(!burst.newline_should_insert_instead_of_submit(start + Duration::from_millis(5)));
+        assert!(matches!(
+            burst.flush_if_due(start + Duration::from_secs(1)),
+            FlushResult::None
+        ));
+    }
 }

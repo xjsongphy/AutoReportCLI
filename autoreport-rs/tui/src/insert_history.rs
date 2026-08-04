@@ -19,59 +19,88 @@ pub(crate) fn insert_history_lines<B: Backend + Write>(
     terminal: &mut Terminal<B>,
     lines: &[Line<'static>],
 ) -> io::Result<()> {
-    if lines.is_empty() || terminal.viewport_area.top() == 0 {
+    if lines.is_empty() || terminal.viewport_area.is_empty() {
         return Ok(());
     }
 
-    let area = terminal.viewport_area;
+    let screen_size = terminal.size()?;
+    let mut area = terminal.viewport_area;
     let cursor = terminal.last_known_cursor_pos;
     let width = usize::from(area.width.max(1));
+    let wrapped_lines: Vec<Line<'static>> = lines
+        .iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect();
+    let wrapped_rows = wrapped_lines.len() as u16;
     let mut writer = terminal.backend_mut();
 
-    // This is the same scroll-region trick used by Codex's insert_history.rs: the rows above the
-    // viewport move upward while the composer viewport remains anchored at the bottom.
+    // When the viewport is not at the physical bottom, first move it down to
+    // make room for the newly finalized rows. This is the important Codex
+    // behavior that also works when the viewport currently starts at row zero.
+    let scroll_amount = wrapped_rows.min(screen_size.height.saturating_sub(area.bottom()));
+    if scroll_amount > 0 {
+        write!(
+            writer,
+            "\x1b[{};{}r",
+            area.top().saturating_add(1),
+            screen_size.height
+        )?;
+        queue!(writer, MoveTo(0, area.top()))?;
+        for _ in 0..scroll_amount {
+            write!(writer, "\x1bM")?;
+        }
+        write!(writer, "\x1b[r")?;
+        area.y = area.y.saturating_add(scroll_amount);
+    }
+
+    // Restrict scrolling to the history rows above the viewport. Start one
+    // row above the viewport and emit a CRLF before every wrapped line, just
+    // like Codex's `insert_history_hyperlink_lines...` implementation.
     write!(writer, "\x1b[1;{}r", area.top())?;
     queue!(writer, MoveTo(0, area.top().saturating_sub(1)))?;
-    let mut first = true;
-    for line in lines {
-        for visual_line in wrap_line(line, width) {
-            if !first {
-                queue!(writer, Print("\r\n"))?;
-            }
-            first = false;
-            write_line(&mut writer, &visual_line)?;
-        }
+    for line in &wrapped_lines {
+        queue!(writer, Print("\r\n"))?;
+        write_line(&mut writer, line)?;
     }
     write!(writer, "\x1b[r")?;
     queue!(writer, MoveTo(cursor.x, cursor.y))?;
-    std::io::Write::flush(&mut writer)
+    std::io::Write::flush(&mut writer)?;
+    if area != terminal.viewport_area {
+        terminal.set_viewport_area(area);
+    }
+    terminal.note_history_rows_inserted(wrapped_rows);
+    Ok(())
 }
 
 fn wrap_line(line: &Line<'_>, width: usize) -> Vec<Line<'static>> {
-    let text = line
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-    if text.is_empty() {
+    if line.spans.is_empty() {
         return vec![Line::from(Span::styled(String::new(), line.style))];
     }
+
+    let width = width.max(1);
     let mut rows = Vec::new();
-    let mut row = String::new();
+    let mut row_spans: Vec<Span<'static>> = Vec::new();
     let mut row_width = 0;
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
-        if !row.is_empty() && row_width + ch_width > width.max(1) {
-            rows.push(Line::from(Span::styled(
-                std::mem::take(&mut row),
-                line.style,
-            )));
-            row_width = 0;
+    for span in &line.spans {
+        for ch in span.content.chars() {
+            let ch_width = UnicodeWidthStr::width(ch.to_string().as_str());
+            if !row_spans.is_empty() && row_width + ch_width > width {
+                rows.push(Line::from(std::mem::take(&mut row_spans)).style(line.style));
+                row_width = 0;
+            }
+            if let Some(last) = row_spans.last_mut()
+                && last.style == span.style
+            {
+                last.content.to_mut().push(ch);
+            } else {
+                row_spans.push(Span::styled(ch.to_string(), span.style));
+            }
+            row_width += ch_width;
         }
-        row.push(ch);
-        row_width += ch_width;
     }
-    rows.push(Line::from(Span::styled(row, line.style)));
+    if !row_spans.is_empty() {
+        rows.push(Line::from(row_spans).style(line.style));
+    }
     rows
 }
 
@@ -140,5 +169,58 @@ fn to_crossterm_modifier(modifier: Modifier) -> crossterm::style::Attribute {
         Modifier::UNDERLINED => crossterm::style::Attribute::Underlined,
         Modifier::REVERSED => crossterm::style::Attribute::Reverse,
         _ => crossterm::style::Attribute::Reset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::custom_terminal::Terminal;
+    use crate::test_support::WritableTestBackend;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn insertion_from_top_moves_viewport_and_counts_wrapped_rows() {
+        let mut terminal =
+            Terminal::with_options(WritableTestBackend::new(10, 10)).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 0, 10, 6));
+
+        insert_history_lines(&mut terminal, &[Line::from("abcdefghijk")])
+            .expect("history insertion");
+
+        assert_eq!(terminal.viewport_area, Rect::new(0, 2, 10, 6));
+        assert_eq!(terminal.visible_history_rows(), 2);
+    }
+
+    #[test]
+    fn insertion_at_screen_bottom_preserves_viewport_origin() {
+        let mut terminal =
+            Terminal::with_options(WritableTestBackend::new(10, 10)).expect("terminal");
+        terminal.set_viewport_area(Rect::new(0, 4, 10, 6));
+
+        insert_history_lines(&mut terminal, &[Line::from("one")]).expect("history insertion");
+
+        assert_eq!(terminal.viewport_area, Rect::new(0, 4, 10, 6));
+        assert_eq!(terminal.visible_history_rows(), 1);
+    }
+
+    #[test]
+    fn wrapping_keeps_span_colors_in_scrollback_rows() {
+        let red = Color::Red;
+        let blue = Color::Blue;
+        let line = Line::from(vec![
+            Span::styled("red", ratatui::style::Style::default().fg(red)),
+            Span::styled("blue", ratatui::style::Style::default().fg(blue)),
+        ]);
+
+        let rows = wrap_line(&line, 5);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].spans[0].content, "red");
+        assert_eq!(rows[0].spans[0].style.fg, Some(red));
+        assert_eq!(rows[0].spans[1].content, "bl");
+        assert_eq!(rows[0].spans[1].style.fg, Some(blue));
+        assert_eq!(rows[1].spans[0].content, "ue");
+        assert_eq!(rows[1].spans[0].style.fg, Some(blue));
     }
 }

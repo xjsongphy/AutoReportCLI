@@ -71,9 +71,13 @@ impl StatusLineAccent {
 
     fn fallback_style(self) -> Style {
         match self {
-            Self::Model | Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
+            // Codex's compact footer keeps the model warm and the working
+            // directory cool.  Treat a monochrome terminal theme as neutral
+            // rather than allowing it to erase that useful distinction.
+            Self::Model | Self::Limit => Style::default().yellow(),
+            Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
             Self::Path | Self::Usage | Self::Progress => Style::default().green(),
-            Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
+            Self::Branch | Self::Thread => Style::default().magenta(),
         }
     }
 }
@@ -107,7 +111,9 @@ where
         let style = if use_theme_colors {
             let accent = StatusLineAccent::for_item(item);
             soften_status_line_style(
-                theme_style_for_accent(accent).unwrap_or_else(|| accent.fallback_style()),
+                theme_style_for_accent(accent)
+                    .filter(|style| !is_neutral_foreground(style.fg))
+                    .unwrap_or_else(|| accent.fallback_style()),
             )
         } else {
             Style::default().dim()
@@ -121,6 +127,13 @@ where
     }
 
     (!spans.is_empty()).then(|| Line::from(spans))
+}
+
+fn is_neutral_foreground(foreground: Option<Color>) -> bool {
+    matches!(
+        foreground,
+        None | Some(Color::Reset | Color::Black | Color::DarkGray | Color::Gray | Color::White)
+    )
 }
 
 fn soften_status_line_style(mut style: Style) -> Style {
@@ -203,7 +216,7 @@ mod tests {
         .expect("status line");
 
         assert_eq!(line_text(&line), "gpt-5 · /repo · main");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(line.spans[0].style.fg, Some(Color::Yellow));
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
         assert!(!line.spans[2].style.add_modifier.contains(Modifier::DIM));

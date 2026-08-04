@@ -7,7 +7,10 @@
 //! feeds it plain characters and applies the resulting typed/paste decision here. Enter remains
 //! submit by default, but becomes a newline while the burst suppression window is active.
 
+use super::popup_state::PopupState;
+use crate::app_state::Mention;
 use crate::render::renderable::Renderable;
+use crate::slash_command::SlashCompletion;
 use crate::style::{accent_style, user_message_style};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -21,6 +24,7 @@ use unicode_width::UnicodeWidthStr;
 // motion treats punctuation runs separately from identifier runs instead of
 // collapsing `foo.bar` into one word.
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+const FOOTER_HEIGHT: u16 = 1;
 
 fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
@@ -39,6 +43,10 @@ pub(crate) struct ChatComposer {
     /// Codex-style reverse/forward-i-search session. `None` outside a search.
     history_search: Option<super::history_search::HistorySearchSession>,
     killed_text: Option<String>,
+    /// Codex keeps completion lifecycle with the textarea/popup owner. The
+    /// catalog itself remains AutoReport-specific, but the single active
+    /// popup and dismissal markers no longer live on the top-level app.
+    popups: PopupState,
     input_width: Cell<usize>,
     preferred_column: Option<usize>,
 }
@@ -57,6 +65,7 @@ impl ChatComposer {
             draft_before_history: None,
             history_search: None,
             killed_text: None,
+            popups: PopupState::default(),
             input_width: Cell::new(80),
             preferred_column: None,
         }
@@ -441,6 +450,58 @@ impl ChatComposer {
         self.status_line = status_line;
     }
 
+    pub(crate) fn slash_popup(&self) -> Option<&SlashCompletion> {
+        self.popups.slash()
+    }
+
+    pub(crate) fn slash_popup_mut(&mut self) -> Option<&mut SlashCompletion> {
+        self.popups.slash_mut()
+    }
+
+    pub(crate) fn take_slash_popup(&mut self) -> Option<SlashCompletion> {
+        self.popups.take_slash()
+    }
+
+    pub(crate) fn set_slash_popup(&mut self, popup: Option<SlashCompletion>) {
+        self.popups.set_slash(popup);
+    }
+
+    pub(crate) fn mention_popup(&self) -> Option<&Mention> {
+        self.popups.mention()
+    }
+
+    pub(crate) fn mention_popup_mut(&mut self) -> Option<&mut Mention> {
+        self.popups.mention_mut()
+    }
+
+    pub(crate) fn take_mention_popup(&mut self) -> Option<Mention> {
+        self.popups.take_mention()
+    }
+
+    pub(crate) fn set_mention_popup(&mut self, popup: Option<Mention>) {
+        self.popups.set_mention(popup);
+    }
+
+    pub(crate) fn dismissed_slash(&self) -> Option<&str> {
+        self.popups.dismissed_slash()
+    }
+
+    pub(crate) fn set_dismissed_slash(&mut self, value: Option<String>) {
+        self.popups.set_dismissed_slash(value);
+    }
+
+    pub(crate) fn dismissed_mention(&self) -> Option<&str> {
+        self.popups.dismissed_mention()
+    }
+
+    pub(crate) fn set_dismissed_mention(&mut self, value: Option<String>) {
+        self.popups.set_dismissed_mention(value);
+    }
+
+    pub(crate) fn clear_popups(&mut self) {
+        self.popups.clear();
+    }
+
     pub(crate) fn toggle_shortcuts(&mut self) {
         self.shortcuts_visible = !self.shortcuts_visible;
     }
@@ -461,18 +522,66 @@ impl ChatComposer {
 
 impl Renderable for ChatComposer {
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_with_footer(area, buf, true);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.input_desired_height(width)
+            .saturating_add(FOOTER_HEIGHT)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let [composer_rect, _footer_rect] = self.layout_areas(area);
+        self.cursor_pos_in(composer_rect)
+    }
+}
+
+impl ChatComposer {
+    /// Render only the input surface. Codex gives an active completion popup
+    /// ownership of the footer slot, so the normal footer must be omitted
+    /// while the popup is shown.
+    pub(crate) fn render_input_only(&self, area: Rect, buf: &mut Buffer) {
+        self.render_with_footer(area, buf, false);
+    }
+
+    pub(crate) fn input_desired_height(&self, width: u16) -> u16 {
+        let width = usize::from(width.saturating_sub(4).max(1));
+        let lines = self.input_line_count(width);
+        u16::try_from(lines).unwrap_or(u16::MAX).saturating_add(2)
+    }
+
+    fn input_line_count(&self, width: usize) -> usize {
+        if self.text.is_empty() {
+            1
+        } else {
+            self.text
+                .split('\n')
+                .map(|line| wrap_input_line(line, width).len())
+                .sum()
+        }
+        .max(1)
+        .min(8)
+    }
+
+    fn render_with_footer(&self, area: Rect, buf: &mut Buffer, render_footer: bool) {
         if area.is_empty() {
             return;
         }
 
+        let [composer_rect, footer_rect] = if render_footer {
+            self.layout_areas(area)
+        } else {
+            [area, Rect::default()]
+        };
+
         Block::default()
             .style(user_message_style())
-            .render_ref(area, buf);
+            .render_ref(composer_rect, buf);
 
         // This is Codex's multiline composer geometry: the prompt is shown on
         // the first row and continuation rows use the same two-column indent.
         let prompt = Span::from("›").bold();
-        let input_width = usize::from(area.width.saturating_sub(4).max(1));
+        let input_width = usize::from(composer_rect.width.saturating_sub(4).max(1));
         self.input_width.set(input_width);
         let input_lines = if self.text.is_empty() {
             vec!["Implement {feature}".to_string()]
@@ -482,7 +591,7 @@ impl Renderable for ChatComposer {
                 .flat_map(|line| wrap_input_line(line, input_width))
                 .collect()
         };
-        let max_input_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        let max_input_lines = usize::from(composer_rect.height.saturating_sub(2)).max(1);
         let cursor_line = cursor_visual_line(&self.text, self.cursor, input_width);
         let input_start = cursor_line
             .saturating_add(1)
@@ -501,13 +610,17 @@ impl Renderable for ChatComposer {
             };
             line.render_ref(
                 Rect::new(
-                    area.x + 1,
-                    area.y + 1 + u16::try_from(row).unwrap_or(u16::MAX),
-                    area.width.saturating_sub(2),
+                    composer_rect.x + 1,
+                    composer_rect.y + 1 + u16::try_from(row).unwrap_or(u16::MAX),
+                    composer_rect.width.saturating_sub(2),
                     1,
                 ),
                 buf,
             );
+        }
+
+        if !render_footer || footer_rect.is_empty() {
+            return;
         }
 
         let hint = if self.history_search_active() {
@@ -555,55 +668,21 @@ impl Renderable for ChatComposer {
         // the terminal edge while preserving the model name's leading text.
         let hint = crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
             hint,
-            usize::from(area.width),
+            usize::from(footer_rect.width),
         );
-        hint.render_ref(
-            Rect::new(
-                area.x,
-                area.y
-                    + 1
-                    + u16::try_from(
-                        input_lines
-                            .len()
-                            .saturating_sub(input_start)
-                            .min(max_input_lines),
-                    )
-                    .unwrap_or(u16::MAX),
-                area.width,
-                1,
-            ),
-            buf,
-        );
+        hint.render_ref(footer_rect, buf);
     }
 
-    fn desired_height(&self, _width: u16) -> u16 {
-        // Keep the composer bounded like Codex's textarea while allowing
-        // Shift+Enter drafts to remain visible instead of overflowing the
-        // transcript. The transcript flex child absorbs the remaining rows.
-        let width = usize::from(_width.saturating_sub(4).max(1));
-        let lines = if self.text.is_empty() {
-            1
-        } else {
-            self.text
-                .split('\n')
-                .map(|line| wrap_input_line(line, width).len())
-                .sum()
-        }
-        .max(1)
-        .min(8);
-        u16::try_from(lines + 3).unwrap_or(u16::MAX)
-    }
-
-    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+    pub(crate) fn cursor_pos_in(&self, composer_rect: Rect) -> Option<(u16, u16)> {
         self.input_width
-            .set(usize::from(area.width.saturating_sub(4).max(1)));
+            .set(usize::from(composer_rect.width.saturating_sub(4).max(1)));
         let prefix_width = UnicodeWidthStr::width("› ") as u16;
         let before_cursor = &self.text[..self.cursor];
         let (line_index, line_text) = before_cursor
             .rsplit_once('\n')
             .map(|(prefix, line)| (prefix.matches('\n').count() + 1, line))
             .unwrap_or((0, before_cursor));
-        let input_width = usize::from(area.width.saturating_sub(4).max(1));
+        let input_width = usize::from(composer_rect.width.saturating_sub(4).max(1));
         let wrapped_before = wrap_input_line(line_text, input_width);
         let visual_row = line_index + wrapped_before.len().saturating_sub(1);
         let total_lines = self
@@ -612,7 +691,7 @@ impl Renderable for ChatComposer {
             .flat_map(|line| wrap_input_line(line, input_width))
             .count()
             .max(1);
-        let max_input_lines = usize::from(area.height.saturating_sub(3)).max(1);
+        let max_input_lines = usize::from(composer_rect.height.saturating_sub(2)).max(1);
         let input_start = visual_row
             .saturating_add(1)
             .saturating_sub(max_input_lines)
@@ -626,15 +705,36 @@ impl Renderable for ChatComposer {
         ) as u16;
         let prefix_width = if visual_row == 0 { prefix_width } else { 2 };
         Some((
-            area.x
+            composer_rect
+                .x
                 .saturating_add(1)
                 .saturating_add(prefix_width)
                 .saturating_add(cursor_width)
-                .min(area.right().saturating_sub(1)),
-            area.y
+                .min(composer_rect.right().saturating_sub(1)),
+            composer_rect
+                .y
                 .saturating_add(1)
                 .saturating_add(u16::try_from(visible_row).unwrap_or(u16::MAX)),
         ))
+    }
+}
+
+impl ChatComposer {
+    /// Match Codex's composer layout: the input surface has one row of padding
+    /// above and below the textarea, while the footer is a sibling row below
+    /// it. Keeping these rectangles separate is important because the
+    /// user-message background belongs only to the input surface.
+    fn layout_areas(&self, area: Rect) -> [Rect; 2] {
+        let composer_height = area.height.saturating_sub(FOOTER_HEIGHT);
+        [
+            Rect::new(area.x, area.y, area.width, composer_height),
+            Rect::new(
+                area.x,
+                area.y.saturating_add(composer_height),
+                area.width,
+                area.height.saturating_sub(composer_height),
+            ),
+        ]
     }
 }
 
@@ -859,6 +959,32 @@ mod tests {
     }
 
     #[test]
+    fn composer_surface_stops_before_the_footer_row() {
+        let composer = ChatComposer::new("Main");
+        let [surface, footer] = composer.layout_areas(ratatui::layout::Rect::new(0, 10, 40, 4));
+        assert_eq!(surface, ratatui::layout::Rect::new(0, 10, 40, 3));
+        assert_eq!(footer, ratatui::layout::Rect::new(0, 13, 40, 1));
+    }
+
+    #[test]
+    fn footer_stays_at_the_bottom_when_input_wraps() {
+        let mut composer = ChatComposer::new("Main");
+        composer.set_status_line(Some(Line::from("status")));
+        composer.insert_text("abcdefghij");
+        let area = ratatui::layout::Rect::new(0, 0, 10, composer.desired_height(10));
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        composer.render(area, &mut buffer);
+        let rows = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_string()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows.last().map(String::as_str), Some("status    "));
+    }
+
+    #[test]
     fn multiline_input_scrolls_to_keep_the_cursor_visible() {
         let mut composer = ChatComposer::new("Main");
         composer.insert_text("one\ntwo\nthree\nfour\nfive\nsix");
@@ -1036,9 +1162,9 @@ mod tests {
             .expect("draw");
         let buffer = terminal.backend().buffer();
         let main_column = (0..80)
-            .find(|&x| buffer.cell((x, 2)).is_some_and(|cell| cell.symbol() == "M"))
+            .find(|&x| buffer.cell((x, 3)).is_some_and(|cell| cell.symbol() == "M"))
             .expect("agent label");
-        let cell = buffer.cell((main_column, 2)).expect("agent cell");
+        let cell = buffer.cell((main_column, 3)).expect("agent cell");
         assert_eq!(cell.fg, Color::Cyan);
         assert!(!cell.modifier.contains(Modifier::DIM));
     }
@@ -1077,7 +1203,7 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         composer.render(area, &mut buffer);
         let footer = (0..area.width)
-            .map(|x| buffer[(x, 2)].symbol())
+            .map(|x| buffer[(x, 3)].symbol())
             .collect::<String>();
         assert!(footer.contains('…'));
         assert!(!footer.contains("project"));

@@ -12,6 +12,7 @@ pub(crate) mod chatwidget;
 pub(crate) mod clipboard_copy;
 pub mod color;
 pub mod config_update;
+pub mod configuration_flow;
 pub mod custom_terminal;
 pub mod diff_render;
 pub mod environment_setup;

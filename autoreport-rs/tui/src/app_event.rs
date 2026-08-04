@@ -566,7 +566,7 @@ impl Tui {
             let is_environment = matches!(screen, Overlay::Environment(_));
             if let Some(outcome) = screen.handle_key(key) {
                 match outcome {
-                    Outcome::Saved => {
+                    Outcome::Saved | Outcome::Continue => {
                         if is_environment {
                             self.system(
                                 "environment saved: Python global, report language project-scoped",
@@ -587,7 +587,7 @@ impl Tui {
                             self.want_models = true;
                         }
                     }
-                    Outcome::Cancelled => {
+                    Outcome::Cancelled | Outcome::Quit => {
                         if !is_environment {
                             self.want_models_after_config = false;
                         }
@@ -607,7 +607,7 @@ impl Tui {
         }
 
         // While a completion popup is open, intercept navigation keys.
-        if self.slash.is_some() {
+        if self.composer.slash_popup().is_some() {
             match key.code {
                 KeyCode::Down => {
                     self.move_slash(1);
@@ -639,16 +639,18 @@ impl Tui {
                 KeyCode::Esc => {
                     let input = self.composer.text();
                     let cursor = self.composer.cursor().min(input.len());
-                    self.dismissed_slash = input
-                        .strip_prefix('/')
-                        .map(|text| text[..cursor.saturating_sub(1).min(text.len())].to_string());
-                    self.slash = None;
+                    self.composer.set_dismissed_slash(
+                        input.strip_prefix('/').map(|text| {
+                            text[..cursor.saturating_sub(1).min(text.len())].to_string()
+                        }),
+                    );
+                    self.composer.set_slash_popup(None);
                     return true;
                 }
                 _ => {}
             }
         }
-        if self.mention.is_some() {
+        if self.composer.mention_popup().is_some() {
             match key.code {
                 KeyCode::Down => {
                     self.move_mention(1);
@@ -663,14 +665,16 @@ impl Tui {
                     return true;
                 }
                 KeyCode::Esc => {
-                    if let Some(mention) = self.mention.as_ref() {
+                    if let Some(mention) = self.composer.mention_popup() {
                         let input = self.composer.text();
                         let cursor = mention.cursor.min(input.len());
                         let query = input.get(mention.start + 1..cursor).unwrap_or_default();
-                        self.dismissed_mention =
-                            Some(format!("{}:{}:{}", mention.start, mention.cursor, query));
+                        self.composer.set_dismissed_mention(Some(format!(
+                            "{}:{}:{}",
+                            mention.start, mention.cursor, query
+                        )));
                     }
-                    self.mention = None;
+                    self.composer.set_mention_popup(None);
                     return true;
                 }
                 _ => {}
@@ -764,9 +768,21 @@ impl Tui {
                 }
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
-                if self
-                    .paste_burst
-                    .newline_should_insert_instead_of_submit(now)
+                // Codex bypasses paste-burst Enter-suppression whenever the
+                // draft is a slash command (`in_slash_context`), so a
+                // fast-typed `/new` always submits and clears instead of being
+                // swallowed as an inserted newline mid-burst.
+                let in_slash_context = self.composer.slash_popup().is_some()
+                    || self
+                        .composer
+                        .text()
+                        .lines()
+                        .next()
+                        .is_some_and(|line| line.starts_with('/'));
+                if !in_slash_context
+                    && self
+                        .paste_burst
+                        .newline_should_insert_instead_of_submit(now)
                 {
                     if !self.paste_burst.append_newline_if_active(now) {
                         self.composer.insert_newline();
@@ -944,10 +960,10 @@ impl Tui {
             KeyCode::Esc => {
                 // ESC: close completion popups if open, otherwise interrupt
                 // the focused agent's active turn (codex semantics).
-                if self.slash.is_some() {
-                    self.slash = None;
-                } else if self.mention.is_some() {
-                    self.mention = None;
+                if self.composer.slash_popup().is_some() {
+                    self.composer.set_slash_popup(None);
+                } else if self.composer.mention_popup().is_some() {
+                    self.composer.set_mention_popup(None);
                 } else {
                     self.restore_queued_inputs_after_interrupt(self.focused);
                     self.manager.interrupt(self.focused);
