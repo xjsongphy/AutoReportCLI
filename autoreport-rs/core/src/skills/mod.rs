@@ -147,10 +147,12 @@ impl SkillLoader {
     pub fn list(&self) -> Vec<Skill> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        // Iterate roots in reverse so an explicit project override wins over a
-        // same-named global skill, matching Codex's user/project precedence.
+        // roots() returns [workspace, home]; iterate in that natural order so
+        // an explicit project (workspace) override wins over a same-named global
+        // (home) skill via first-wins `seen.insert`, matching Codex's
+        // user/project precedence (project scope ranks higher).
         let roots = self.roots();
-        for root in roots.iter().rev() {
+        for root in roots.iter() {
             for path in discover_skill_files(root) {
                 match parse_skill(&path) {
                     Ok(skill) => {
@@ -539,6 +541,48 @@ mod tests {
         .unwrap();
         assert!(loader.load("typst").is_some());
         assert!(loader.load("latex-compile").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_workspace_skill_overrides_same_named_home_skill() {
+        // roots() returns [workspace/References/skills, home/resources/<lang>/skills];
+        // list() must iterate in that natural order so the project (workspace)
+        // skill of a given name wins over the same-named global (home) skill,
+        // matching codex's project-over-global precedence.
+        let dir = std::env::temp_dir().join(format!("skills-prec-{}", stamp()));
+        let home = dir.join("home");
+        let workspace = dir.join("workspace");
+        // Same-named skill in the home (global) root.
+        let home_skill = home.join("resources/latex/skills/shared");
+        std::fs::create_dir_all(&home_skill).unwrap();
+        std::fs::write(
+            home_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: home global version\n---\nHOME BODY",
+        )
+        .unwrap();
+        // Same-named skill in the workspace (project) root — the explicit override.
+        let ws_skill = workspace.join("References/skills/shared");
+        std::fs::create_dir_all(&ws_skill).unwrap();
+        std::fs::write(
+            ws_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: workspace project version\n---\nWORKSPACE BODY",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let loader = SkillLoader::new(&home, &workspace);
+        let shared = loader
+            .list()
+            .into_iter()
+            .find(|s| s.name == "shared")
+            .expect("shared skill present");
+        assert_eq!(
+            shared.description, "workspace project version",
+            "project override must win; got: {:?}",
+            shared.description
+        );
+        assert!(shared.body.contains("WORKSPACE BODY"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

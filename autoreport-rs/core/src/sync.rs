@@ -318,12 +318,43 @@ fn save_manifest(home: &Path, repo: &Repo, manifest: &Manifest) {
     if let Ok(json) = serde_json::to_string_pretty(manifest) {
         let _ = atomic_write(&manifest_path(home, repo), &json);
     }
+    // Garbage-collect stale manifests from previous SHAs of the same repo so the
+    // cache dir doesn't grow unbounded across releases: manifests are keyed
+    // `{name}-{sha}.json`, and each SHA bump left the old file behind. Only
+    // files matching the exact `{name}-` prefix for THIS repo are removed;
+    // other repos' manifests are untouched. Best-effort — removal errors ignored.
+    let current = manifest_path(home, repo);
+    let prefix = format!("{}-", repo.name);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == current {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with(&prefix) && file_name.ends_with(".json") {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
+
+/// Bump when any file transform applied in `repos()` changes its output, so a
+/// stale warmth cache (written by a previous binary) is detected and managed
+/// files are re-synced. Without this, editing a transform fn body would not
+/// invalidate the cache until the upstream SHA bumps — `repo_signature` below
+/// covers `remote`/`dests` but not the transform applied to the fetched body.
+const TRANSFORM_VERSION: u32 = 1;
 
 /// A stable digest of one repo's managed file rules. Changes whenever the rules
 /// change (added/removed/relabeled files), so a stale manifest is detected.
 fn repo_signature(files: &[FileRule]) -> String {
     let mut sig = String::new();
+    sig.push_str("tx=");
+    sig.push_str(&TRANSFORM_VERSION.to_string());
+    sig.push(';');
     for rule in files {
         sig.push_str(&rule.remote);
         sig.push('=');
@@ -665,16 +696,34 @@ fn validate_managed_target(home: &Path, target: &Path) -> Result<()> {
     let home = home
         .canonicalize()
         .context("canonicalizing AutoReport home")?;
+    // Join `target` onto `home` BEFORE canonicalizing. At the call site `target`
+    // is a repo-relative dest (e.g. `resources/latex/skills/.../SKILL.md`); if we
+    // canonicalized it directly the relative parent would resolve against the
+    // process CWD (the workspace), not `~/.autoreport`, and fail on a fresh
+    // install — rejecting every managed dest as "unsafe target" and blocking all
+    // preset/skill writes. Mirrors `remove_legacy_managed_dirs`, which already
+    // does `home.join(relative)`.
+    let target = home.join(target);
     let parent = target
         .parent()
         .ok_or_else(|| anyhow::anyhow!("target has no parent"))?;
-    let parent = parent
+    // The parent dir may not exist yet on a fresh install (the caller creates it
+    // *after* validation succeeds), so walk up to the nearest existing ancestor
+    // and canonicalize that. The not-yet-created tail is safe because it is
+    // joined onto an already-canonical `home`.
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("managed target escapes home"))?;
+    }
+    let canonical = ancestor
         .canonicalize()
         .context("canonicalizing managed target parent")?;
-    if !parent.starts_with(&home) {
+    if canonical != home && !canonical.starts_with(&home) {
         anyhow::bail!("target escapes AutoReport home");
     }
-    if target.exists() && std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+    if target.exists() && std::fs::symlink_metadata(&target)?.file_type().is_symlink() {
         anyhow::bail!("target is a symlink");
     }
     Ok(())
@@ -1456,5 +1505,112 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- Bug 1: validate_managed_target must resolve relative dests against
+    // ---- `home`, not the process CWD, and must tolerate a not-yet-created
+    // ---- parent (fresh-install dir layout). ----
+
+    /// Regression for the critical bug where `validate_managed_target`
+    /// canonicalized the *relative* dest's parent against the process CWD. On a
+    /// fresh install the parent doesn't exist under CWD, so `canonicalize()`
+    /// errored and every managed dest was rejected as "unsafe target" — blocking
+    /// all preset/skill writes.
+    ///
+    /// Here the home's deep parent dir is intentionally NOT created (the sync
+    /// caller creates dirs only after validation passes), so a correct impl must
+    /// resolve the relative path against `home`, not CWD. Before the fix this
+    /// returned an error ("canonicalizing managed target parent").
+    #[test]
+    fn validate_managed_target_accepts_relative_dest_with_nonexistent_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let dest = Path::new("resources/latex/skills/latex-compile/SKILL.md");
+        validate_managed_target(home, dest).expect(
+            "relative dest under home with a not-yet-created parent must validate",
+        );
+    }
+
+    /// An escape via `..` components must still be rejected once the path is
+    /// joined onto home.
+    #[test]
+    fn validate_managed_target_rejects_path_escaping_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // `home.join` keeps the `..` lexically; walking up to an existing
+        // ancestor canonicalizes outside home.
+        let dest = Path::new("../../etc/passwd");
+        assert!(validate_managed_target(home, dest).is_err());
+    }
+
+    /// The symlink guard must still fire on the joined path: a target that is a
+    /// symlink pointing outside home is rejected.
+    #[test]
+    fn validate_managed_target_rejects_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let dest_rel = "resources/latex/skills/latex-compile/SKILL.md";
+        std::fs::create_dir_all(
+            home.join("resources/latex/skills/latex-compile"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = dir.path().join("outside-secret.txt");
+            std::fs::write(&outside, "secret").unwrap();
+            symlink(&outside, home.join(dest_rel)).unwrap();
+            let err = validate_managed_target(home, Path::new(dest_rel)).unwrap_err();
+            assert!(format!("{err}").contains("symlink"), "unexpected err: {err}");
+        }
+    }
+
+    // ---- Bug 2: save_manifest must garbage-collect stale same-repo manifests. ----
+
+    #[test]
+    fn save_manifest_garbage_collects_stale_shas_for_same_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(manifest_dir(home)).unwrap();
+        // A manifest from a previous SHA for the SAME repo — should be removed.
+        let stale =
+            manifest_dir(home).join(format!("{}-stalesha000000.json", SKILLS.name));
+        std::fs::write(&stale, "{}").unwrap();
+        // A manifest for a DIFFERENT repo — must be left untouched.
+        let other =
+            manifest_dir(home).join(format!("{}-othersha.json", CC_SWITCH.name));
+        std::fs::write(&other, "{}").unwrap();
+        // Write the current manifest for SKILLS.
+        save_manifest(
+            home,
+            &SKILLS,
+            &Manifest {
+                sha: SKILLS.sha.to_string(),
+                signature: "sig".to_string(),
+                dests: vec![],
+            },
+        );
+        assert!(!stale.exists(), "stale same-repo manifest should be removed");
+        assert!(
+            manifest_path(home, &SKILLS).exists(),
+            "current manifest must exist"
+        );
+        assert!(other.exists(), "other-repo manifest must not be touched");
+    }
+
+    // ---- Bug 3: repo_signature must fold in the transform version. ----
+
+    #[test]
+    fn repo_signature_includes_transform_version() {
+        let files = vec![FileRule {
+            remote: "x".to_string(),
+            dests: vec!["a".to_string()],
+            transform: noop,
+        }];
+        let sig = repo_signature(&files);
+        assert!(
+            sig.contains(&format!("tx={TRANSFORM_VERSION}")),
+            "signature must include transform version, got: {sig}"
+        );
     }
 }

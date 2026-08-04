@@ -91,6 +91,13 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
     let mut out = Vec::new();
     for msg in messages {
         match msg.role.as_str() {
+            // TODO(developer-role): OpenAI Chat Completions accepts
+            // `role: "developer"` with higher precedence than `system`, but
+            // this provider only serves compat backends (deepseek/openrouter/
+            // google/custom) — first-party OpenAI is routed to the Responses
+            // API in `factory.rs` and never reaches here. There is therefore
+            // no clean first-party signal available without threading a new
+            // flag through `convert_messages`; keep the safe `system` fallback.
             "system" | "developer" => out.push(json!({"role": "system", "content": msg.content})),
             "user" => out.push(json!({"role": "user", "content": msg.content})),
             "assistant" => {
@@ -98,9 +105,10 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                 if let Some(calls) = &msg.tool_calls
                     && !calls.is_empty()
                 {
-                    // When tool_calls are present, content must be null (not "");
-                    // several OpenAI-compatible backends 400 on an empty string
-                    // here.
+                    // OpenAI Chat Completions permits an assistant message to
+                    // carry both `content` and `tool_calls` simultaneously, so
+                    // preserve any real text. Only null out *empty* content:
+                    // several OpenAI-compatible backends 400 on `""` here.
                     let arr: Vec<Value> = calls
                         .iter()
                         .map(|c| {
@@ -114,7 +122,9 @@ fn convert_messages(messages: &[Message]) -> Vec<Value> {
                             })
                         })
                         .collect();
-                    m["content"] = Value::Null;
+                    if msg.content.is_empty() {
+                        m["content"] = Value::Null;
+                    }
                     m["tool_calls"] = Value::Array(arr);
                 }
                 out.push(m);
@@ -325,7 +335,8 @@ async fn run_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_text_content, parse_final};
+    use super::{convert_messages, extract_text_content, parse_final};
+    use crate::provider::types::{Message, ToolCall};
     use serde_json::json;
 
     #[test]
@@ -367,5 +378,67 @@ mod tests {
             parse_final(&response).content.as_deref(),
             Some("I can't help with that.")
         );
+    }
+
+    fn assistant_with_call(content: &str, call_id: &str) -> Message {
+        Message {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls: Some(vec![ToolCall {
+                id: call_id.into(),
+                name: "get_weather".into(),
+                arguments: json!({"city": "Tokyo"}),
+            }]),
+            tool_call_id: None,
+            thinking: None,
+            thinking_signature: None,
+        }
+    }
+
+    #[test]
+    fn assistant_text_survives_when_tool_calls_present() {
+        // Regression: OpenAI Chat Completions allows an assistant message to
+        // carry both `content` and `tool_calls`. The content must NOT be
+        // nulled when it carries real text.
+        let msgs = convert_messages(&[assistant_with_call(
+            "Let me check the weather for you.",
+            "call_1",
+        )]);
+        assert_eq!(msgs.len(), 1);
+        let m = &msgs[0];
+        assert_eq!(m["role"], "assistant");
+        assert_eq!(
+            m["content"],
+            "Let me check the weather for you.",
+            "assistant text must be preserved alongside tool_calls"
+        );
+        assert!(
+            m.get("tool_calls").is_some_and(|t| t.is_array()),
+            "tool_calls must still be emitted"
+        );
+        let tc = &m["tool_calls"][0];
+        assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "get_weather");
+        // `arguments` is serialized to a JSON string per Chat Completions spec.
+        assert_eq!(tc["function"]["arguments"], r#"{"city":"Tokyo"}"#);
+    }
+
+    #[test]
+    fn assistant_empty_content_is_nulled_for_compat_backends() {
+        // Compat behavior preserved: empty-string content alongside
+        // tool_calls becomes Null so backends that 400 on `""` stay happy.
+        let msgs = convert_messages(&[assistant_with_call("", "call_2")]);
+        assert_eq!(msgs.len(), 1);
+        let m = &msgs[0];
+        assert!(
+            m["content"].is_null(),
+            "empty content must be nulled for compat backends"
+        );
+        assert!(
+            m.get("tool_calls").is_some_and(|t| t.is_array()),
+            "tool_calls must still be emitted"
+        );
+        assert_eq!(m["tool_calls"][0]["id"], "call_2");
     }
 }
