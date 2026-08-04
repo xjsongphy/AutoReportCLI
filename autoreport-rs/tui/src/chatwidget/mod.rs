@@ -1,6 +1,6 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
@@ -164,9 +164,11 @@ pub(crate) fn render_tool_result_lines(
         return err
             .lines()
             .map(|l| {
+                // Codex dims tool errors (it does not color them red); match
+                // that and our own exec cell, which dims stderr.
                 Line::from(Span::styled(
                     format!("Error: {l}"),
-                    Style::default().fg(Color::Red),
+                    Style::default().add_modifier(Modifier::DIM),
                 ))
             })
             .collect();
@@ -186,7 +188,7 @@ pub(crate) fn render_tool_result_lines(
         .map(|l| {
             Line::from(Span::styled(
                 l.to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().add_modifier(Modifier::DIM),
             ))
         })
         .collect()

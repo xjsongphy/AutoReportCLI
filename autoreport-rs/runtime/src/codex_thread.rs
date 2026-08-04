@@ -1160,8 +1160,12 @@ impl AgentLoop {
         if call.name == "respond" && out.error.is_none() {
             self.turn_reported.store(true, Ordering::Relaxed);
         }
-        self.record(ResponseItem::function_call_output(&call.id, result_text))
-            .await;
+        self.record(ResponseItem::function_call_output_with_error(
+            &call.id,
+            result_text,
+            out.error.clone(),
+        ))
+        .await;
     }
 
     async fn publish_tool_denial(&self, call: &ProviderToolCall, denial: String) {
@@ -1172,8 +1176,12 @@ impl AgentLoop {
             error: Some(denial.clone()),
             call_id: call.id.clone(),
         });
-        self.record(ResponseItem::function_call_output(&call.id, denial))
-            .await;
+        self.record(ResponseItem::function_call_output_with_error(
+            &call.id,
+            denial.clone(),
+            Some(denial),
+        ))
+        .await;
     }
 
     async fn maybe_compact(&self) {

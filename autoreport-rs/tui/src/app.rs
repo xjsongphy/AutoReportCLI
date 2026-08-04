@@ -681,7 +681,7 @@ impl Tui {
                             });
                         }
                     }
-                    ResponseItem::FunctionCallOutput { call_id, output } => {
+                    ResponseItem::FunctionCallOutput { call_id, output, error } => {
                         if let Some((owner, questions)) = self.user_input_requests.remove(&call_id)
                         {
                             let answers = serde_json::from_str::<serde_json::Value>(&output)
@@ -716,7 +716,21 @@ impl Tui {
                                 .rev()
                                 .find(|entry| entry.call_id.as_deref() == Some(call_id.as_str()))
                             {
-                                entry.result = Some(serde_json::Value::String(output));
+                                // Parse the persisted output back into the same
+                                // structured `Value` the live path produced (exec's
+                                // `{stdout,stderr,returncode}`, generic Objects, …)
+                                // so renderers that index `result` by field
+                                // round-trip identically to the live run. Plain
+                                // non-JSON outputs (e.g. the abort sentinel) fall
+                                // back to `Value::String`. Mirrors how `args` is
+                                // reparsed just above.
+                                let result_value =
+                                    match serde_json::from_str::<serde_json::Value>(&output) {
+                                        Ok(value) => value,
+                                        Err(_) => serde_json::Value::String(output),
+                                    };
+                                entry.result = Some(result_value);
+                                entry.error = error;
                                 break;
                             }
                         }
