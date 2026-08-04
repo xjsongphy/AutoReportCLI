@@ -144,6 +144,7 @@ mod tests {
         .unwrap();
         recorder
             .append(&ResponseItem::user_message("only A"))
+            .await
             .unwrap();
         recorder.flush().await.unwrap();
 
