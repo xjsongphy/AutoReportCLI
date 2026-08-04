@@ -715,10 +715,9 @@ impl Tui {
                 KeyCode::Char(c)
                     if key.modifiers.is_empty()
                         && c.is_ascii_digit()
-                        && c.to_digit(10).filter(|d| *d as usize <= len).is_some() =>
+                        && picker_digit_index(c, len).is_some() =>
                 {
-                    c.to_digit(10)
-                        .map(|d| PickerAction::Accept((d - 1) as usize))
+                    picker_digit_index(c, len).map(PickerAction::Accept)
                 }
                 _ => Some(PickerAction::Swallow),
             };
@@ -984,5 +983,61 @@ impl Tui {
             return false;
         }
         true
+    }
+}
+
+/// Map a quick-select digit char to a 0-based picker index.
+///
+/// Mirrors codex's `ListSelectionView`: only `1..=len` are selectable, so
+/// `'0'` (and any digit beyond the roster length) yields `None` and the key
+/// falls through to the `Swallow` arm. This avoids the `0u32 - 1` underflow
+/// (debug panic / release wrap) that the previous `*d as usize <= len` guard
+/// admitted for `'0'` (since `0 <= len` is always true).
+fn picker_digit_index(c: char, len: usize) -> Option<usize> {
+    let d = c.to_digit(10)?;
+    // `.then` (not `then_some`) so `(d - 1)` is only evaluated when `d >= 1`,
+    // avoiding a debug underflow panic / release wrap for `'0'`.
+    (1..=len)
+        .contains(&(d as usize))
+        .then(|| (d - 1) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::picker_digit_index;
+
+    #[test]
+    fn picker_digit_zero_is_no_op() {
+        // Regression: pressing '0' must NOT underflow (debug panic) or wrap to
+        // a huge index (release). It is a no-op regardless of roster length,
+        // matching codex's ListSelectionView (1..=len).
+        assert_eq!(picker_digit_index('0', 1), None);
+        assert_eq!(picker_digit_index('0', 9), None);
+        assert_eq!(picker_digit_index('0', usize::MAX), None);
+    }
+
+    #[test]
+    fn picker_digit_one_based_within_range() {
+        // '1' -> index 0, '2' -> index 1, ... up to and including len.
+        assert_eq!(picker_digit_index('1', 3), Some(0));
+        assert_eq!(picker_digit_index('2', 3), Some(1));
+        assert_eq!(picker_digit_index('3', 3), Some(2));
+        assert_eq!(picker_digit_index('1', 1), Some(0));
+    }
+
+    #[test]
+    fn picker_digit_beyond_len_is_no_op() {
+        // Digits past the roster length are no-ops (not clamps).
+        assert_eq!(picker_digit_index('4', 3), None);
+        assert_eq!(picker_digit_index('9', 3), None);
+    }
+
+    #[test]
+    fn picker_digit_non_digit_is_no_op() {
+        // The match-arm guard already filters to ascii digits, but the helper
+        // must still be total: non-digits yield None, never panic.
+        assert_eq!(picker_digit_index('a', 3), None);
+        assert_eq!(picker_digit_index('!', 3), None);
+        assert_eq!(picker_digit_index(' ', 3), None);
     }
 }

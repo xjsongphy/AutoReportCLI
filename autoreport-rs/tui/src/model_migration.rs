@@ -7,7 +7,7 @@ use crate::config_update::Outcome;
 use crate::custom_terminal::{Frame, Terminal};
 use autoreport_core::config::resolve_api_key;
 use autoreport_core::config::schema::{ModelConfig, Settings};
-use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -302,6 +302,12 @@ impl ModelScreen {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        // On terminals that advertise `REPORT_EVENT_TYPES` (kitty/iTerm2/foot),
+        // crossterm emits both Press and Release for a single physical tap.
+        // Ignore Release so actions don't fire twice. (app_event.rs:500 / codex)
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Outcome::Cancelled);
         }
@@ -332,7 +338,7 @@ impl ModelScreen {
                 self.error = None;
                 self.step = Step::Model;
             }
-            KeyCode::Char('s') => {
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
                 if self.complete() {
                     self.step = Step::Preview;
                 } else {
@@ -370,7 +376,9 @@ impl ModelScreen {
             KeyCode::Right if self.cursor < self.input.len() => {
                 self.cursor += self.input[self.cursor..].chars().next().unwrap().len_utf8();
             }
-            KeyCode::Char(ch) => {
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.input.insert(self.cursor, ch);
                 self.cursor += ch.len_utf8();
             }
@@ -470,6 +478,93 @@ mod tests {
             None
         );
         assert_eq!(screen.input, "q");
+    }
+
+    /// I12: On kitty/iTerm2/foot a single tap yields Press + Release; Release
+    /// must be a no-op so arrow navigation and typing are not doubled.
+    #[test]
+    fn release_event_is_ignored() {
+        let mut screen = ModelScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        // A Release of Down on the Target page must not move selection.
+        let mut evt = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        evt.kind = KeyEventKind::Release;
+        assert_eq!(screen.handle_key(evt), None);
+        assert_eq!(
+            screen.target_selected, 0,
+            "Release must not advance selection"
+        );
+
+        // A Release of a Char on the Model page must not insert.
+        screen.step = Step::Model;
+        let mut evt = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        evt.kind = KeyEventKind::Release;
+        assert_eq!(screen.handle_key(evt), None);
+        assert!(screen.input.is_empty(), "Release must not insert a char");
+    }
+
+    /// I13: Ctrl/Alt + Char must not inject junk into the model-name field;
+    /// only plain or SHIFT-modified chars are accepted (app_event.rs:506).
+    #[test]
+    fn modifier_char_does_not_inject_into_model_input() {
+        let mut screen = ModelScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        screen.step = Step::Model;
+
+        // Ctrl+X must NOT insert 'x'.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert!(screen.input.is_empty(), "Ctrl+X must not insert into input");
+
+        // Alt+3 must NOT insert '3'.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT)),
+            None
+        );
+        assert!(screen.input.is_empty(), "Alt+3 must not insert into input");
+
+        // Plain char still works.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.input, "g");
+
+        // SHIFT+char is still accepted (capital letter).
+        screen.cursor = screen.input.len();
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            None
+        );
+        assert_eq!(screen.input, "gP");
+    }
+
+    /// Minor: `s` save shortcut must require empty modifiers so Ctrl+S / Alt+S
+    /// do not trigger the save check (mirrors the `q` shortcut guard).
+    #[test]
+    fn save_shortcut_requires_empty_modifiers() {
+        let mut settings = Settings::default();
+        settings.providers.insert("one".into(), api());
+        settings.models.main.provider = "one".into();
+        settings.models.sub.provider = "one".into();
+        settings.models.main.model = "gpt-test".into();
+        settings.models.sub.model = "gpt-sub".into();
+        let mut screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
+        assert!(screen.complete());
+
+        // Ctrl+S must NOT advance to preview.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(screen.step, Step::Target, "Ctrl+S must not trigger save");
+
+        // Plain `s` still advances when complete.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.step, Step::Preview);
     }
 
     fn render(screen: &mut ModelScreen, width: u16, height: u16) -> String {

@@ -482,7 +482,11 @@ impl Tui {
         let (draw_tx, mut draw_rx) = tokio::sync::broadcast::channel(8);
         let frame_requester = FrameRequester::new(draw_tx);
         self.frame_requester = Some(frame_requester.clone());
-        let mut last_full_frame_surface = self.full_frame_surface();
+        // Tracks whether the terminal is currently in the alternate screen,
+        // mirroring Codex's `alt_screen_active` AtomicBool. We only emit
+        // ?1049h/?1049l on actual Chat<->non-Chat edges, never between two
+        // full-frame overlays (e.g. ApiConfiguration -> ConfigurationFlow).
+        let mut alt_screen_active = false;
         loop {
             if self.want_models {
                 self.want_models = false;
@@ -510,26 +514,29 @@ impl Tui {
                     self.workspace.clone(),
                 )));
             }
-            let full_frame_surface = self.full_frame_surface();
-            if full_frame_surface != last_full_frame_surface {
-                let entering_overlay = full_frame_surface != FullFrameSurface::Chat;
-                if entering_overlay {
-                    // Full-screen overlays (config/pager/environment) run in the
-                    // alternate screen so their content is discarded on close
-                    // and the main chat's real scrollback is preserved
-                    // underneath — Codex's `enter_alt_screen`. Enabling
-                    // alternate scroll lets terminals translate the wheel to
-                    // arrow keys inside the overlay only.
-                    execute!(io::stdout(), EnterAlternateScreen, EnableAlternateScroll)?;
-                    terminal.clear_visible_screen()?;
-                } else {
-                    // Leaving the alternate screen restores the main buffer
-                    // exactly as the inline chat left it; just force a full
-                    // redraw of the viewport — Codex's `leave_alt_screen`.
-                    execute!(io::stdout(), DisableAlternateScroll, LeaveAlternateScreen)?;
-                    terminal.invalidate_viewport();
-                }
-                last_full_frame_surface = full_frame_surface;
+            // Only act on actual Chat<->non-Chat edges: switching between two
+            // full-frame overlays (e.g. ApiConfiguration -> ConfigurationFlow)
+            // must not re-enter the alternate screen. Mirrors Codex's
+            // `enter_alt_screen`/`leave_alt_screen` guarding on
+            // `alt_screen_active`.
+            let on_chat_surface = self.full_frame_surface() == FullFrameSurface::Chat;
+            if !on_chat_surface && !alt_screen_active {
+                // Full-screen overlays (config/pager/environment) run in the
+                // alternate screen so their content is discarded on close
+                // and the main chat's real scrollback is preserved
+                // underneath — Codex's `enter_alt_screen`. Enabling
+                // alternate scroll lets terminals translate the wheel to
+                // arrow keys inside the overlay only.
+                execute!(io::stdout(), EnterAlternateScreen, EnableAlternateScroll)?;
+                terminal.clear_visible_screen()?;
+                alt_screen_active = true;
+            } else if on_chat_surface && alt_screen_active {
+                // Leaving the alternate screen restores the main buffer
+                // exactly as the inline chat left it; just force a full
+                // redraw of the viewport — Codex's `leave_alt_screen`.
+                execute!(io::stdout(), DisableAlternateScroll, LeaveAlternateScreen)?;
+                terminal.invalidate_viewport();
+                alt_screen_active = false;
             }
             let anchor_viewport_top = self.scrollback_needs_clear;
             if self.scrollback_needs_clear {
@@ -544,7 +551,16 @@ impl Tui {
                 self.scrollback_needs_clear = false;
             }
             self.prepare_chat_viewport(&mut terminal, anchor_viewport_top)?;
-            self.flush_history_to_scrollback(&mut terminal)?;
+            // Bug I15: only flush history into the real (primary-screen)
+            // scrollback while the Chat surface owns the frame. On any overlay
+            // the terminal is in the alternate screen, so flushing would write
+            // into the alt buffer (discarded on close) while still advancing
+            // `history_inserted_cells`, permanently losing those cells from
+            // primary scrollback once the overlay closes. Mirrors Codex
+            // gating `insert_history_lines` on `!is_alt_screen_active()`.
+            if on_chat_surface {
+                self.flush_history_to_scrollback(&mut terminal)?;
+            }
             terminal.draw(|f| self.draw(f))?;
 
             tokio::select! {
@@ -890,6 +906,37 @@ mod tests {
             select_full_frame_surface(None, true),
             FullFrameSurface::Pager
         );
+    }
+
+    #[test]
+    fn scrollback_flush_only_runs_on_chat_surface() {
+        // Bug I15 regression guard. The run loop gates
+        // `flush_history_to_scrollback` on `full_frame_surface() == Chat`
+        // (computed via `on_chat_surface`). Flushing on any other surface
+        // would write into the alt buffer while advancing
+        // `history_inserted_cells`, permanently losing those cells from real
+        // scrollback when the overlay closes. Asserting every non-Chat
+        // surface maps to "alt screen / no flush" locks that contract even
+        // if the enum grows a new variant later.
+        fn on_chat_surface(overlay: Option<FullFrameSurface>, pager_is_open: bool) -> bool {
+            select_full_frame_surface(overlay, pager_is_open) == FullFrameSurface::Chat
+        }
+
+        // Only the plain chat surface (no overlay, no pager) may flush.
+        assert!(on_chat_surface(None, false));
+
+        // Every overlay state forces the terminal into the alt screen, so the
+        // flush must be skipped there.
+        assert!(!on_chat_surface(None, true));
+        for overlay in [
+            FullFrameSurface::ApiConfiguration,
+            FullFrameSurface::ConfigurationFlow,
+            FullFrameSurface::EnvironmentConfiguration,
+        ] {
+            assert!(!on_chat_surface(Some(overlay), false));
+            // An overlay also suppresses the flush when a pager is stale.
+            assert!(!on_chat_surface(Some(overlay), true));
+        }
     }
 
     #[test]

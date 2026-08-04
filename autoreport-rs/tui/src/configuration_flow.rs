@@ -5,7 +5,7 @@ use crate::custom_terminal::{Frame, Terminal};
 use crate::model_migration::ModelScreen;
 use autoreport_core::config::schema::Settings;
 use autoreport_core::sync::PresetProvider;
-use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::PathBuf;
@@ -60,6 +60,14 @@ impl ConfigurationFlow {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        // On terminals that advertise `REPORT_EVENT_TYPES` (kitty/iTerm2/foot),
+        // crossterm emits both Press and Release for a single physical tap.
+        // Ignore Release so actions don't fire twice. (app_event.rs:500 / codex)
+        // This also covers the Providers page, whose `ConfigScreen::handle_key`
+        // (config_update.rs) does not filter Release itself.
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Outcome::Cancelled);
         }
@@ -125,6 +133,26 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// I12: On kitty/iTerm2/foot a single tap yields Press + Release; Release
+    /// must be a no-op in the flow wrapper so the Providers page (whose
+    /// ConfigScreen does not filter Release itself) is not doubled either.
+    #[test]
+    fn release_event_is_ignored() {
+        let mut settings = Settings::default();
+        settings.providers.insert("work".into(), provider());
+        let mut flow = ConfigurationFlow::new(settings, PathBuf::from("/tmp/ws"), vec![]);
+
+        // A Release of `c` (the Providers "continue" key) must not advance.
+        let mut evt = key(KeyCode::Char('c'));
+        evt.kind = KeyEventKind::Release;
+        assert_eq!(flow.handle_key(evt), None);
+        assert_eq!(
+            flow.page,
+            Page::Providers,
+            "Release must not advance from Providers to Models"
+        );
     }
 
     fn provider() -> ProviderConfig {
