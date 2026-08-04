@@ -112,9 +112,7 @@ pub enum ResponseItem {
         error: Option<String>,
     },
     /// codex emits a Compaction item when the context is summarized.
-    Compaction {
-        encrypted_content: String,
-    },
+    Compaction { encrypted_content: String },
     /// Catch-all for unknown / codex-only variants (e.g. `local_shell_call`,
     /// `web_search_call`, `compaction_trigger`) encountered when resuming a
     /// rollout written by codex or a future writer. Mirrors codex's `Other`
@@ -264,9 +262,16 @@ mod tests {
             Some("boom".to_string()),
         );
         let json = serde_json::to_string(&with_err).unwrap();
-        assert!(json.contains(r#""error":"boom""#), "error must be persisted: {json}");
+        assert!(
+            json.contains(r#""error":"boom""#),
+            "error must be persisted: {json}"
+        );
         match serde_json::from_str::<ResponseItem>(&json).unwrap() {
-            ResponseItem::FunctionCallOutput { call_id, output, error } => {
+            ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                error,
+            } => {
                 assert_eq!(call_id, "call-1");
                 assert_eq!(output, r#"{"stdout":"hi\n","returncode":0}"#);
                 assert_eq!(error.as_deref(), Some("boom"));
@@ -278,7 +283,10 @@ mod tests {
         // on-disk shape for older readers.
         let no_err = ResponseItem::function_call_output("call-2", "ok");
         let json2 = serde_json::to_string(&no_err).unwrap();
-        assert!(!json2.contains(r#""error""#), "error must be omitted when None: {json2}");
+        assert!(
+            !json2.contains(r#""error""#),
+            "error must be omitted when None: {json2}"
+        );
         match serde_json::from_str::<ResponseItem>(&json2).unwrap() {
             ResponseItem::FunctionCallOutput { error, .. } => assert!(error.is_none()),
             _ => panic!("deserialized to wrong variant"),
@@ -291,7 +299,11 @@ mod tests {
         // deserialize, with error defaulting to None.
         let legacy = r#"{"type":"function_call_output","call_id":"c3","output":"ok"}"#;
         match serde_json::from_str::<ResponseItem>(legacy).unwrap() {
-            ResponseItem::FunctionCallOutput { call_id, output, error } => {
+            ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                error,
+            } => {
                 assert_eq!(call_id, "c3");
                 assert_eq!(output, "ok");
                 assert!(error.is_none());

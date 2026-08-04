@@ -681,7 +681,11 @@ impl Tui {
                             });
                         }
                     }
-                    ResponseItem::FunctionCallOutput { call_id, output, error } => {
+                    ResponseItem::FunctionCallOutput {
+                        call_id,
+                        output,
+                        error,
+                    } => {
                         if let Some((owner, questions)) = self.user_input_requests.remove(&call_id)
                         {
                             let answers = serde_json::from_str::<serde_json::Value>(&output)
