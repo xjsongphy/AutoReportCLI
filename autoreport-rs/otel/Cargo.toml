@@ -33,7 +33,6 @@ thiserror.workspace = true
 autoreport-protocol = { path = "../protocol" }
 autoreport-utils-absolute-path = { path = "../utils/absolute-path" }
 autoreport-utils-string = { path = "../utils/string" }
-autoreport-codex-api = { workspace = true }
 autoreport-codex-protocol = { workspace = true }
 eventsource-stream = { workspace = true }
 tokio-tungstenite = { workspace = true }
