@@ -98,13 +98,17 @@ def native_binaries(item: PlatformPackage, vendor_src: Path | None) -> tuple[Pat
         packages.extend(["-p", "autoreport-linux-sandbox", "-p", "autoreport-bwrap"])
     elif item.os == "win32":
         packages.extend(["-p", "autoreport-windows-sandbox"])
-    subprocess.run(["cargo", "build", "--release", *packages, "--target", item.target], cwd=ROOT, check=True)
-    candidate = ROOT / "target" / item.target / "release" / name
+    subprocess.run(
+        ["cargo", "build", "--locked", "--profile", "dist", *packages, "--target", item.target],
+        cwd=ROOT,
+        check=True,
+    )
+    candidate = ROOT / "target" / item.target / "dist" / name
     if not candidate.is_file():
         raise SystemExit(f"cargo did not produce {candidate}")
     assets = []
     for source_name, relative_destination in resources:
-        source = ROOT / "target" / item.target / "release" / source_name
+        source = ROOT / "target" / item.target / "dist" / source_name
         if not source.is_file():
             raise SystemExit(f"cargo did not produce {source}")
         assets.append((source, relative_destination))

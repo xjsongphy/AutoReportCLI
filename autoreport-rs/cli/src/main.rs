@@ -23,9 +23,9 @@ use autoreport_core::environment;
 use autoreport_core::provider::build_provider;
 use autoreport_runtime::LoopManager;
 use autoreport_tui::Tui;
-use autoreport_tui::config_update::{ConfigScreen, Outcome};
+use autoreport_tui::config_update::Outcome;
+use autoreport_tui::configuration_flow::ConfigurationFlow;
 use autoreport_tui::environment_setup::EnvironmentScreen;
-use autoreport_tui::model_migration::ModelScreen;
 use autoreport_tui::workspace_confirm::{WorkspaceOutcome, WorkspaceScreen};
 
 #[derive(Parser, Debug)]
@@ -53,6 +53,14 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Install the panic hook before anything else so it is in place for every
+    // fullscreen wizard helper below (`run_wizard`, `run_environment_wizard`,
+    // `run_workspace_confirmation`). Each of those enables raw mode and enters
+    // the alt screen; if anything panics while those are active the terminal
+    // would otherwise be left broken (raw mode on, alt buffer). The hook does
+    // best-effort restore and then delegates to the default hook so the panic
+    // message still prints normally. Mirrors codex's TUI entry.
+    install_panic_hook();
     // Apply OS-level process hardening as the very first thing (mirrors codex's
     // `responses-api-proxy`): deny debugger attach (PT_DENY_ATTACH on macOS),
     // scrub DYLD_* env, drop core dumps. Our binary holds API keys in memory,
@@ -81,6 +89,23 @@ fn dispatch_windows_sandbox_wrapper() {
 #[cfg(not(target_os = "windows"))]
 fn dispatch_windows_sandbox_wrapper() {}
 
+/// Install a panic hook that restores the terminal (raw mode off, leave alt
+/// screen) before delegating to the default hook. This covers panics that occur
+/// while a fullscreen wizard helper has the terminal in raw mode + alt screen;
+/// without it the terminal is left broken and the panic message is written
+/// into the discarded alt buffer. Best-effort and infallible: all restore
+/// errors are ignored via `let _ =` so they never mask the original panic.
+/// `disable_raw_mode` is a no-op when raw mode isn't active, so this is harmless
+/// in the normal TUI run path.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default(info);
+    }));
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -90,8 +115,13 @@ async fn run() -> Result<()> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
 
+    // Codex keeps the session cwd absolute all the way into the TUI. Do the
+    // same for AutoReport so the header, file index, agent loops, and footer
+    // all describe one stable directory, while the renderer can consistently
+    // shorten paths below $HOME to `~/...`.
     let workspace = match cli.workspace {
-        Some(p) => p,
+        Some(p) if p.is_absolute() => p,
+        Some(p) => std::env::current_dir()?.join(p),
         None => std::env::current_dir()?,
     };
 
@@ -129,15 +159,15 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    // API setup is always first: an existing config file with expired/missing
-    // credentials must re-open this page just like a first launch does.
-    if config::needs_api_config(&settings) {
+    // One shared flow keeps provider edits and Main/Sub assignments in a
+    // single in-memory draft, both on first start and under `/model`.
+    if config::needs_api_config(&settings) || config::needs_model_config(&settings) {
         match run_wizard(&autoreport_home, settings.clone()) {
-            Outcome::Saved => {
+            Outcome::Saved | Outcome::Continue => {
                 // Re-read the just-written config and continue startup.
                 settings = config::load_settings(&autoreport_home)?;
             }
-            Outcome::Cancelled => {
+            Outcome::Cancelled | Outcome::Quit => {
                 log::info!("config wizard cancelled; continuing with env/config defaults");
             }
         }
@@ -149,22 +179,13 @@ async fn run() -> Result<()> {
         );
     }
 
-    // API setup and model selection are deliberately separate. After API
-    // configuration is complete, the first-run flow asks for main/sub models.
-    if config::needs_model_config(&settings) {
-        match run_model_wizard(&autoreport_home, settings.clone()) {
-            Outcome::Saved => settings = config::load_settings(&autoreport_home)?,
-            Outcome::Cancelled => {}
-        }
-    }
-
     // Local tool and Python setup follows API/model selection and precedes the
     // workspace trust gate, so the selected interpreter is available to every
     // agent before its first prompt is assembled.
     if environment::needs_python_config(&autoreport_home)? {
         match run_environment_wizard(&autoreport_home, &workspace) {
-            Outcome::Saved => {}
-            Outcome::Cancelled => return Ok(()),
+            Outcome::Saved | Outcome::Continue => {}
+            Outcome::Cancelled | Outcome::Quit => return Ok(()),
         }
     }
 
@@ -206,8 +227,8 @@ async fn run() -> Result<()> {
             autoreport_core::project::ReportLanguageInference::Empty
             | autoreport_core::project::ReportLanguageInference::Ambiguous => {
                 match run_environment_wizard(&autoreport_home, &workspace) {
-                    Outcome::Saved => {}
-                    Outcome::Cancelled => return Ok(()),
+                    Outcome::Saved | Outcome::Continue => {}
+                    Outcome::Cancelled | Outcome::Quit => return Ok(()),
                 }
             }
         }
@@ -272,28 +293,6 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Open the full-screen model-selection wizard after API setup.
-fn run_model_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
-    enable_raw_mode().ok();
-    let _ = execute!(io::stdout(), EnterAlternateScreen);
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = match Terminal::with_options(backend) {
-        Ok(t) => t,
-        Err(_) => {
-            let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
-            return Outcome::Cancelled;
-        }
-    };
-    let mut screen = ModelScreen::new(settings, home.to_path_buf());
-    let outcome = screen
-        .run_fullscreen(&mut terminal)
-        .unwrap_or(Outcome::Cancelled);
-    let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
-    outcome
-}
-
 /// Open the global Python/local-tool environment page after model selection.
 fn run_environment_wizard(home: &std::path::Path, workspace: &std::path::Path) -> Outcome {
     enable_raw_mode().ok();
@@ -334,7 +333,7 @@ fn run_wizard(home: &std::path::Path, settings: Settings) -> Outcome {
         }
     };
     let presets = autoreport_core::sync::load_presets(home);
-    let mut screen = ConfigScreen::new_with_presets(settings, home.to_path_buf(), presets);
+    let mut screen = ConfigurationFlow::new(settings, home.to_path_buf(), presets);
     let outcome = screen
         .run_fullscreen(&mut terminal)
         .unwrap_or(Outcome::Cancelled);

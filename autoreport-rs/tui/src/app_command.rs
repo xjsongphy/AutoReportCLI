@@ -12,7 +12,7 @@ impl Tui {
         match name {
             "help" | "h" | "?" => self.system("Commands: /help /agent /agents /sessions /switch /config /model /env /compact /pager /new /clear /copy /manifest /index /ide /quit", SysKind::Info),
             "config" => self.want_config = true,
-            "model" => { self.want_config = true; self.want_models_after_config = true; },
+            "model" => self.want_models = true,
             "env" => self.want_environment = true,
             "agent" | "agents" => {
                 // Codex opens a `/agent` selection popup (`ListSelectionView`).

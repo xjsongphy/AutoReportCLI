@@ -4,41 +4,15 @@ members = [
     "autoreport-rs/vendor/codex/app-server-protocol",
     "autoreport-rs/vendor/codex/app-server-transport",
     "autoreport-rs/vendor/codex/codex-protocol",
-    "autoreport-rs/vendor/codex/http-client",
-    "autoreport-rs/vendor/codex/websocket-client",
-    "autoreport-rs/vendor/codex/codex-client",
-    "autoreport-rs/vendor/codex/codex-api",
-    "autoreport-rs/vendor/codex/config",
     "autoreport-rs/vendor/codex/state",
-    "autoreport-rs/vendor/codex/exec-server",
-    "autoreport-rs/vendor/codex/features",
-    "autoreport-rs/vendor/codex/response-debug-context",
-    "autoreport-rs/vendor/codex/model-provider-info",
     "autoreport-rs/vendor/codex/file-system",
     "autoreport-rs/vendor/codex/file-search",
-    "autoreport-rs/vendor/codex/memories-read",
-    "autoreport-rs/vendor/codex/models-manager",
     "autoreport-rs/vendor/codex/rollout",
     "autoreport-rs/vendor/codex/thread-store",
     "autoreport-rs/vendor/codex/git-utils",
-    "autoreport-rs/vendor/codex/agent-identity",
     "autoreport-rs/vendor/codex/code-mode-protocol",
-    "autoreport-rs/vendor/codex/exec-server-protocol",
-    "autoreport-rs/vendor/codex/keyring-store",
-    "autoreport-rs/vendor/codex/login",
-    "autoreport-rs/vendor/codex/prompts",
-    "autoreport-rs/vendor/codex/secrets",
-    "autoreport-rs/vendor/codex/plugin",
-    "autoreport-rs/vendor/codex/hooks",
-    "autoreport-rs/vendor/codex/connectors",
     "autoreport-rs/vendor/codex/skills",
-    "autoreport-rs/vendor/codex/agent-graph-store",
-    "autoreport-rs/vendor/codex/utils-plugins",
     "autoreport-rs/vendor/codex/cargo-bin",
-    "autoreport-rs/vendor/codex/apply-patch",
-    "autoreport-rs/vendor/codex/collaboration-mode-templates",
-    "autoreport-rs/vendor/codex/utils-template",
-    "autoreport-rs/vendor/codex/context-fragments",
     "autoreport-rs/utils/output-truncation",
     "autoreport-rs/utils/path-utils",
     "autoreport-rs/utils/stream-parser",
@@ -103,44 +77,18 @@ autoreport-utils-string = { path = "autoreport-rs/utils/string" }
 autoreport-utils-pty = { path = "autoreport-rs/utils/pty" }
 autoreport-utils-home-dir = { path = "autoreport-rs/utils/home-dir" }
 autoreport-codex-protocol = { path = "autoreport-rs/vendor/codex/codex-protocol" }
-autoreport-context-fragments = { path = "autoreport-rs/vendor/codex/context-fragments" }
-autoreport-features = { path = "autoreport-rs/vendor/codex/features" }
-autoreport-response-debug-context = { path = "autoreport-rs/vendor/codex/response-debug-context" }
-autoreport-model-provider-info = { path = "autoreport-rs/vendor/codex/model-provider-info" }
 autoreport-file-system = { path = "autoreport-rs/vendor/codex/file-system" }
 autoreport-file-search = { path = "autoreport-rs/vendor/codex/file-search" }
-autoreport-memories-read = { path = "autoreport-rs/vendor/codex/memories-read" }
-autoreport-models-manager = { path = "autoreport-rs/vendor/codex/models-manager" }
 autoreport-codex-rollout = { path = "autoreport-rs/vendor/codex/rollout" }
 autoreport-thread-store = { path = "autoreport-rs/vendor/codex/thread-store" }
 autoreport-git-utils = { path = "autoreport-rs/vendor/codex/git-utils" }
-autoreport-agent-identity = { path = "autoreport-rs/vendor/codex/agent-identity" }
 autoreport-code-mode-protocol = { path = "autoreport-rs/vendor/codex/code-mode-protocol" }
-autoreport-exec-server-protocol = { path = "autoreport-rs/vendor/codex/exec-server-protocol" }
-autoreport-keyring-store = { path = "autoreport-rs/vendor/codex/keyring-store" }
-autoreport-login = { path = "autoreport-rs/vendor/codex/login" }
-autoreport-prompts = { path = "autoreport-rs/vendor/codex/prompts" }
-autoreport-secrets = { path = "autoreport-rs/vendor/codex/secrets" }
-autoreport-plugin = { path = "autoreport-rs/vendor/codex/plugin" }
-autoreport-hooks = { path = "autoreport-rs/vendor/codex/hooks" }
-autoreport-connectors = { path = "autoreport-rs/vendor/codex/connectors" }
 autoreport-skills = { path = "autoreport-rs/vendor/codex/skills" }
-autoreport-agent-graph-store = { path = "autoreport-rs/vendor/codex/agent-graph-store" }
-autoreport-utils-plugins = { path = "autoreport-rs/vendor/codex/utils-plugins" }
-autoreport-apply-patch = { path = "autoreport-rs/vendor/codex/apply-patch" }
 autoreport-utils-cargo-bin = { path = "autoreport-rs/vendor/codex/cargo-bin" }
-autoreport-collaboration-mode-templates = { path = "autoreport-rs/vendor/codex/collaboration-mode-templates" }
-autoreport-utils-template = { path = "autoreport-rs/vendor/codex/utils-template" }
 autoreport-utils-output-truncation = { path = "autoreport-rs/utils/output-truncation" }
 autoreport-utils-path = { path = "autoreport-rs/utils/path-utils" }
 autoreport-utils-stream-parser = { path = "autoreport-rs/utils/stream-parser" }
-autoreport-http-client = { path = "autoreport-rs/vendor/codex/http-client" }
-autoreport-websocket-client = { path = "autoreport-rs/vendor/codex/websocket-client" }
-autoreport-codex-client = { path = "autoreport-rs/vendor/codex/codex-client" }
-autoreport-codex-api = { path = "autoreport-rs/vendor/codex/codex-api" }
-autoreport-config = { path = "autoreport-rs/vendor/codex/config" }
 autoreport-state = { path = "autoreport-rs/vendor/codex/state" }
-autoreport-exec-server = { path = "autoreport-rs/vendor/codex/exec-server" }
 autoreport-utils-rustls-provider = { path = "autoreport-rs/utils/rustls-provider" }
 autoreport-app-server-protocol = { path = "autoreport-rs/vendor/codex/app-server-protocol" }
 autoreport-app-server = { path = "autoreport-rs/vendor/codex/app-server" }
@@ -264,7 +212,20 @@ thiserror = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "local-offset"] }
 tiny_http = "0.12"
 webbrowser = "1.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "fs",
+    "io-std",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "test-util",
+    "time",
+    "tracing",
+] }
 tokio-stream = "0.1"
 tokio-tungstenite = { version = "0.28", features = ["proxy", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -290,7 +251,15 @@ which = "6"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = false
+codegen-units = 16
+strip = "symbols"
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
 
 [patch.crates-io]
 # Rama 0.3.0-alpha.4 is the exact version used by Codex's network proxy. Its

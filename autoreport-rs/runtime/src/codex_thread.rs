@@ -91,6 +91,7 @@ fn build_compacted_history(user_messages: &[ResponseItem], summary: &str) -> Vec
 }
 
 /// Result of a turn-end guard check.
+#[derive(Debug)]
 enum GuardOutcome {
     /// No guard triggered — the turn may end.
     Allow,
@@ -230,7 +231,9 @@ impl AgentLoop {
         };
         match rollout::read(&path) {
             Ok(entries) => {
-                let items = normalize_retracted_items(rollout::items(&entries));
+                let items = truncate_at_last_compaction(normalize_retracted_items(rollout::items(
+                    &entries,
+                )));
                 if !items.is_empty() {
                     log::info!(
                         "{}: resumed {} items from {}",
@@ -452,9 +455,10 @@ impl AgentLoop {
         });
     }
 
-    /// Persist an item. Rollout is appended FIRST (source of truth), then the
-    /// in-memory history — so a failed append leaves history unchanged rather
-    /// than silently diverging from disk.
+    /// Persist an item. Rollout is appended first; on append failure the error
+    /// is logged but the item is STILL pushed to in-memory history so the
+    /// current turn stays well-formed (no orphaned FunctionCall). Resume treats
+    /// the rollout as source of truth and will not see the lost item.
     async fn record(&self, item: ResponseItem) {
         if let Err(e) = self.append_to_rollout(&item).await {
             log::warn!("rollout append: {e}");
@@ -477,10 +481,12 @@ impl AgentLoop {
 
     async fn append_to_rollout(&self, item: &ResponseItem) -> anyhow::Result<()> {
         // Lazily create the rollout file on first append, then hand the encoded
-        // line to the recorder's dedicated writer task over an mpsc channel.
-        // `append` is a non-blocking channel send, so this hot-path call never
-        // stalls the async agent-loop worker on file I/O (codex
-        // `rollout::recorder` writer-task design).
+        // line to the recorder's dedicated writer task over a bounded mpsc
+        // channel (capacity 256, matching codex). The send is async — under
+        // backpressure (slow/full disk) it yields rather than growing the
+        // buffer without bound, and the writer task performs async `tokio::fs`
+        // I/O so this hot-path call never stalls the async agent-loop worker on
+        // blocking file I/O (codex `rollout::recorder` writer-task design).
         let mut rec = self.recorder.lock().await;
         if rec.is_none() {
             let cid = self.conversation_id.lock().await.clone();
@@ -495,7 +501,7 @@ impl AgentLoop {
                 self.agent.as_str(),
             )?);
         }
-        rec.as_ref().unwrap().append(item)
+        rec.as_ref().unwrap().append(item).await
     }
 
     async fn process_turn(&self, content: &str, source: MessageSource) -> anyhow::Result<()> {
@@ -839,14 +845,31 @@ impl AgentLoop {
                     let ids: Vec<String> = active.iter().map(|t| t.task_id.clone()).collect();
                     for t in &active {
                         self.task_board.block(&t.task_id);
+                        let report_type = "missing_data".to_string();
+                        let summary = "Sub-agent did not call respond".to_string();
+                        let content =
+                            "Sub-agent did not call respond within the turn budget.".to_string();
                         self.bus.publish(BusMessage::Report {
                             agent_type: self.agent,
                             task_id: t.task_id.clone(),
-                            report_type: "missing_data".into(),
-                            summary: "Sub-agent did not call respond".into(),
-                            content: "Sub-agent did not call respond within the turn budget."
-                                .into(),
+                            report_type: report_type.clone(),
+                            summary: summary.clone(),
+                            content: content.clone(),
                         });
+                        // Mirror RespondTool's dual-write (task_tools.rs): also
+                        // record the report on the board as the durable source of
+                        // truth, so a Main dispatcher that misses the live
+                        // broadcast (Lagged overflow) can still recover it via
+                        // `wait_for_report`'s `board.take_report` fallback
+                        // instead of deadlocking until the wall-clock cap.
+                        self.task_board.record_report(
+                            &t.task_id,
+                            autoreport_core::taskboard::ReportRecord {
+                                report_type,
+                                summary,
+                                content,
+                            },
+                        );
                     }
                     format!(
                         "多次未调用 respond，任务 {} 已标记为 blocked，交回 Main 处理。",
@@ -1160,8 +1183,12 @@ impl AgentLoop {
         if call.name == "respond" && out.error.is_none() {
             self.turn_reported.store(true, Ordering::Relaxed);
         }
-        self.record(ResponseItem::function_call_output(&call.id, result_text))
-            .await;
+        self.record(ResponseItem::function_call_output_with_error(
+            &call.id,
+            result_text,
+            out.error.clone(),
+        ))
+        .await;
     }
 
     async fn publish_tool_denial(&self, call: &ProviderToolCall, denial: String) {
@@ -1172,8 +1199,12 @@ impl AgentLoop {
             error: Some(denial.clone()),
             call_id: call.id.clone(),
         });
-        self.record(ResponseItem::function_call_output(&call.id, denial))
-            .await;
+        self.record(ResponseItem::function_call_output_with_error(
+            &call.id,
+            denial.clone(),
+            Some(denial),
+        ))
+        .await;
     }
 
     async fn maybe_compact(&self) {
@@ -1315,6 +1346,28 @@ fn normalize_retracted_items(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
         }
     }
     normalized
+}
+
+/// On resume, drop every item preceding the newest real `Compaction` marker,
+/// retaining the marker itself plus all items after it (codex
+/// `rollout_reconstruction.rs` truncates at the newest `Compacted` checkpoint
+/// analogously). The rollout is append-only, so a post-compaction restart would
+/// otherwise rebuild history from ALL rollout items — re-bloating the context
+/// with pre-compaction turns that get re-summarized on the first post-restart
+/// turn (growing the rollout ~20k tokens per restart). Input is assumed to have
+/// already been through `normalize_retracted_items`, so any remaining
+/// `Compaction` is a real summary, not a retract tombstone.
+fn truncate_at_last_compaction(mut items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    let last = items
+        .iter()
+        .rposition(|i| matches!(i, ResponseItem::Compaction { .. }));
+    match last {
+        Some(0) | None => items,
+        Some(idx) => {
+            items.drain(0..idx);
+            items
+        }
+    }
 }
 
 async fn forward_message(agent: AgentType, msg: &BusMessage, op_tx: &mpsc::Sender<Op>) {
@@ -1558,5 +1611,180 @@ mod tests {
             .find(|m| m.content.contains("decided to use latex"))
             .expect("compaction summary must appear in the wire messages");
         assert_eq!(compaction_msg.role, "user");
+    }
+
+    // --- Fix 1 regression: exhaustion path must dual-write the report to the
+    // board so a Main dispatcher that misses the live broadcast (Lagged
+    // overflow / no subscriber) still recovers it via `take_report` instead of
+    // deadlocking until the wall-clock cap. ---
+    struct NoopProvider;
+    #[async_trait::async_trait]
+    impl autoreport_core::provider::LLMProvider for NoopProvider {
+        fn id(&self) -> &str {
+            "noop"
+        }
+        async fn chat(
+            &self,
+            _messages: &[autoreport_core::provider::types::Message],
+            _tools: &[autoreport_core::provider::types::ToolDef],
+            _temperature: f32,
+            _max_tokens: u32,
+        ) -> anyhow::Result<autoreport_core::provider::types::LLMResponse> {
+            anyhow::bail!("NoopProvider: apply_turn_guards must not call the provider")
+        }
+    }
+
+    #[tokio::test]
+    async fn exhaustion_records_report_on_board_even_with_no_bus_subscriber() {
+        use autoreport_core::bus::Bus;
+        use autoreport_core::config::AgentDefaults;
+        use autoreport_core::exec_policy::ExecPolicyManager;
+        use autoreport_core::prompts::PromptLoader;
+        use autoreport_core::skills::SkillLoader;
+        use autoreport_core::taskboard::TaskBoard;
+        use autoreport_core::types::{AgentType, MessageSource};
+        use autoreport_tools::ToolRegistry;
+        use autoreport_tools::manifest::ManifestStore;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+
+        let board = TaskBoard::new();
+        let bus = Bus::new();
+        // NOTE: deliberately NO bus.subscribe() — models a Main dispatcher
+        // whose broadcast receiver was never installed (or already dropped).
+        // The board record must still resolve the wait.
+        let dummy = PathBuf::from("/tmp/autoreport-guard-test-unused");
+        let agent = AgentLoop::new(
+            AgentType::Theory,
+            dummy.clone(),
+            dummy.clone(),
+            ToolRegistry::new(),
+            Arc::new(NoopProvider),
+            PromptLoader::new(&dummy, &dummy),
+            SkillLoader::new(&dummy, &dummy),
+            ManifestStore::new(&dummy, &dummy),
+            bus,
+            board.clone(),
+            AgentDefaults::default(),
+            Arc::new(ExecPolicyManager::empty(&dummy)),
+        );
+        // One Main→Theory blocking task; turn_reported stays false so the
+        // sub-agent report guard engages.
+        let task = board.create(
+            AgentType::Main,
+            AgentType::Theory,
+            "draft theory section".into(),
+            true,
+            None,
+        );
+
+        // Drive the guard to exhaustion. max_retries=1 → first call Retry,
+        // second call Exhausted (records the report on the board).
+        let mut retries = 0u32;
+        let r1 = agent
+            .apply_turn_guards(MessageSource::MainAgent, &mut retries, 1)
+            .await;
+        assert!(matches!(r1, GuardOutcome::Retry(_)), "first call: {r1:?}");
+        assert_eq!(retries, 1);
+        let r2 = agent
+            .apply_turn_guards(MessageSource::MainAgent, &mut retries, 1)
+            .await;
+        assert!(matches!(r2, GuardOutcome::Exhausted), "second call: {r2:?}");
+
+        // The broadcast was never observed, yet the board (durable source of
+        // truth) holds the report — this is exactly the fallback
+        // `wait_for_report` uses via `take_report` to prevent a stall.
+        let rec = board
+            .take_report(&task.task_id)
+            .expect("exhaustion must record the report on the board");
+        assert_eq!(rec.report_type, "missing_data");
+        assert_eq!(rec.summary, "Sub-agent did not call respond");
+        assert_eq!(
+            rec.content,
+            "Sub-agent did not call respond within the turn budget."
+        );
+        // `block` was also called on the active task.
+        let still_active = board
+            .todolist(AgentType::Theory)
+            .into_iter()
+            .any(|t| t.task_id == task.task_id);
+        assert!(
+            !still_active,
+            "exhausted task must be blocked (removed from todolist)"
+        );
+    }
+
+    #[test]
+    fn truncate_at_last_compaction_drops_items_before_newest_marker() {
+        let items = vec![
+            ResponseItem::user_message("old turn 1"),
+            ResponseItem::assistant_message("old answer"),
+            ResponseItem::user_message("old turn 2"),
+            ResponseItem::Compaction {
+                encrypted_content: "summary v1".into(),
+            },
+            ResponseItem::user_message("post-compaction user"),
+            ResponseItem::assistant_message("post-compaction answer"),
+        ];
+        let out = truncate_at_last_compaction(items);
+        // Marker + everything after it survives; pre-compaction turns dropped.
+        assert_eq!(out.len(), 3);
+        assert!(matches!(
+            &out[0],
+            ResponseItem::Compaction { encrypted_content } if encrypted_content == "summary v1"
+        ));
+        assert_eq!(out[1].text().unwrap(), "post-compaction user");
+        assert_eq!(out[2].text().unwrap(), "post-compaction answer");
+    }
+
+    #[test]
+    fn truncate_at_last_compaction_keeps_only_suffix_after_newest_of_multiple() {
+        let items = vec![
+            ResponseItem::user_message("ancient"),
+            ResponseItem::Compaction {
+                encrypted_content: "summary v1".into(),
+            },
+            ResponseItem::user_message("middle turn"),
+            ResponseItem::Compaction {
+                encrypted_content: "summary v2".into(),
+            },
+            ResponseItem::user_message("latest turn"),
+        ];
+        let out = truncate_at_last_compaction(items);
+        // Newest compaction wins; the older marker and everything before the
+        // newest are dropped (its context is subsumed by v2).
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            &out[0],
+            ResponseItem::Compaction { encrypted_content } if encrypted_content == "summary v2"
+        ));
+        assert_eq!(out[1].text().unwrap(), "latest turn");
+    }
+
+    #[test]
+    fn truncate_at_last_compaction_without_marker_is_noop() {
+        // No compaction checkpoint → resume keeps the full history unchanged.
+        let items = vec![
+            ResponseItem::user_message("first"),
+            ResponseItem::assistant_message("second"),
+            ResponseItem::user_message("third"),
+        ];
+        let out = truncate_at_last_compaction(items.clone());
+        assert_eq!(out.len(), items.len());
+    }
+
+    #[test]
+    fn truncate_at_last_compaction_marker_only_keeps_it() {
+        // Edge case: rollout contains only the compaction marker (e.g. a
+        // compact-then-restart with no post-compaction turns yet).
+        let items = vec![ResponseItem::Compaction {
+            encrypted_content: "solo summary".into(),
+        }];
+        let out = truncate_at_last_compaction(items);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0],
+            ResponseItem::Compaction { encrypted_content } if encrypted_content == "solo summary"
+        ));
     }
 }

@@ -267,7 +267,7 @@ pub fn save_settings(home: &Path, settings: &Settings) -> Result<()> {
     }
     let raw =
         toml::to_string_pretty(&public_settings).with_context(|| "serializing settings to TOML")?;
-    std::fs::write(&path, raw).with_context(|| format!("writing {}", path.display()))?;
+    atomic_write(&path, raw.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -315,29 +315,85 @@ fn save_auth(home: &Path, settings: &Settings) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let raw = serde_json::to_string_pretty(&auth).context("serializing auth.json")?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&path)
+    atomic_write_secret(&path, raw.as_bytes())
         .with_context(|| format!("writing {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = file.metadata()?.permissions();
-        if permissions.mode() & 0o777 != 0o600 {
-            permissions.set_mode(0o600);
-            file.set_permissions(permissions)?;
-        }
-    }
-    use std::io::Write;
-    file.write_all(raw.as_bytes())?;
-    file.flush()?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Atomic file replacement — crash-safe writes for `config.toml` / `auth.json`.
+// ---------------------------------------------------------------------------
+
+/// A unique temp path in the SAME directory as `path`, so the final rename is
+/// atomic on the same filesystem. A unique name also prevents two concurrent
+/// writers (e.g. a sync + a settings save) from clobbering each other's staging
+/// file. Mirrors the pattern in `sync::atomic_write` and
+/// `project::save_project_config`.
+fn sibling_temp_path(path: &Path) -> PathBuf {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    path.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()))
+}
+
+/// Rename `temp` over `target`; on Windows the target must be removed first
+/// because `rename` refuses to overwrite an existing file.
+fn rename_over(temp: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    if target.exists() {
+        std::fs::remove_file(target)?;
+    }
+    std::fs::rename(temp, target)
+}
+
+/// Atomically replace `path` with `data` via a sibling temp file + rename, so a
+/// crash mid-write can never leave a truncated/partial file visible to readers.
+/// The temp lives in the same directory (so `rename` is atomic on the same
+/// filesystem). Used for non-secret files such as `config.toml`. If the write or
+/// rename fails the temp is removed so no stale staging file is left behind.
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let temp = sibling_temp_path(path);
+    let result: std::io::Result<()> = (|| {
+        std::fs::write(&temp, data)?;
+        rename_over(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+/// Atomically replace `path` with `data` while pinning the file mode to `0o600`
+/// on Unix, so secret data (API keys in `auth.json`) is never world-readable —
+/// not even transiently. The mode is applied to the temp file BEFORE the rename,
+/// so the visible file never appears with looser permissions than the final
+/// `0o600`. On non-Unix targets this is equivalent to [`atomic_write`].
+fn atomic_write_secret(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let temp = sibling_temp_path(path);
+    let result: std::io::Result<()> = (|| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Create the temp with `0o600` from the start so the secret bytes
+            // are never readable by other users at any point.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&temp)?;
+            file.write_all(data)?;
+            file.flush()?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&temp, data)?;
+        }
+        rename_over(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -475,5 +531,96 @@ mod tests {
         .unwrap();
 
         assert!(load_settings(dir.path()).is_err());
+    }
+
+    // ---- Atomic write: crash-safe config/auth persistence ----
+
+    /// A pre-existing target must be fully replaced, never appended to or left
+    /// as a mix of old + new bytes (the failure mode of truncate-then-write).
+    #[test]
+    fn atomic_write_fully_replaces_preexisting_target() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(CONFIG_TOML_FILE);
+        std::fs::write(&path, "OLD CONTENT THAT IS LONGER THAN THE NEW PAYLOAD").unwrap();
+        atomic_write(&path, b"new").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "new",
+            "target must be fully replaced, not appended/partial"
+        );
+    }
+
+    /// Atomic write of a brand-new file (no pre-existing target) works.
+    #[test]
+    fn atomic_write_creates_new_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fresh.toml");
+        atomic_write(&path, b"payload").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "payload");
+    }
+
+    /// The secret path keeps content correct AND pins `0o600` on Unix — even
+    /// when the previous file was world-readable, and even on first creation.
+    #[test]
+    fn atomic_write_secret_preserves_content_and_0600_on_unix() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(AUTH_JSON_FILE);
+        // Start from a world-readable file to prove the write tightens perms.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&path, b"old-secret").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        atomic_write_secret(&path, b"super-secret-key").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "super-secret-key",
+            "content must be exactly the new payload"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "auth file must keep 0o600 after atomic write");
+        }
+    }
+
+    /// `save_auth` must persist keys AND keep `auth.json` at `0o600` on Unix,
+    /// replacing any prior content atomically.
+    #[test]
+    fn save_auth_persists_keys_atomically_with_0600_on_unix() {
+        let dir = tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.providers.insert(
+            "anthropic".into(),
+            ProviderConfig {
+                kind: "anthropic".into(),
+                alias: None,
+                api_key: Some("sk-secret".into()),
+                api_base: None,
+                api_key_env: None,
+                temperature: 0.1,
+                max_tokens: 8192,
+            },
+        );
+        // A stale, longer auth body — must be fully replaced, not merged.
+        std::fs::write(
+            dir.path().join(AUTH_JSON_FILE),
+            "{\"providers\":{\"anthropic\":\"sk-OLD-VALUE-THAT-IS-LONGER\"}}",
+        )
+        .unwrap();
+        save_auth(dir.path(), &settings).unwrap();
+
+        let auth_path = dir.path().join(AUTH_JSON_FILE);
+        let raw = std::fs::read_to_string(&auth_path).unwrap();
+        assert!(raw.contains("sk-secret"), "new key must be present: {raw}");
+        assert!(!raw.contains("sk-OLD"), "stale key must be gone: {raw}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&auth_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "auth.json must be 0o600");
+        }
     }
 }

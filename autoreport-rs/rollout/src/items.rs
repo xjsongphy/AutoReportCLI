@@ -105,11 +105,14 @@ pub enum ResponseItem {
     FunctionCallOutput {
         call_id: String,
         output: String,
+        /// Tool error message, persisted separately from `output` so a failed
+        /// tool renders as failed on resume (every renderer's red arm keys off
+        /// `error`). Absent on older rollouts, where it deserializes to `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// codex emits a Compaction item when the context is summarized.
-    Compaction {
-        encrypted_content: String,
-    },
+    Compaction { encrypted_content: String },
     /// Catch-all for unknown / codex-only variants (e.g. `local_shell_call`,
     /// `web_search_call`, `compaction_trigger`) encountered when resuming a
     /// rollout written by codex or a future writer. Mirrors codex's `Other`
@@ -151,6 +154,20 @@ impl ResponseItem {
         ResponseItem::FunctionCallOutput {
             call_id: call_id.into(),
             output: output.into(),
+            error: None,
+        }
+    }
+    /// Like [`function_call_output`](Self::function_call_output) but persists the
+    /// tool's `error` so a failed call is reconstructed as failed on resume.
+    pub fn function_call_output_with_error(
+        call_id: impl Into<String>,
+        output: impl Into<String>,
+        error: Option<String>,
+    ) -> Self {
+        ResponseItem::FunctionCallOutput {
+            call_id: call_id.into(),
+            output: output.into(),
+            error,
         }
     }
     pub fn reasoning(text: impl Into<String>) -> Self {
@@ -227,6 +244,71 @@ impl ResponseItem {
             }
             ResponseItem::Compaction { .. } => None,
             ResponseItem::Other => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn function_call_output_round_trips_error_and_omits_it_when_none() {
+        // GAP-2: the error channel must survive disk so a failed tool is
+        // reconstructed as failed on resume.
+        let with_err = ResponseItem::function_call_output_with_error(
+            "call-1",
+            r#"{"stdout":"hi\n","returncode":0}"#,
+            Some("boom".to_string()),
+        );
+        let json = serde_json::to_string(&with_err).unwrap();
+        assert!(
+            json.contains(r#""error":"boom""#),
+            "error must be persisted: {json}"
+        );
+        match serde_json::from_str::<ResponseItem>(&json).unwrap() {
+            ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                error,
+            } => {
+                assert_eq!(call_id, "call-1");
+                assert_eq!(output, r#"{"stdout":"hi\n","returncode":0}"#);
+                assert_eq!(error.as_deref(), Some("boom"));
+            }
+            _ => panic!("deserialized to wrong variant"),
+        }
+
+        // When error is None the field is omitted, preserving the pre-change
+        // on-disk shape for older readers.
+        let no_err = ResponseItem::function_call_output("call-2", "ok");
+        let json2 = serde_json::to_string(&no_err).unwrap();
+        assert!(
+            !json2.contains(r#""error""#),
+            "error must be omitted when None: {json2}"
+        );
+        match serde_json::from_str::<ResponseItem>(&json2).unwrap() {
+            ResponseItem::FunctionCallOutput { error, .. } => assert!(error.is_none()),
+            _ => panic!("deserialized to wrong variant"),
+        }
+    }
+
+    #[test]
+    fn legacy_function_call_output_without_error_field_still_loads() {
+        // A rollout line written before the error field existed must still
+        // deserialize, with error defaulting to None.
+        let legacy = r#"{"type":"function_call_output","call_id":"c3","output":"ok"}"#;
+        match serde_json::from_str::<ResponseItem>(legacy).unwrap() {
+            ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                error,
+            } => {
+                assert_eq!(call_id, "c3");
+                assert_eq!(output, "ok");
+                assert!(error.is_none());
+            }
+            _ => panic!("deserialized to wrong variant"),
         }
     }
 }

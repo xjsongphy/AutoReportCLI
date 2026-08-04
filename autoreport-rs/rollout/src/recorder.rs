@@ -59,9 +59,13 @@ enum WriterMsg {
     Flush(tokio::sync::oneshot::Sender<()>),
 }
 
+/// Bounded channel capacity, matching codex's `mpsc::channel::<RolloutCmd>(256)`
+/// (codex `rollout/src/recorder.rs:889-892`).
+const ROLLOUT_CHANNEL_CAPACITY: usize = 256;
+
 pub struct RolloutRecorder {
     path: PathBuf,
-    tx: tokio::sync::mpsc::UnboundedSender<WriterMsg>,
+    tx: tokio::sync::mpsc::Sender<WriterMsg>,
 }
 
 impl RolloutRecorder {
@@ -104,7 +108,7 @@ impl RolloutRecorder {
             payload: RolloutPayload::SessionMeta(meta),
         };
         let first_line = encode_line(&line).context("encoding session meta")?;
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WriterMsg>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WriterMsg>(ROLLOUT_CHANNEL_CAPACITY);
         spawn_writer_task(path.clone(), rx, /*create*/ true, Some(first_line));
         Ok(Self { path, tx })
     }
@@ -116,7 +120,7 @@ impl RolloutRecorder {
         if !path.exists() {
             anyhow::bail!("rollout file does not exist: {}", path.display());
         }
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WriterMsg>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<WriterMsg>(ROLLOUT_CHANNEL_CAPACITY);
         spawn_writer_task(path.to_path_buf(), rx, /*create*/ false, None);
         Ok(Self {
             path: path.to_path_buf(),
@@ -125,9 +129,12 @@ impl RolloutRecorder {
     }
 
     /// Append one item. Encodes the line and hands it to the writer task over
-    /// an unbounded channel — non-blocking, returns immediately. Errors from
-    /// the actual file write surface in the writer task (logged), not here.
-    pub fn append(&self, item: &ResponseItem) -> Result<()> {
+    /// a bounded channel (capacity 256). Under backpressure (slow disk / full
+    /// disk) this send future yields instead of growing the buffer without
+    /// bound — that is the intended fix; callers must `.await` it and must not
+    /// assume it is instant. Errors from the actual file write surface in the
+    /// writer task (logged), not here.
+    pub async fn append(&self, item: &ResponseItem) -> Result<()> {
         let line = RolloutLine {
             timestamp: now_rfc3339(),
             payload: RolloutPayload::ResponseItem(item.clone()),
@@ -135,6 +142,7 @@ impl RolloutRecorder {
         let encoded = encode_line(&line).context("encoding response item")?;
         self.tx
             .send(WriterMsg::Line(encoded))
+            .await
             .map_err(|_| anyhow::anyhow!("rollout writer task closed"))
     }
 
@@ -145,6 +153,7 @@ impl RolloutRecorder {
         let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(WriterMsg::Flush(ack_tx))
+            .await
             .map_err(|_| anyhow::anyhow!("rollout writer task closed"))?;
         let _ = ack_rx.await;
         Ok(())
@@ -167,22 +176,26 @@ fn encode_line(line: &RolloutLine) -> Result<String> {
 }
 
 /// The dedicated writer task: opens the rollout file once (create+append or
-/// append-only) and processes each message as it arrives on `rx` in FIFO order
-/// — `Line` is written+flushed, `Flush` is acknowledged once all prior lines
-/// are on disk. Exits when the channel closes (all senders dropped), after
-/// draining any buffered lines. Mirrors codex `rollout::recorder` writer task.
+/// append-only) via async `tokio::fs` and processes each message as it arrives
+/// on `rx` in FIFO order — `Line` is written+flushed, `Flush` is acknowledged
+/// once all prior lines are on disk. Exits when the channel closes (all senders
+/// dropped), after draining any buffered lines. Mirrors codex
+/// `rollout::recorder` writer task, which deliberately uses `tokio::fs::File`
+/// "to keep everything on the async I/O driver instead of blocking the
+/// runtime" (codex `rollout/src/recorder.rs:893-895`).
 fn spawn_writer_task(
     path: PathBuf,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<WriterMsg>,
+    mut rx: tokio::sync::mpsc::Receiver<WriterMsg>,
     create: bool,
     first_line: Option<String>,
 ) {
     tokio::spawn(async move {
-        use std::io::Write;
-        let mut f = match std::fs::OpenOptions::new()
+        use tokio::io::AsyncWriteExt;
+        let mut f = match tokio::fs::OpenOptions::new()
             .create(create)
             .append(true)
             .open(&path)
+            .await
         {
             Ok(f) => f,
             Err(e) => {
@@ -190,19 +203,15 @@ fn spawn_writer_task(
                 return;
             }
         };
-        let mut write_line = |line: &str| -> std::io::Result<()> {
-            writeln!(f, "{line}")?;
-            f.flush()
-        };
         if let Some(line) = first_line {
-            if let Err(e) = write_line(&line) {
+            if let Err(e) = write_line(&mut f, &line).await {
                 log::error!("rollout writer: writing {}: {e}", path.display());
             }
         }
         while let Some(msg) = rx.recv().await {
             match msg {
                 WriterMsg::Line(line) => {
-                    if let Err(e) = write_line(&line) {
+                    if let Err(e) = write_line(&mut f, &line).await {
                         log::error!("rollout writer: writing {}: {e}", path.display());
                     }
                 }
@@ -213,8 +222,25 @@ fn spawn_writer_task(
                 }
             }
         }
-        // Channel closed: all senders gone; the file handle flushes on drop.
+        // Channel closed: all senders gone. Best-effort final flush; the file
+        // handle would flush on drop anyway, but doing it explicitly surfaces
+        // any trailing I/O error to the log.
+        if let Err(e) = f.flush().await {
+            log::error!("rollout writer: final flush {}: {e}", path.display());
+        }
     });
+}
+
+/// Write one pre-encoded JSON line + trailing newline to the rollout file,
+/// then flush so each appended item is durable ASAP (a crash mid-session still
+/// leaves a replayable file). Bytes are assembled directly and written via
+/// `tokio::fs` so nothing blocks a Tokio worker thread. (`writeln!`-style
+/// formatting helpers require std I/O and would defeat the point.)
+async fn write_line(f: &mut tokio::fs::File, line: &str) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    f.write_all(line.as_bytes()).await?;
+    f.write_all(b"\n").await?;
+    f.flush().await
 }
 
 /// A parsed rollout entry: either the header or an item.
@@ -280,18 +306,25 @@ mod tests {
             "main",
         )
         .unwrap();
-        rec.append(&ResponseItem::user_message("hello")).unwrap();
+        rec.append(&ResponseItem::user_message("hello"))
+            .await
+            .unwrap();
         rec.append(&ResponseItem::assistant_message("hi there"))
+            .await
             .unwrap();
         rec.append(&ResponseItem::function_call(
             "c1",
             "write_file",
             "{\"path\":\"a\"}".into(),
         ))
+        .await
         .unwrap();
         rec.append(&ResponseItem::function_call_output("c1", "ok"))
+            .await
             .unwrap();
-        rec.append(&ResponseItem::reasoning("thinking")).unwrap();
+        rec.append(&ResponseItem::reasoning("thinking"))
+            .await
+            .unwrap();
         rec.flush().await.unwrap();
 
         let entries = read(rec.path()).unwrap();
@@ -371,7 +404,9 @@ mod tests {
             "main",
         )
         .unwrap();
-        rec.append(&ResponseItem::user_message("first")).unwrap();
+        rec.append(&ResponseItem::user_message("first"))
+            .await
+            .unwrap();
         rec.flush().await.unwrap();
 
         // Simulate a restart: reopen the same path and append a new item.
@@ -379,6 +414,7 @@ mod tests {
         let reopened = RolloutRecorder::open(&path).unwrap();
         reopened
             .append(&ResponseItem::assistant_message("second"))
+            .await
             .unwrap();
         reopened.flush().await.unwrap();
 
@@ -413,7 +449,7 @@ mod tests {
             "main",
         )
         .unwrap();
-        rec.append(&ResponseItem::user_message("hi")).unwrap();
+        rec.append(&ResponseItem::user_message("hi")).await.unwrap();
         rec.flush().await.unwrap();
         let name = rec
             .path()
@@ -453,6 +489,61 @@ mod tests {
             name_a.contains(&sid_a),
             "expected sid_a's file, got {name_a}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn channel_is_bounded_at_codex_capacity() {
+        // Regression guard: the recorder must use a *bounded* channel sized to
+        // codex's proven capacity (`mpsc::channel::<RolloutCmd>(256)`,
+        // codex `rollout/src/recorder.rs:892`). An unbounded channel would let
+        // the buffer grow without limit if the writer stalls on slow disk.
+        assert_eq!(
+            ROLLOUT_CHANNEL_CAPACITY, 256,
+            "recorder channel must stay bounded at codex's capacity (256)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_channel_drains_in_order_past_capacity() {
+        // Capacity is 256, so appending more items than fit in the channel at
+        // once forces the bounded send to yield (backpressure) while the async
+        // writer task drains. Every item must still persist exactly once and in
+        // FIFO order — no drops, no reordering through the bounded buffer +
+        // async tokio::fs writer.
+        let dir = std::env::temp_dir().join(format!("rollout-backpressure-{}", stamp()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws: &Path = &dir;
+        let rec = RolloutRecorder::create(
+            ws,
+            "conv-BP",
+            &new_uuid(),
+            "2026-06-29T00-00-00Z",
+            ws,
+            "main",
+        )
+        .unwrap();
+        let n = 600; // well past the 256-slot buffer
+        for i in 0..n {
+            rec.append(&ResponseItem::user_message(format!("item-{i}")))
+                .await
+                .unwrap();
+        }
+        rec.flush().await.unwrap();
+
+        let items = items(&read(rec.path()).unwrap());
+        assert_eq!(
+            items.len(),
+            n,
+            "every item must persist through backpressure"
+        );
+        for (i, item) in items.iter().enumerate() {
+            assert_eq!(
+                item.text().unwrap(),
+                format!("item-{i}"),
+                "ordering broke at index {i}"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

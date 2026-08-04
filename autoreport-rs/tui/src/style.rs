@@ -45,6 +45,9 @@ pub(crate) fn accent_style() -> Style {
 pub fn user_message_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     match terminal_bg {
         Some(bg) => Style::default().bg(user_message_bg(bg)),
+        // Match Codex: if the terminal does not answer the default-color
+        // probe, leave the background as the terminal's own default rather
+        // than inventing a second surface color.
         None => Style::default(),
     }
 }
@@ -88,12 +91,16 @@ fn table_separator_style_for(
 
 #[allow(clippy::disallowed_methods)]
 pub fn user_message_bg(terminal_bg: (u8, u8, u8)) -> Color {
+    best_color(user_message_bg_rgb(terminal_bg))
+}
+
+pub(crate) fn user_message_bg_rgb(terminal_bg: (u8, u8, u8)) -> (u8, u8, u8) {
     let (top, alpha) = if is_light(terminal_bg) {
         ((0, 0, 0), 0.04)
     } else {
         ((255, 255, 255), 0.12)
     };
-    best_color(blend(top, terminal_bg, alpha))
+    blend(top, terminal_bg, alpha)
 }
 
 // Vendored from codex; backs `proposed_plan_style_for` (plan cell not yet ported).
@@ -123,6 +130,17 @@ mod tests {
 
         assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
         assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);
+    }
+
+    #[test]
+    fn composer_uses_terminal_default_when_default_color_probe_is_unavailable() {
+        assert_eq!(user_message_style_for(None), Style::default());
+    }
+
+    #[test]
+    fn composer_surface_is_a_subtle_blend_of_the_terminal_background() {
+        assert_eq!(user_message_bg_rgb((0, 0, 0)), (30, 30, 30));
+        assert_eq!(user_message_bg_rgb((255, 255, 255)), (244, 244, 244));
     }
 
     #[test]

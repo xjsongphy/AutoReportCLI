@@ -335,22 +335,38 @@ fn load_policy(workspace: &Path) -> Result<Policy, String> {
 fn split_commands(script: &str) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
     let mut current = String::new();
-    let mut quoted = false;
+    let mut in_double = false;
+    let mut in_single = false;
     let mut escaped = false;
     for character in script.chars() {
-        if quoted {
+        if in_single {
+            // Single quotes are literal: no escape handling, and the only
+            // character that closes them is a matching `'`. We must not split
+            // on `;|&` while inside.
+            current.push(character);
+            if character == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        if in_double {
             current.push(character);
             if escaped {
                 escaped = false;
             } else if character == '\\' {
                 escaped = true;
             } else if character == '"' {
-                quoted = false;
+                in_double = false;
             }
             continue;
         }
         if character == '"' {
-            quoted = true;
+            in_double = true;
+            current.push(character);
+            continue;
+        }
+        if character == '\'' {
+            in_single = true;
             current.push(character);
             continue;
         }
@@ -546,6 +562,34 @@ prefix_rule(pattern = ["git", "status", "--porcelain"], decision = "prompt", jus
             manager.evaluate("git status > outside.txt", AskForApproval::Never, true),
             ExecApprovalRequirement::Forbidden { .. }
         ));
+    }
+
+    #[test]
+    fn split_commands_respects_single_quotes() {
+        // Single-quoted pipe must not be treated as a command separator.
+        let single = split_commands("echo 'a | b'");
+        assert_eq!(
+            single.len(),
+            1,
+            "single-quoted pipe should not split into multiple commands"
+        );
+        // Double-quoted pipe still works (regression guard).
+        let double = split_commands("echo \"a | b\"");
+        assert_eq!(
+            double.len(),
+            1,
+            "double-quoted pipe should not split into multiple commands"
+        );
+        // Unquoted pipe still splits into two commands.
+        let unquoted = split_commands("a | b");
+        assert_eq!(
+            unquoted.len(),
+            2,
+            "unquoted pipe should split into two commands"
+        );
+        // Single-quoted semicolons and ampersands also do not split.
+        assert_eq!(split_commands("echo 'a ; b'").len(), 1);
+        assert_eq!(split_commands("echo 'a & b'").len(), 1);
     }
 
     #[test]

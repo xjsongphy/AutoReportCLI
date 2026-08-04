@@ -63,20 +63,31 @@ codex 风格的 TUI 协调五个智能体完成整份报告。
 
 ```bash
 git clone <this-repo> AutoReportCLI && cd AutoReportCLI
-cargo build --release
+cargo build --locked --release
 ```
+
+开发时建议使用 `cargo run -p autoreport-cli` 或
+`cargo build -p autoreport-cli`，这样不会反复执行发行级链接优化。正式发行包使用独立的
+`dist` profile：
+
+```bash
+cargo build --locked --profile dist -p autoreport-cli
+```
+
+需要分析各 crate 的编译耗时时，在命令后加入 `--timings`；报告会写入
+`target/cargo-timings/cargo-timing.html`。不要在每次编译前执行 `cargo clean`，否则会删除下一次编译本可复用的缓存。
 
 如果你希望在任意目录直接运行 `autoreport`，需要额外安装到 `PATH`：
 
 ```bash
-cargo install --path autoreport-rs/cli
+cargo install --locked --path autoreport-rs/cli
 ```
 
 Linux 还需要安装同目录的沙箱辅助程序；缺少它时，受限的 `exec` 会失败关闭，
 不会降级为未隔离执行：
 
 ```bash
-cargo install --path autoreport-rs/linux-sandbox
+cargo install --locked --path autoreport-rs/linux-sandbox
 ```
 
 或者直接运行构建产物：
@@ -176,12 +187,13 @@ autoreport-rs/
 运行测试：
 
 ```bash
-cargo test
+cargo test --locked
 ```
 
-CI（`/.github/workflows`）在 Ubuntu 与 macOS 上运行 `cargo fmt --check`、
-`cargo clippy --workspace --all-targets` 以及全量测试；`linux-sandbox`、
-`macos-sandbox`、`windows-sandbox` 三个 workflow 负责构建并打包各平台原生沙箱产物。
+CI（`/.github/workflows/ci.yml`）使用统一的平台矩阵：Pull Request 运行格式检查、
+Linux lint/测试以及 macOS/Windows 原生检查。推送到 `main`、版本 tag 或手动触发时，
+还会构建并校验 Linux musl、macOS 和 Windows 的 npm payload；release 打包不会进入
+Pull Request 流程。
 
 为当前 Rust target 构建包含原生二进制的 npm 包：
 

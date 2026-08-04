@@ -5,37 +5,32 @@
 
 use crate::config_update::Outcome;
 use crate::custom_terminal::{Frame, Terminal};
+use autoreport_core::config::resolve_api_key;
 use autoreport_core::config::schema::{ModelConfig, Settings};
-use autoreport_core::config::{resolve_api_key, save_settings};
-use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
-};
+use ratatui::widgets::{Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap};
 use std::io;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Target,
-    Api,
     Model,
     Preview,
 }
 
 const TARGETS: [(&str, &str); 2] = [("main", "Main"), ("sub", "Sub agents (all 4)")];
 
-/// A two-stage model binding editor: select API, then enter model name.
+/// A two-stage model binding editor: choose a role, then enter its model name.
 pub struct ModelScreen {
     pub settings: Settings,
     pub home: PathBuf,
     step: Step,
     target_selected: usize,
-    api_selected: usize,
-    api_scroll_offset: usize,
     input: String,
     cursor: usize,
     error: Option<String>,
@@ -43,19 +38,15 @@ pub struct ModelScreen {
 
 impl ModelScreen {
     pub fn new(settings: Settings, home: PathBuf) -> Self {
-        let mut screen = Self {
+        Self {
             settings,
             home,
             step: Step::Target,
             target_selected: 0,
-            api_selected: 0,
-            api_scroll_offset: 0,
             input: String::new(),
             cursor: 0,
             error: None,
-        };
-        screen.sync_api_selection();
-        screen
+        }
     }
 
     fn target(&self) -> &ModelConfig {
@@ -74,15 +65,6 @@ impl ModelScreen {
         }
     }
 
-    fn api_keys(&self) -> Vec<String> {
-        self.settings
-            .providers
-            .iter()
-            .filter(|(_, provider)| resolve_api_key(provider).is_ok())
-            .map(|(key, _)| key.clone())
-            .collect()
-    }
-
     fn api_label(&self, key: &str) -> String {
         self.settings
             .providers
@@ -93,109 +75,108 @@ impl ModelScreen {
             .unwrap_or_else(|| key.to_string())
     }
 
-    fn sync_api_selection(&mut self) {
-        let keys = self.api_keys();
-        self.api_selected = keys
-            .iter()
-            .position(|key| key == &self.target().provider)
-            .unwrap_or(0)
-            .min(keys.len().saturating_sub(1));
-        self.api_scroll_offset = 0;
-    }
-
-    fn selected_api(&self) -> Option<String> {
-        self.api_keys().get(self.api_selected).cloned()
-    }
-
     fn target_label(&self) -> &'static str {
         TARGETS[self.target_selected].1
     }
 
     fn complete(&self) -> bool {
-        [&self.settings.models.main, &self.settings.models.sub]
-            .iter()
-            .all(|model| {
-                !model.provider.trim().is_empty()
-                    && !model.model.trim().is_empty()
-                    && self
-                        .settings
-                        .providers
-                        .get(&model.provider)
-                        .is_some_and(|api| resolve_api_key(api).is_ok())
-            })
+        let main = &self.settings.models.main;
+        let sub = &self.settings.models.sub;
+        !main.provider.trim().is_empty()
+            && main.provider == sub.provider
+            && !main.model.trim().is_empty()
+            && !sub.model.trim().is_empty()
+            && self
+                .settings
+                .providers
+                .get(&main.provider)
+                .is_some_and(|api| resolve_api_key(api).is_ok())
     }
 
     pub fn draw(&mut self, f: &mut Frame<'_>) {
         let area = f.area();
         f.render_widget(Clear, area);
-        let dialog = centered_rect(area, 82, 70);
-        f.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(Span::styled(
-                    " AutoReportCLI · model configuration ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )),
-            dialog,
+        // Keep this screen deliberately flat: it is already a full-screen
+        // flow, so a centered dialog wastes most of the terminal.
+        let chrome = Rect::new(
+            area.x.saturating_add(2),
+            area.y,
+            area.width.saturating_sub(4),
+            area.height,
         );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
                 Constraint::Length(2),
             ])
-            .margin(1)
-            .split(dialog);
-        self.draw_header(f, chunks[0]);
-        match self.step {
-            Step::Target => self.draw_targets(f, chunks[1]),
-            Step::Api => self.draw_apis(f, chunks[1]),
-            Step::Model => self.draw_model(f, chunks[1]),
-            Step::Preview => self.draw_preview(f, chunks[1]),
+            .split(chrome);
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                "Configure models · 2/2",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            chunks[0],
+        );
+
+        if chunks[2].width >= 78 && chunks[2].height >= 7 {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(58),
+                    Constraint::Length(1),
+                    Constraint::Min(28),
+                ])
+                .split(chunks[2]);
+            self.draw_surface(f, columns[0]);
+            self.draw_details(f, columns[2]);
+        } else {
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(4)])
+                .split(chunks[2]);
+            self.draw_surface(f, rows[0]);
+            self.draw_details(f, rows[1]);
         }
-        self.draw_footer(f, chunks[2]);
+        self.draw_footer(f, chunks[3]);
     }
 
-    fn draw_header(&self, f: &mut Frame<'_>, area: Rect) {
+    fn draw_surface(&mut self, f: &mut Frame<'_>, area: Rect) {
+        match self.step {
+            Step::Target => self.draw_targets(f, area),
+            Step::Model => self.draw_model(f, area),
+            Step::Preview => self.draw_preview(f, area),
+        }
+    }
+
+    fn draw_details(&self, f: &mut Frame<'_>, area: Rect) {
         let selected = self.target();
-        let selected_provider_label = if selected.provider.is_empty() {
-            "-".to_string()
-        } else {
-            self.api_label(&selected.provider)
-        };
-        let text = vec![
+        let provider = (!selected.provider.is_empty())
+            .then(|| self.api_label(&selected.provider))
+            .unwrap_or_else(|| "not selected".to_string());
+        let model = (!selected.model.is_empty())
+            .then_some(selected.model.as_str())
+            .unwrap_or("not set");
+        let lines = vec![
+            Line::styled("Assignment", Style::default().add_modifier(Modifier::BOLD)),
             Line::from(vec![
-                Span::styled("target  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    self.target_label(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("    "),
-                Span::styled("API  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(selected_provider_label, Style::default().fg(Color::Cyan)),
-                Span::raw("    "),
-                Span::styled("model  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    if selected.model.is_empty() {
-                        "-"
-                    } else {
-                        &selected.model
-                    },
-                    Style::default().fg(Color::LightGreen),
-                ),
+                Span::styled("Target  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(self.target_label()),
             ]),
-            Line::styled(
-                "Each sub-agent currently shares the single ‘sub’ choice.",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Line::from(vec![
+                Span::styled("Provider ", Style::default().fg(Color::DarkGray)),
+                Span::styled(provider, Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::styled("Model   ", Style::default().fg(Color::DarkGray)),
+                Span::styled(model, Style::default().fg(Color::LightGreen)),
+            ]),
         ];
-        f.render_widget(Paragraph::new(text), area);
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
     }
 
     fn draw_targets(&self, f: &mut Frame<'_>, area: Rect) {
@@ -215,78 +196,28 @@ impl ModelScreen {
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{label:<22}"),
+                        format!("{label:<20}"),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(value, Style::default().fg(Color::Gray)),
                 ]))
             })
-            .chain(std::iter::once(ListItem::new(Line::raw(""))))
-            .chain(std::iter::once(ListItem::new(Line::styled(
-                "Press s to save after both choices are configured.",
-                Style::default().fg(Color::DarkGray),
-            ))))
             .collect::<Vec<_>>();
         let mut state = ListState::default();
         state.select(Some(self.target_selected));
         f.render_stateful_widget(
             List::new(items)
+                .highlight_spacing(HighlightSpacing::Always)
                 .highlight_style(
                     Style::default()
                         .bg(Color::DarkGray)
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .title(" Choose target "),
-                ),
+                .highlight_symbol("› "),
             area,
             &mut state,
         );
-    }
-
-    fn draw_apis(&mut self, f: &mut Frame<'_>, area: Rect) {
-        let keys = self.api_keys();
-        let mut items = keys
-            .iter()
-            .map(|key| {
-                let api = self.settings.providers.get(key);
-                let kind = api.map(|p| p.kind.as_str()).unwrap_or("?");
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{:<22}", self.api_label(key)),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("{kind:<14}"), Style::default().fg(Color::Gray)),
-                ]))
-            })
-            .collect::<Vec<_>>();
-        if items.is_empty() {
-            items.push(ListItem::new(Line::styled(
-                "No configured APIs — add one in /model",
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        let mut state = ListState::default().with_offset(self.api_scroll_offset);
-        state.select((!keys.is_empty()).then_some(self.api_selected));
-        f.render_stateful_widget(
-            List::new(items)
-                .highlight_style(
-                    Style::default()
-                        .bg(Color::DarkGray)
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .block(Block::default().borders(Borders::TOP).title(format!(
-                    " 1/2 — select configured API for {} ",
-                    self.target_label()
-                ))),
-            area,
-            &mut state,
-        );
-        self.api_scroll_offset = state.offset();
     }
 
     fn draw_model(&self, f: &mut Frame<'_>, area: Rect) {
@@ -305,7 +236,10 @@ impl ModelScreen {
         };
         let after = &self.input[cursor + current_len..];
         let lines = vec![
-            Line::raw(format!("2/2 — model name for API: {api}")),
+            Line::styled(
+                format!("Model for {api}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Line::raw(""),
             Line::from(vec![
                 Span::styled("model  ", Style::default().add_modifier(Modifier::BOLD)),
@@ -314,56 +248,77 @@ impl ModelScreen {
                 Span::raw(after),
             ]),
         ];
-        f.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .title(" Enter model "),
-            ),
-            area,
-        );
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
     }
 
     fn draw_preview(&self, f: &mut Frame<'_>, area: Rect) {
         let yaml = serde_yaml::to_string(&self.settings).unwrap_or_default();
         f.render_widget(
-            Paragraph::new(yaml)
-                .style(Style::default().fg(Color::Gray))
-                .block(
-                    Block::default()
-                        .borders(Borders::TOP)
-                        .title(" Preview (Enter = save) "),
-                ),
+            Paragraph::new(yaml).style(Style::default().fg(Color::Gray)),
             area,
         );
     }
 
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
-        let hint = match self.step {
-            Step::Target => "↑/↓: target   Enter: choose API   s: save   Esc: cancel",
-            Step::Api => "↑/↓: API   Enter: select API, then enter model   Esc: back",
-            Step::Model => "Enter: confirm model   Esc: back to API",
-            Step::Preview => "Enter: save & finish   Esc: back",
-        };
-        let text = match &self.error {
-            Some(error) => format!("{hint}   ⚠ {error}"),
-            None => hint.to_string(),
-        };
+        let text = self.footer_hint(area.width);
         f.render_widget(
             Paragraph::new(text)
                 .style(Style::default().fg(Color::DarkGray))
-                .alignment(Alignment::Left),
+                .wrap(Wrap { trim: true }),
             area,
         );
     }
 
+    fn footer_hint(&self, width: u16) -> String {
+        if let Some(error) = &self.error {
+            return format!("⚠ {error}").chars().take(width as usize).collect();
+        }
+        let hints = match self.step {
+            Step::Target => [
+                ("↑/↓", "browse"),
+                ("Enter", "configure"),
+                ("s", "save"),
+                ("Esc", "cancel"),
+                ("q", "quit"),
+            ]
+            .as_slice(),
+            Step::Model => [("Enter", "confirm"), ("Esc", "back")].as_slice(),
+            Step::Preview => [("Enter", "save"), ("Esc", "back"), ("q", "quit")].as_slice(),
+        };
+        let wide = hints
+            .iter()
+            .map(|(key, label)| format!("{key} {label}"))
+            .collect::<Vec<_>>()
+            .join("   ");
+        if wide.len() <= width as usize {
+            return wide;
+        }
+        let compact = hints
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>()
+            .join("  ");
+        compact.chars().take(width as usize).collect()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        // On terminals that advertise `REPORT_EVENT_TYPES` (kitty/iTerm2/foot),
+        // crossterm emits both Press and Release for a single physical tap.
+        // Ignore Release so actions don't fire twice. (app_event.rs:500 / codex)
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Some(Outcome::Cancelled);
         }
+        // Keep `q` available as a model-name character while editing. On the
+        // selection and review pages it is the one-key escape hatch for the
+        // entire `/model` flow.
+        if self.step != Step::Model && key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
+            return Some(Outcome::Quit);
+        }
         match self.step {
             Step::Target => self.handle_target(key),
-            Step::Api => self.handle_api(key),
             Step::Model => self.handle_model(key),
             Step::Preview => self.handle_preview(key),
         }
@@ -378,10 +333,12 @@ impl ModelScreen {
                 self.target_selected = (self.target_selected + 1).min(TARGETS.len() - 1);
             }
             KeyCode::Enter => {
-                self.sync_api_selection();
-                self.step = Step::Api;
+                self.input = self.target().model.clone();
+                self.cursor = self.input.len();
+                self.error = None;
+                self.step = Step::Model;
             }
-            KeyCode::Char('s') => {
+            KeyCode::Char('s') if key.modifiers.is_empty() => {
                 if self.complete() {
                     self.step = Step::Preview;
                 } else {
@@ -389,30 +346,6 @@ impl ModelScreen {
                 }
             }
             KeyCode::Esc => return Some(Outcome::Cancelled),
-            _ => {}
-        }
-        None
-    }
-
-    fn handle_api(&mut self, key: KeyEvent) -> Option<Outcome> {
-        let len = self.api_keys().len();
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') if self.api_selected > 0 => self.api_selected -= 1,
-            KeyCode::Down | KeyCode::Char('j') if self.api_selected + 1 < len => {
-                self.api_selected += 1
-            }
-            KeyCode::Enter => {
-                let Some(api) = self.selected_api() else {
-                    self.error = Some("no API configured; open /model first".into());
-                    return None;
-                };
-                self.target_mut().provider = api;
-                self.input = self.target().model.clone();
-                self.cursor = self.input.len();
-                self.error = None;
-                self.step = Step::Model;
-            }
-            KeyCode::Esc => self.step = Step::Target,
             _ => {}
         }
         None
@@ -430,7 +363,7 @@ impl ModelScreen {
                     self.step = Step::Target;
                 }
             }
-            KeyCode::Esc => self.step = Step::Api,
+            KeyCode::Esc => self.step = Step::Target,
             KeyCode::Backspace if self.cursor > 0 => {
                 let prev = self.input[..self.cursor].chars().last().unwrap();
                 self.cursor -= prev.len_utf8();
@@ -443,7 +376,9 @@ impl ModelScreen {
             KeyCode::Right if self.cursor < self.input.len() => {
                 self.cursor += self.input[self.cursor..].chars().next().unwrap().len_utf8();
             }
-            KeyCode::Char(ch) => {
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.input.insert(self.cursor, ch);
                 self.cursor += ch.len_utf8();
             }
@@ -454,13 +389,7 @@ impl ModelScreen {
 
     fn handle_preview(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Enter => match save_settings(&self.home, &self.settings) {
-                Ok(()) => Some(Outcome::Saved),
-                Err(error) => {
-                    self.error = Some(format!("save failed: {error}"));
-                    None
-                }
-            },
+            KeyCode::Enter => Some(Outcome::Saved),
             KeyCode::Esc => {
                 self.step = Step::Target;
                 None
@@ -490,28 +419,10 @@ impl ModelScreen {
     }
 }
 
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - height) / 2),
-            Constraint::Percentage(height),
-            Constraint::Percentage((100 - height) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - width) / 2),
-            Constraint::Percentage(width),
-            Constraint::Percentage((100 - width) / 2),
-        ])
-        .split(vertical[1])[1]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::WritableTestBackend;
     use autoreport_core::config::schema::ProviderConfig;
 
     fn api() -> ProviderConfig {
@@ -530,8 +441,9 @@ mod tests {
     fn model_entry_requires_api_then_nonempty_model() {
         let mut settings = Settings::default();
         settings.providers.insert("one".into(), api());
+        settings.models.main.provider = "one".into();
+        settings.models.sub.provider = "one".into();
         let mut screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
-        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(screen.target().provider, "one");
         screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -543,17 +455,165 @@ mod tests {
     }
 
     #[test]
-    fn model_api_list_only_contains_entries_with_resolvable_keys() {
+    fn model_page_keeps_main_and_sub_on_the_same_provider() {
         let mut settings = Settings::default();
         settings.providers.insert("configured".into(), api());
-        settings.providers.insert(
-            "empty".into(),
-            ProviderConfig {
-                api_key: None,
-                ..api()
-            },
-        );
+        settings.models.main.provider = "configured".into();
+        settings.models.sub.provider = "other".into();
         let screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
-        assert_eq!(screen.api_keys(), vec!["configured"]);
+        assert!(!screen.complete());
+    }
+
+    #[test]
+    fn q_quits_selection_but_remains_a_model_name_character() {
+        let mut screen = ModelScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(Outcome::Quit)
+        );
+
+        screen.step = Step::Model;
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.input, "q");
+    }
+
+    /// I12: On kitty/iTerm2/foot a single tap yields Press + Release; Release
+    /// must be a no-op so arrow navigation and typing are not doubled.
+    #[test]
+    fn release_event_is_ignored() {
+        let mut screen = ModelScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        // A Release of Down on the Target page must not move selection.
+        let mut evt = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        evt.kind = KeyEventKind::Release;
+        assert_eq!(screen.handle_key(evt), None);
+        assert_eq!(
+            screen.target_selected, 0,
+            "Release must not advance selection"
+        );
+
+        // A Release of a Char on the Model page must not insert.
+        screen.step = Step::Model;
+        let mut evt = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        evt.kind = KeyEventKind::Release;
+        assert_eq!(screen.handle_key(evt), None);
+        assert!(screen.input.is_empty(), "Release must not insert a char");
+    }
+
+    /// I13: Ctrl/Alt + Char must not inject junk into the model-name field;
+    /// only plain or SHIFT-modified chars are accepted (app_event.rs:506).
+    #[test]
+    fn modifier_char_does_not_inject_into_model_input() {
+        let mut screen = ModelScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        screen.step = Step::Model;
+
+        // Ctrl+X must NOT insert 'x'.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert!(screen.input.is_empty(), "Ctrl+X must not insert into input");
+
+        // Alt+3 must NOT insert '3'.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT)),
+            None
+        );
+        assert!(screen.input.is_empty(), "Alt+3 must not insert into input");
+
+        // Plain char still works.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.input, "g");
+
+        // SHIFT+char is still accepted (capital letter).
+        screen.cursor = screen.input.len();
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            None
+        );
+        assert_eq!(screen.input, "gP");
+    }
+
+    /// Minor: `s` save shortcut must require empty modifiers so Ctrl+S / Alt+S
+    /// do not trigger the save check (mirrors the `q` shortcut guard).
+    #[test]
+    fn save_shortcut_requires_empty_modifiers() {
+        let mut settings = Settings::default();
+        settings.providers.insert("one".into(), api());
+        settings.models.main.provider = "one".into();
+        settings.models.sub.provider = "one".into();
+        settings.models.main.model = "gpt-test".into();
+        settings.models.sub.model = "gpt-sub".into();
+        let mut screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
+        assert!(screen.complete());
+
+        // Ctrl+S must NOT advance to preview.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(screen.step, Step::Target, "Ctrl+S must not trigger save");
+
+        // Plain `s` still advances when complete.
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.step, Step::Preview);
+    }
+
+    fn render(screen: &mut ModelScreen, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::with_options(WritableTestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| screen.draw(frame)).unwrap();
+        terminal
+            .rendered_buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn picker_is_flat_full_frame_and_keeps_provider_aliases_visible() {
+        let mut settings = Settings::default();
+        let mut configured = api();
+        configured.alias = Some("Team OpenAI".into());
+        settings.providers.insert("openai-prod".into(), configured);
+        settings.models.main.provider = "openai-prod".into();
+        settings.models.main.model = "gpt-5".into();
+        let mut screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
+
+        let rendered = render(&mut screen, 100, 20);
+        assert!(rendered.starts_with("  Configure models · 2/2"));
+        assert!(rendered.contains("› Main"));
+        assert!(rendered.contains("Provider Team OpenAI"));
+        assert!(!rendered.contains("╭"));
+        assert!(!rendered.contains("┌"));
+    }
+
+    #[test]
+    fn narrow_picker_stacks_compact_assignment_details_below_the_list() {
+        let mut settings = Settings::default();
+        settings.providers.insert("one".into(), api());
+        let mut screen = ModelScreen::new(settings, PathBuf::from("/tmp/ws"));
+
+        let rendered = render(&mut screen, 50, 12);
+        let lines = rendered.lines().collect::<Vec<_>>();
+        let target_row = lines
+            .iter()
+            .position(|line| line.contains("› Main"))
+            .unwrap();
+        let details_row = lines
+            .iter()
+            .position(|line| line.contains("Assignment"))
+            .unwrap();
+        assert!(details_row > target_row);
+        assert!(lines.iter().any(|line| line.contains("↑/↓  Enter  s  Esc")));
     }
 }

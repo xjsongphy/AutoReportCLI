@@ -19,17 +19,97 @@ const MAX_SCAN_DEPTH: usize = 6;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub short_description: Option<String>,
     pub source: PathBuf,
     pub raw: String,
     pub body: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct Frontmatter {
+// ---- SKILL.md frontmatter parser (ported verbatim from codex
+// `core-skills::loader`). Replaces the previous hand-rolled parser so the
+// loading logic is codex's, not ours. ----
+
+const MAX_NAME_LEN: usize = 64;
+const MAX_DESCRIPTION_LEN: usize = 1024;
+
+/// serde shape of a `SKILL.md` frontmatter block (codex `SkillFrontmatter`).
+#[derive(Debug, Default, Deserialize)]
+struct SkillFrontmatter {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    metadata: SkillFrontmatterMetadata,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SkillFrontmatterMetadata {
+    #[serde(default, rename = "short-description")]
+    short_description: Option<String>,
+}
+
+/// Collapses intra-line whitespace so a name/description cannot span lines.
+/// Ported from codex `sanitize_single_line`.
+fn sanitize_single_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[derive(Debug, Clone)]
+struct ParsedSkillFrontmatter {
+    name: String,
+    description: String,
+    short_description: Option<String>,
+}
+
+/// Parse a `SKILL.md` document's frontmatter into validated metadata. Ported
+/// from codex `parse_skill_frontmatter_metadata_inner` (the YAML scalar-repair
+/// fallback is omitted; invalid YAML surfaces as an error).
+fn parse_frontmatter(
+    contents: &str,
+    default_name: impl FnOnce() -> String,
+) -> Result<ParsedSkillFrontmatter> {
+    let frontmatter = extract_frontmatter(contents)
+        .context("SKILL.md missing YAML frontmatter delimited by ---")?;
+    let parsed: SkillFrontmatter =
+        serde_yaml::from_str(&frontmatter).context("invalid SKILL.md frontmatter YAML")?;
+
+    let name = parsed
+        .name
+        .as_deref()
+        .map(sanitize_single_line)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_name);
+    let description = parsed
+        .description
+        .as_deref()
+        .map(sanitize_single_line)
+        .unwrap_or_default();
+    let short_description = parsed
+        .metadata
+        .short_description
+        .as_deref()
+        .map(sanitize_single_line)
+        .filter(|value| !value.is_empty());
+
+    // codex `validate_len`: empty description is MissingField; oversize is InvalidField.
+    if name.chars().count() > MAX_NAME_LEN {
+        anyhow::bail!("skill name exceeds maximum length of {MAX_NAME_LEN} characters");
+    }
+    if description.is_empty() {
+        anyhow::bail!("skill missing description");
+    }
+    if description.chars().count() > MAX_DESCRIPTION_LEN {
+        anyhow::bail!(
+            "skill description exceeds maximum length of {MAX_DESCRIPTION_LEN} characters"
+        );
+    }
+
+    Ok(ParsedSkillFrontmatter {
+        name,
+        description,
+        short_description,
+    })
 }
 
 #[derive(Clone)]
@@ -67,26 +147,22 @@ impl SkillLoader {
     pub fn list(&self) -> Vec<Skill> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        // Iterate roots in reverse so an explicit project override wins over a
-        // same-named global skill, matching Codex's user/project precedence.
+        // roots() returns [workspace, home]; iterate in that natural order so
+        // an explicit project (workspace) override wins over a same-named global
+        // (home) skill via first-wins `seen.insert`, matching Codex's
+        // user/project precedence (project scope ranks higher).
         let roots = self.roots();
-        for root in roots.iter().rev() {
+        for root in roots.iter() {
             for path in discover_skill_files(root) {
-                let Ok(skill) = parse_skill(&path) else {
-                    continue;
-                };
-                // codex requires a description (MissingField); a blank one
-                // would pollute the catalog, so skip rather than inject
-                // "no description".
-                if skill.description.is_empty() {
-                    log::warn!(
-                        "skill {}: missing description, not injecting",
-                        skill.source.display()
-                    );
-                    continue;
-                }
-                if seen.insert(skill.name.clone()) {
-                    out.push(skill);
+                match parse_skill(&path) {
+                    Ok(skill) => {
+                        if seen.insert(skill.name.clone()) {
+                            out.push(skill);
+                        }
+                    }
+                    // codex rejects skills missing frontmatter/description
+                    // (MissingField); skip them rather than pollute the catalog.
+                    Err(err) => log::warn!("skill {}: {err}, skipping", path.display()),
                 }
             }
         }
@@ -289,56 +365,74 @@ fn discover_skill_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn parse_skill(path: &Path) -> Result<Skill> {
-    let raw = std::fs::read_to_string(path).context("reading skill")?;
-    let (frontmatter, body) = split_frontmatter(&raw);
-    let body = body.trim().to_string();
-    let metadata = frontmatter
-        .map(serde_yaml::from_str::<Frontmatter>)
-        .transpose()
-        .unwrap_or(None)
-        .unwrap_or(Frontmatter {
-            name: None,
-            description: None,
-        });
-    let fallback_name = if path.file_name().and_then(|s| s.to_str()) == Some(SKILL_FILENAME) {
+fn default_skill_name(path: &Path) -> String {
+    if path.file_name().and_then(|s| s.to_str()) == Some(SKILL_FILENAME) {
         path.parent()
             .and_then(|p| p.file_name())
             .and_then(|s| s.to_str())
-            .unwrap_or("skill")
-            .to_string()
+            .filter(|value| !value.is_empty())
     } else {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("skill")
-            .to_string()
-    };
+        path.file_stem().and_then(|s| s.to_str())
+    }
+    .unwrap_or("skill")
+    .to_string()
+}
 
+fn parse_skill(path: &Path) -> Result<Skill> {
+    let raw = std::fs::read_to_string(path).context("reading skill")?;
+    // codex's parser operates on the document after any BOM is stripped.
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    let parsed = parse_frontmatter(raw, || default_skill_name(path))?;
+    let body = extract_body(raw);
     Ok(Skill {
-        name: metadata.name.unwrap_or(fallback_name),
-        description: metadata.description.unwrap_or_default(),
+        name: parsed.name,
+        description: parsed.description,
+        short_description: parsed.short_description,
         source: path.to_path_buf(),
-        raw,
+        raw: raw.to_string(),
         body,
     })
 }
 
-fn split_frontmatter(raw: &str) -> (Option<&str>, &str) {
-    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
-    if let Some(rest) = raw
-        .strip_prefix("---\n")
-        .or_else(|| raw.strip_prefix("---\r\n"))
-        && let Some(end) = rest.find("\n---")
-    {
-        let frontmatter = &rest[..end];
-        let after = &rest[end..];
-        let body = after
-            .find('\n')
-            .map(|idx| &after[idx + 1..])
-            .unwrap_or(after);
-        return (Some(frontmatter), body);
+/// Extract the YAML frontmatter block delimited by `---` lines. Ported verbatim
+/// from codex `core-skills::loader::extract_frontmatter`.
+fn extract_frontmatter(contents: &str) -> Option<String> {
+    let mut lines = contents.lines();
+    if !matches!(lines.next(), Some(line) if line.trim() == "---") {
+        return None;
     }
-    (None, raw)
+
+    let mut frontmatter_lines: Vec<&str> = Vec::new();
+    let mut found_closing = false;
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            found_closing = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+
+    if frontmatter_lines.is_empty() || !found_closing {
+        return None;
+    }
+
+    Some(frontmatter_lines.join("\n"))
+}
+
+/// Return the `SKILL.md` body — everything after the closing frontmatter `---`.
+/// Mirrors the body half of the previous splitter, paired with codex's
+/// `extract_frontmatter` above.
+fn extract_body(contents: &str) -> String {
+    let mut lines = contents.lines();
+    if !matches!(lines.next(), Some(line) if line.trim() == "---") {
+        return contents.trim().to_string();
+    }
+    for line in lines.by_ref() {
+        if line.trim() == "---" {
+            break;
+        }
+    }
+    lines.collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 #[cfg(test)]
@@ -447,6 +541,48 @@ mod tests {
         .unwrap();
         assert!(loader.load("typst").is_some());
         assert!(loader.load("latex-compile").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_workspace_skill_overrides_same_named_home_skill() {
+        // roots() returns [workspace/References/skills, home/resources/<lang>/skills];
+        // list() must iterate in that natural order so the project (workspace)
+        // skill of a given name wins over the same-named global (home) skill,
+        // matching codex's project-over-global precedence.
+        let dir = std::env::temp_dir().join(format!("skills-prec-{}", stamp()));
+        let home = dir.join("home");
+        let workspace = dir.join("workspace");
+        // Same-named skill in the home (global) root.
+        let home_skill = home.join("resources/latex/skills/shared");
+        std::fs::create_dir_all(&home_skill).unwrap();
+        std::fs::write(
+            home_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: home global version\n---\nHOME BODY",
+        )
+        .unwrap();
+        // Same-named skill in the workspace (project) root — the explicit override.
+        let ws_skill = workspace.join("References/skills/shared");
+        std::fs::create_dir_all(&ws_skill).unwrap();
+        std::fs::write(
+            ws_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: workspace project version\n---\nWORKSPACE BODY",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let loader = SkillLoader::new(&home, &workspace);
+        let shared = loader
+            .list()
+            .into_iter()
+            .find(|s| s.name == "shared")
+            .expect("shared skill present");
+        assert_eq!(
+            shared.description, "workspace project version",
+            "project override must win; got: {:?}",
+            shared.description
+        );
+        assert!(shared.body.contains("WORKSPACE BODY"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

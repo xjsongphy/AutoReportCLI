@@ -566,7 +566,7 @@ impl Tui {
             let is_environment = matches!(screen, Overlay::Environment(_));
             if let Some(outcome) = screen.handle_key(key) {
                 match outcome {
-                    Outcome::Saved => {
+                    Outcome::Saved | Outcome::Continue => {
                         if is_environment {
                             self.system(
                                 "environment saved: Python global, report language project-scoped",
@@ -587,7 +587,7 @@ impl Tui {
                             self.want_models = true;
                         }
                     }
-                    Outcome::Cancelled => {
+                    Outcome::Cancelled | Outcome::Quit => {
                         if !is_environment {
                             self.want_models_after_config = false;
                         }
@@ -607,7 +607,7 @@ impl Tui {
         }
 
         // While a completion popup is open, intercept navigation keys.
-        if self.slash.is_some() {
+        if self.composer.slash_popup().is_some() {
             match key.code {
                 KeyCode::Down => {
                     self.move_slash(1);
@@ -639,16 +639,18 @@ impl Tui {
                 KeyCode::Esc => {
                     let input = self.composer.text();
                     let cursor = self.composer.cursor().min(input.len());
-                    self.dismissed_slash = input
-                        .strip_prefix('/')
-                        .map(|text| text[..cursor.saturating_sub(1).min(text.len())].to_string());
-                    self.slash = None;
+                    self.composer.set_dismissed_slash(
+                        input.strip_prefix('/').map(|text| {
+                            text[..cursor.saturating_sub(1).min(text.len())].to_string()
+                        }),
+                    );
+                    self.composer.set_slash_popup(None);
                     return true;
                 }
                 _ => {}
             }
         }
-        if self.mention.is_some() {
+        if self.composer.mention_popup().is_some() {
             match key.code {
                 KeyCode::Down => {
                     self.move_mention(1);
@@ -663,14 +665,16 @@ impl Tui {
                     return true;
                 }
                 KeyCode::Esc => {
-                    if let Some(mention) = self.mention.as_ref() {
+                    if let Some(mention) = self.composer.mention_popup() {
                         let input = self.composer.text();
                         let cursor = mention.cursor.min(input.len());
                         let query = input.get(mention.start + 1..cursor).unwrap_or_default();
-                        self.dismissed_mention =
-                            Some(format!("{}:{}:{}", mention.start, mention.cursor, query));
+                        self.composer.set_dismissed_mention(Some(format!(
+                            "{}:{}:{}",
+                            mention.start, mention.cursor, query
+                        )));
                     }
-                    self.mention = None;
+                    self.composer.set_mention_popup(None);
                     return true;
                 }
                 _ => {}
@@ -711,10 +715,9 @@ impl Tui {
                 KeyCode::Char(c)
                     if key.modifiers.is_empty()
                         && c.is_ascii_digit()
-                        && c.to_digit(10).filter(|d| *d as usize <= len).is_some() =>
+                        && picker_digit_index(c, len).is_some() =>
                 {
-                    c.to_digit(10)
-                        .map(|d| PickerAction::Accept((d - 1) as usize))
+                    picker_digit_index(c, len).map(PickerAction::Accept)
                 }
                 _ => Some(PickerAction::Swallow),
             };
@@ -764,9 +767,21 @@ impl Tui {
                 }
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
-                if self
-                    .paste_burst
-                    .newline_should_insert_instead_of_submit(now)
+                // Codex bypasses paste-burst Enter-suppression whenever the
+                // draft is a slash command (`in_slash_context`), so a
+                // fast-typed `/new` always submits and clears instead of being
+                // swallowed as an inserted newline mid-burst.
+                let in_slash_context = self.composer.slash_popup().is_some()
+                    || self
+                        .composer
+                        .text()
+                        .lines()
+                        .next()
+                        .is_some_and(|line| line.starts_with('/'));
+                if !in_slash_context
+                    && self
+                        .paste_burst
+                        .newline_should_insert_instead_of_submit(now)
                 {
                     if !self.paste_burst.append_newline_if_active(now) {
                         self.composer.insert_newline();
@@ -944,10 +959,10 @@ impl Tui {
             KeyCode::Esc => {
                 // ESC: close completion popups if open, otherwise interrupt
                 // the focused agent's active turn (codex semantics).
-                if self.slash.is_some() {
-                    self.slash = None;
-                } else if self.mention.is_some() {
-                    self.mention = None;
+                if self.composer.slash_popup().is_some() {
+                    self.composer.set_slash_popup(None);
+                } else if self.composer.mention_popup().is_some() {
+                    self.composer.set_mention_popup(None);
                 } else {
                     self.restore_queued_inputs_after_interrupt(self.focused);
                     self.manager.interrupt(self.focused);
@@ -968,5 +983,59 @@ impl Tui {
             return false;
         }
         true
+    }
+}
+
+/// Map a quick-select digit char to a 0-based picker index.
+///
+/// Mirrors codex's `ListSelectionView`: only `1..=len` are selectable, so
+/// `'0'` (and any digit beyond the roster length) yields `None` and the key
+/// falls through to the `Swallow` arm. This avoids the `0u32 - 1` underflow
+/// (debug panic / release wrap) that the previous `*d as usize <= len` guard
+/// admitted for `'0'` (since `0 <= len` is always true).
+fn picker_digit_index(c: char, len: usize) -> Option<usize> {
+    let d = c.to_digit(10)?;
+    // `.then` (not `then_some`) so `(d - 1)` is only evaluated when `d >= 1`,
+    // avoiding a debug underflow panic / release wrap for `'0'`.
+    (1..=len).contains(&(d as usize)).then(|| (d - 1) as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::picker_digit_index;
+
+    #[test]
+    fn picker_digit_zero_is_no_op() {
+        // Regression: pressing '0' must NOT underflow (debug panic) or wrap to
+        // a huge index (release). It is a no-op regardless of roster length,
+        // matching codex's ListSelectionView (1..=len).
+        assert_eq!(picker_digit_index('0', 1), None);
+        assert_eq!(picker_digit_index('0', 9), None);
+        assert_eq!(picker_digit_index('0', usize::MAX), None);
+    }
+
+    #[test]
+    fn picker_digit_one_based_within_range() {
+        // '1' -> index 0, '2' -> index 1, ... up to and including len.
+        assert_eq!(picker_digit_index('1', 3), Some(0));
+        assert_eq!(picker_digit_index('2', 3), Some(1));
+        assert_eq!(picker_digit_index('3', 3), Some(2));
+        assert_eq!(picker_digit_index('1', 1), Some(0));
+    }
+
+    #[test]
+    fn picker_digit_beyond_len_is_no_op() {
+        // Digits past the roster length are no-ops (not clamps).
+        assert_eq!(picker_digit_index('4', 3), None);
+        assert_eq!(picker_digit_index('9', 3), None);
+    }
+
+    #[test]
+    fn picker_digit_non_digit_is_no_op() {
+        // The match-arm guard already filters to ascii digits, but the helper
+        // must still be total: non-digits yield None, never panic.
+        assert_eq!(picker_digit_index('a', 3), None);
+        assert_eq!(picker_digit_index('!', 3), None);
+        assert_eq!(picker_digit_index(' ', 3), None);
     }
 }

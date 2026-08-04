@@ -2,10 +2,55 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tree_sitter::{Node, Parser, Tree};
 use tree_sitter_bash::LANGUAGE as BASH;
+
+/// Chunk size for each `read` call inside `read_capped`. Mirrors codex's
+/// `READ_CHUNK_SIZE` (`core/src/exec.rs:69`).
+const READ_CHUNK_SIZE: usize = 8192; // bytes per read
+
+/// Hard cap on bytes retained from exec stdout/stderr.
+///
+/// A command producing output at memory-bandwidth speed (`cat /dev/urandom`,
+/// `yes`, an infinite `print` loop) would otherwise fill all memory before the
+/// timeout fires, OOM-killing the process. This is reachable even under the
+/// `WorkspaceWrite` sandbox, which restricts file writes — not stdout volume.
+///
+/// Matches codex's `EXEC_OUTPUT_MAX_BYTES`/`DEFAULT_OUTPUT_BYTES_CAP`
+/// (`core/src/exec.rs:76`, `utils/pty/src/lib.rs:12`): 1 MiB per stream. The
+/// cap is enforced DURING streaming reads via `read_capped`, which keeps
+/// draining the pipe to EOF (so the child is never blocked on a full pipe)
+/// but only RETAINS the first 1 MiB.
+const EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
+/// Read `r` to EOF, retaining at most `cap` bytes of the output.
+///
+/// This replaces `read_to_end` for child stdout/stderr so a runaway command
+/// cannot grow the buffer without bound. Mirrors codex's `read_output` +
+/// `append_capped` (`core/src/exec.rs:1114`, `:849-856`): it loops `read` into
+/// a small temp buffer and appends to `out` ONLY while `out.len() < cap`;
+/// once the cap is reached subsequent chunks are discarded but the loop keeps
+/// reading until EOF (`Ok(0)`) so the child is not stalled by a full pipe.
+async fn read_capped<R: AsyncRead + Unpin>(r: &mut R, cap: usize) -> std::io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(cap.min(READ_CHUNK_SIZE));
+    let mut tmp = [0u8; READ_CHUNK_SIZE];
+    loop {
+        let n = r.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        if out.len() < cap {
+            let remaining = cap - out.len();
+            let take = remaining.min(n);
+            out.extend_from_slice(&tmp[..take]);
+        }
+        // Once `out` is full we keep draining `tmp` to EOF but discard the
+        // bytes — avoids back-pressuring the child while bounding retention.
+    }
+    Ok(out)
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum ShellType {
@@ -186,13 +231,19 @@ impl CodexShell {
             let (a, b) = tokio::join!(
                 async {
                     match stdout_pipe.as_mut() {
-                        Some(p) => p.read_to_end(&mut stdout_buf).await,
+                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES).await.map(|v| {
+                            stdout_buf = v;
+                            0
+                        }),
                         None => Ok(0),
                     }
                 },
                 async {
                     match stderr_pipe.as_mut() {
-                        Some(p) => p.read_to_end(&mut stderr_buf).await,
+                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES).await.map(|v| {
+                            stderr_buf = v;
+                            0
+                        }),
                         None => Ok(0),
                     }
                 },
@@ -220,10 +271,22 @@ impl CodexShell {
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                 let _ = tokio::time::timeout(Duration::from_secs(2), async {
                     if let Some(p) = stdout_pipe.as_mut() {
-                        let _ = p.read_to_end(&mut stdout_buf).await;
+                        if let Ok(v) = read_capped(p, EXEC_OUTPUT_MAX_BYTES).await {
+                            // Preserve any bytes already read before timeout;
+                            // the cap applies to the combined retained volume.
+                            let cap = EXEC_OUTPUT_MAX_BYTES;
+                            let already = stdout_buf.len();
+                            let take = (cap - already).min(v.len());
+                            stdout_buf.extend_from_slice(&v[..take]);
+                        }
                     }
                     if let Some(p) = stderr_pipe.as_mut() {
-                        let _ = p.read_to_end(&mut stderr_buf).await;
+                        if let Ok(v) = read_capped(p, EXEC_OUTPUT_MAX_BYTES).await {
+                            let cap = EXEC_OUTPUT_MAX_BYTES;
+                            let already = stderr_buf.len();
+                            let take = (cap - already).min(v.len());
+                            stderr_buf.extend_from_slice(&v[..take]);
+                        }
                     }
                 })
                 .await;
@@ -872,5 +935,49 @@ mod tests {
             .unwrap();
         assert!(output.timed_out);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Regression for the OOM-via-unbounded-buffer DoS: `read_capped` must
+    /// retain EXACTLY `EXEC_OUTPUT_MAX_BYTES` bytes regardless of how much the
+    /// producer emits, instead of growing the buffer to multi-MB. Input is 4 MiB
+    /// of non-zero filler — well above the 1 MiB cap.
+    #[tokio::test]
+    async fn read_capped_truncates_at_exec_output_max_bytes() {
+        let payload: Vec<u8> = vec![0xAB; EXEC_OUTPUT_MAX_BYTES * 4];
+        assert!(payload.len() > EXEC_OUTPUT_MAX_BYTES);
+        let mut reader = std::io::Cursor::new(payload);
+        let out = read_capped(&mut reader, EXEC_OUTPUT_MAX_BYTES)
+            .await
+            .expect("read_capped must drain to EOF");
+        assert_eq!(out.len(), EXEC_OUTPUT_MAX_BYTES);
+        assert!(out.iter().all(|&b| b == 0xAB));
+    }
+
+    /// Under-cap input is returned verbatim (cap is an upper bound, not a pad).
+    #[tokio::test]
+    async fn read_capped_keeps_all_data_under_cap() {
+        let payload = b"hello world".to_vec();
+        let mut reader = std::io::Cursor::new(payload.clone());
+        let out = read_capped(&mut reader, EXEC_OUTPUT_MAX_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(out, payload);
+    }
+
+    /// Zero-length input yields an empty buffer (no spurious reads / no panic).
+    #[tokio::test]
+    async fn read_capped_empty_input_yields_empty() {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+        let out = read_capped(&mut reader, EXEC_OUTPUT_MAX_BYTES)
+            .await
+            .unwrap();
+        assert!(out.is_empty());
+    }
+
+    /// The cap matches codex's `DEFAULT_OUTPUT_BYTES_CAP` (1 MiB). If this
+    /// drifts, the bugfix silently degrades — pin it.
+    #[test]
+    fn exec_output_max_bytes_matches_codex_default_output_bytes_cap() {
+        assert_eq!(EXEC_OUTPUT_MAX_BYTES, 1024 * 1024);
     }
 }

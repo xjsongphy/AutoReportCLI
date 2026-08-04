@@ -1,31 +1,70 @@
-//! Startup two-repository sync, mirroring AutoReport's `core/preset_sync.py`.
+//! Startup multi-repository sync, mirroring AutoReport's `core/preset_sync.py`.
 //!
-//! On startup AutoReport pulls content from two GitHub repositories:
+//! On startup AutoReport pulls content from four pinned-SHA GitHub repositories:
 //!
 //! 1. **cc-switch** (`farion1231/cc-switch`) — TypeScript provider-preset files
 //!    (`*ProviderPresets.ts`) describing known providers/models/bases. Cached
 //!    under `$AUTOREPORT_HOME/external/providers/cc-switch/`.
-//! 2. **skills** (`xjsongphy/skills`) — the agent skill files (`SKILL.md`),
-//!    written into language-specific `$AUTOREPORT_HOME/resources/<language>/skills/`
-//!    discovers them.
+//! 2. **skills** (`xjsongphy/skills`) — agent skill files (`SKILL.md`).
+//!    `experiment-report-writer` is language-neutral report-writing methodology
+//!    and is written to both the latex and typst skill roots; `latex-compile` is
+//!    latex-only. Language typesetting specifics are delegated to the
+//!    `latex-compile` / `typst` skills + project templates.
+//! 3. **pkumpl-typst** (`xjsongphy/pkumpl-typst`) — Typst report theme/template
+//!    assets.
+//! 4. **claude-skill-typst** (`lucifer1004/claude-skill-typst`) — the Typst
+//!    authoring skill and its reference docs.
 //!
-//! This is a real, complete implementation: HTTPS fetch via reqwest, on-disk
-//! caching, parsing of the preset TS into provider entries that auto-register
-//! providers, and best-effort behaviour (offline → keep existing cache, never
-//! block startup beyond the timeout).
+//! ## Pull-decision model (manifest-by-SHA)
+//!
+//! Every repo is pinned to a fixed commit SHA, so its file tree is immutable
+//! until we deliberately bump the SHA in a release. On the first launch after a
+//! bump we fetch each repo's git tree once (the "remote directory"), filter it to
+//! the files we manage, and cache that manifest on disk keyed by SHA. The warmth
+//! check (`cache_is_warm`) is then a **local-only** test — a manifest for the
+//! current SHA exists and every file it lists is present on disk — so warm
+//! startups do zero network I/O.
+//!
+//! ## Parallelism
+//!
+//! The four repos are fetched **concurrently** (repo-level parallelism); within a
+//! repo, files are fetched **sequentially**. Each file is written atomically to
+//! its final destination, so a single failed fetch (404, timeout) is recorded for
+//! that file only and never aborts the rest — fixing the old "one missing remote
+//! file re-pulls everything every startup" loop.
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use futures::future::join_all;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-// Keep startup inputs immutable between releases. Refresh these revisions
-// deliberately when the upstream repositories have been reviewed.
-const CC_SWITCH_RAW: &str = "https://raw.githubusercontent.com/farion1231/cc-switch/f6e37ed99443890a865669e28bf1caf5e85d466d";
-const SKILLS_RAW: &str =
-    "https://raw.githubusercontent.com/xjsongphy/skills/2d4557328cd56d3bc922a0e61bb7cb34dbd42011";
-const PKUMPL_TYPST_RAW: &str = "https://raw.githubusercontent.com/xjsongphy/pkumpl-typst/fa3afe997fdc390ea0b15d41df32c7750cf68858";
-const TYPST_SKILL_RAW: &str = "https://raw.githubusercontent.com/lucifer1004/claude-skill-typst/8069963bb563f8354ac6a43aeb750f1753e37556";
+// Keep startup inputs immutable between releases. Refresh the SHAs deliberately
+// when the upstream repositories have been reviewed.
+const CC_SWITCH: Repo = Repo {
+    name: "cc-switch",
+    owner: "farion1231",
+    repo: "cc-switch",
+    sha: "f6e37ed99443890a865669e28bf1caf5e85d466d",
+};
+const SKILLS: Repo = Repo {
+    name: "skills",
+    owner: "xjsongphy",
+    repo: "skills",
+    sha: "025cbd22cf9c442c3ba6b3309d80e8376e4098e9",
+};
+const PKUMPL_TYPST: Repo = Repo {
+    name: "pkumpl-typst",
+    owner: "xjsongphy",
+    repo: "pkumpl-typst",
+    sha: "fa3afe997fdc390ea0b15d41df32c7750cf68858",
+};
+const TYPST_SKILL: Repo = Repo {
+    name: "claude-skill-typst",
+    owner: "lucifer1004",
+    repo: "claude-skill-typst",
+    sha: "8069963bb563f8354ac6a43aeb750f1753e37556",
+};
 
 const PRESET_FILES: &[&str] = &[
     "claudeProviderPresets.ts",
@@ -36,6 +75,305 @@ const PRESET_FILES: &[&str] = &[
     "hermesProviderPresets.ts",
     "universalProviderPresets.ts",
 ];
+
+/// Typst skill reference docs pulled from `claude-skill-typst`.
+const TYPST_SKILL_REFS: &[&str] = &[
+    "basics.md",
+    "types.md",
+    "styling.md",
+    "tables.md",
+    "academic.md",
+    "conversion.md",
+    "cli.md",
+    "query.md",
+    "advanced.md",
+    "template.md",
+    "package.md",
+    "debug.md",
+    "perf.md",
+];
+
+#[derive(Debug, Default, Clone)]
+pub struct SyncReport {
+    pub presets_fetched: usize,
+    pub skills_fetched: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+impl SyncReport {
+    pub fn total(&self) -> usize {
+        self.presets_fetched + self.skills_fetched.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Repo + file-rule model
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct Repo {
+    name: &'static str,
+    owner: &'static str,
+    repo: &'static str,
+    sha: &'static str,
+}
+
+impl Repo {
+    fn raw_base(&self) -> String {
+        format!(
+            "https://raw.githubusercontent.com/{}/{}/{}",
+            self.owner, self.repo, self.sha
+        )
+    }
+    fn tree_url(&self) -> String {
+        format!(
+            "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
+            self.owner, self.repo, self.sha
+        )
+    }
+}
+
+/// One managed file: where it lives in the repo, where it goes on disk (one or
+/// more destinations — `experiment-report-writer` is written to both language
+/// roots), and an optional body transform.
+#[derive(Clone)]
+struct FileRule {
+    remote: String,
+    dests: Vec<String>,
+    transform: fn(&str) -> String,
+}
+
+fn noop(s: &str) -> String {
+    s.to_string()
+}
+
+/// Build the four repo specs with their managed file sets. cc-switch's files are
+/// derived from `PRESET_FILES`; the others are explicit.
+fn repos() -> Vec<(Repo, Vec<FileRule>)> {
+    let cc_switch_files: Vec<FileRule> = PRESET_FILES
+        .iter()
+        .map(|file| FileRule {
+            remote: format!("src/config/{file}"),
+            dests: vec![format!("external/providers/cc-switch/src/config/{file}")],
+            transform: noop,
+        })
+        .collect();
+
+    let skills_files: Vec<FileRule> = vec![
+        // Language-neutral report-writing methodology → both language roots.
+        FileRule {
+            remote: "experiment-report-writer/SKILL.md".to_string(),
+            dests: vec![
+                "resources/latex/skills/experiment-report-writer/SKILL.md".to_string(),
+                "resources/typst/skills/experiment-report-writer/SKILL.md".to_string(),
+            ],
+            transform: noop,
+        },
+        FileRule {
+            remote: "latex-compile/SKILL.md".to_string(),
+            dests: vec!["resources/latex/skills/latex-compile/SKILL.md".to_string()],
+            transform: noop,
+        },
+    ];
+
+    let pkumpl_files: Vec<FileRule> = vec![
+        FileRule {
+            remote: "LICENSE".to_string(),
+            dests: vec!["resources/typst/LICENSE".to_string()],
+            transform: noop,
+        },
+        FileRule {
+            remote: "mplts.typ".to_string(),
+            dests: vec!["resources/typst/themes/mplts.typ".to_string()],
+            transform: noop,
+        },
+        FileRule {
+            remote: "template/main.typ".to_string(),
+            dests: vec!["resources/typst/templates/main.typ".to_string()],
+            transform: rewrite_typst_main_import,
+        },
+        FileRule {
+            remote: "template/bibli.bib".to_string(),
+            dests: vec!["resources/typst/templates/bibli.bib".to_string()],
+            transform: noop,
+        },
+        FileRule {
+            remote: "template/american-physics-society.csl".to_string(),
+            dests: vec!["resources/typst/templates/american-physics-society.csl".to_string()],
+            transform: noop,
+        },
+    ];
+
+    let mut typst_skill_files: Vec<FileRule> = vec![
+        FileRule {
+            remote: "skills/typst/SKILL.md".to_string(),
+            dests: vec!["resources/typst/skills/typst/SKILL.md".to_string()],
+            transform: rewrite_typst_skill_index,
+        },
+        FileRule {
+            remote: "LICENSE".to_string(),
+            dests: vec!["resources/typst/skills/typst/LICENSE".to_string()],
+            transform: noop,
+        },
+    ];
+    for file in TYPST_SKILL_REFS {
+        typst_skill_files.push(FileRule {
+            remote: format!("skills/typst/{file}"),
+            dests: vec![format!("resources/typst/skills/typst/{file}")],
+            transform: rewrite_typst_skill_ref,
+        });
+    }
+
+    vec![
+        (CC_SWITCH, cc_switch_files),
+        (SKILLS, skills_files),
+        (PKUMPL_TYPST, pkumpl_files),
+        (TYPST_SKILL, typst_skill_files),
+    ]
+}
+
+/// Rewrite the pkumpl-typst `main.typ` import to use the vendored theme.
+fn rewrite_typst_main_import(body: &str) -> String {
+    body.replace(
+        "#import \"@preview/unofficial-pku-mpl:0.1.0\": *",
+        "#import \"mplts.typ\": *",
+    )
+}
+
+/// Strip upstream package/example fixtures and their index links from the Typst
+/// skill's `SKILL.md` so the bundled report skill stays self-contained.
+fn rewrite_typst_skill_index(body: &str) -> String {
+    body.replace("(examples/package-example/)", "(package.md)")
+        .replace(
+            "| [basic-document.typ](examples/basic-document.typ)   | A short note or memo                     | [basics.md](basics.md), [styling.md](styling.md) |\n",
+            "",
+        )
+        .replace(
+            "| [styled-document.typ](examples/styled-document.typ) | A multi-section report with page styling | [styling.md](styling.md), [tables.md](tables.md) |\n",
+            "",
+        )
+        .replace(
+            "| [template-report.typ](examples/template-report.typ) | A reusable template for a series         | [template.md](template.md)                       |\n",
+            "",
+        )
+        .replace(
+            "| [tables-showcase.typ](examples/tables-showcase.typ) | A data-heavy doc (tables, CSV/JSON)      | [tables.md](tables.md), [types.md](types.md) |\n",
+            "",
+        )
+        .replace(
+            "| [academic-paper.typ](examples/academic-paper.typ)   | A paper with citations, theorems, math   | [academic.md](academic.md)                       |\n",
+            "",
+        )
+        .replace(
+            "| [query-export.typ](examples/query-export.typ)       | Metadata export or multi-pass builds     | [query.md](query.md)                             |\n",
+            "",
+        )
+}
+
+/// Neutralize upstream package-development references in Typst skill docs.
+fn rewrite_typst_skill_ref(body: &str) -> String {
+    body.replace(
+        "**Complete example**: See [examples/package-example/](examples/package-example/) for a minimal publishable package with submodules.",
+        "**Complete example**: This bundled report skill omits package-development fixtures; use the package patterns in this document.",
+    )
+    .replace(
+        "See [package search](scripts/search-packages.py) for alternatives.",
+        "consult the Typst package documentation when selecting alternatives.",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Manifest cache (by SHA) — drives the zero-network warmth check
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Default)]
+struct Manifest {
+    sha: String,
+    /// Signature of the managed file rules when this manifest was written, so a
+    /// code change to `repos()` invalidates the cache even at a fixed SHA.
+    signature: String,
+    /// Every on-disk destination this repo should provide for the pinned SHA
+    /// (the managed file rules intersected with the files that exist remotely).
+    dests: Vec<String>,
+}
+
+fn manifest_dir(home: &Path) -> PathBuf {
+    home.join(".sync-cache").join("manifests")
+}
+
+fn manifest_path(home: &Path, repo: &Repo) -> PathBuf {
+    manifest_dir(home).join(format!("{}-{}.json", repo.name, repo.sha))
+}
+
+fn load_manifest(home: &Path, repo: &Repo) -> Option<Manifest> {
+    let body = std::fs::read_to_string(manifest_path(home, repo)).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
+fn save_manifest(home: &Path, repo: &Repo, manifest: &Manifest) {
+    let dir = manifest_dir(home);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_string_pretty(manifest) {
+        let _ = atomic_write(&manifest_path(home, repo), &json);
+    }
+    // Garbage-collect stale manifests from previous SHAs of the same repo so the
+    // cache dir doesn't grow unbounded across releases: manifests are keyed
+    // `{name}-{sha}.json`, and each SHA bump left the old file behind. Only
+    // files matching the exact `{name}-` prefix for THIS repo are removed;
+    // other repos' manifests are untouched. Best-effort — removal errors ignored.
+    let current = manifest_path(home, repo);
+    let prefix = format!("{}-", repo.name);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == current {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with(&prefix) && file_name.ends_with(".json") {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// Bump when any file transform applied in `repos()` changes its output, so a
+/// stale warmth cache (written by a previous binary) is detected and managed
+/// files are re-synced. Without this, editing a transform fn body would not
+/// invalidate the cache until the upstream SHA bumps — `repo_signature` below
+/// covers `remote`/`dests` but not the transform applied to the fetched body.
+const TRANSFORM_VERSION: u32 = 1;
+
+/// A stable digest of one repo's managed file rules. Changes whenever the rules
+/// change (added/removed/relabeled files), so a stale manifest is detected.
+fn repo_signature(files: &[FileRule]) -> String {
+    let mut sig = String::new();
+    sig.push_str("tx=");
+    sig.push_str(&TRANSFORM_VERSION.to_string());
+    sig.push(';');
+    for rule in files {
+        sig.push_str(&rule.remote);
+        sig.push('=');
+        for dest in &rule.dests {
+            sig.push_str(dest);
+            sig.push(',');
+        }
+        sig.push(';');
+    }
+    sig
+}
+
+/// Where synced external content lives inside the global home.
+pub fn external_dir(home: &Path) -> PathBuf {
+    home.join("external")
+}
+pub fn skills_dir(home: &Path) -> PathBuf {
+    home.join("resources")
+}
 
 /// Read the cached cc-switch templates without adding any of them to the
 /// user's configured providers. A template becomes a provider only after the
@@ -68,94 +406,30 @@ pub fn load_presets(home: &Path) -> Vec<PresetProvider> {
     presets
 }
 
-/// Skills to pull from the skills repo (name → path within repo).
-///
-/// Mirrors AutoReport's `core/preset_sync.py`: only `latex-compile` and
-/// `experiment-report-writer` are external skills. `mineru` is not pulled —
-/// it is exposed as a tool (the `mineru-open-api` CLI is on the exec
-/// allowlist), not a skill. `md-report-writer` is not pulled — report
-/// writing is AutoReport's own purpose and lives in the agent templates.
-const SKILL_FILES: &[(&str, &str)] = &[
-    (
-        "experiment-report-writer",
-        "experiment-report-writer/SKILL.md",
-    ),
-    ("latex-compile", "latex-compile/SKILL.md"),
-];
-const TYPST_FILES: &[(&str, &str)] = &[
-    ("LICENSE", "LICENSE"),
-    ("mplts.typ", "themes/mplts.typ"),
-    ("template/main.typ", "templates/main.typ"),
-    ("template/bibli.bib", "templates/bibli.bib"),
-    (
-        "template/american-physics-society.csl",
-        "templates/american-physics-society.csl",
-    ),
-];
-const TYPST_SKILL_FILES: &[&str] = &[
-    "basics.md",
-    "types.md",
-    "styling.md",
-    "tables.md",
-    "academic.md",
-    "conversion.md",
-    "cli.md",
-    "query.md",
-    "advanced.md",
-    "template.md",
-    "package.md",
-    "debug.md",
-    "perf.md",
-];
-
-#[derive(Debug, Default, Clone)]
-pub struct SyncReport {
-    pub presets_fetched: usize,
-    pub skills_fetched: Vec<String>,
-    pub errors: Vec<String>,
-}
-
-impl SyncReport {
-    pub fn total(&self) -> usize {
-        self.presets_fetched + self.skills_fetched.len()
-    }
-}
-
-/// Where synced external content lives inside the global home.
-pub fn external_dir(home: &Path) -> PathBuf {
-    home.join("external")
-}
-pub fn skills_dir(home: &Path) -> PathBuf {
-    home.join("resources")
-}
-
-/// Whether the local cache has the minimum files needed to skip startup sync.
+/// Whether the local cache fully reflects every repo's pinned SHA. Purely local:
+/// a manifest for the current SHA (matching the current rule signature) must
+/// exist for each repo, and every destination it lists must be on disk. No
+/// network — warm startups skip sync entirely.
 pub fn cache_is_warm(home: &Path) -> bool {
-    let preset_dir = external_dir(home)
-        .join("providers")
-        .join("cc-switch")
-        .join("src")
-        .join("config");
-    let skills = skills_dir(home).join("latex").join("skills");
-    let typst = skills_dir(home).join("typst");
-    PRESET_FILES
-        .iter()
-        .all(|file| preset_dir.join(file).is_file())
-        && SKILL_FILES.iter().all(|(name, _)| {
-            skills.join(name).join("SKILL.md").is_file()
-                || skills.join(format!("{name}.md")).is_file()
-        })
-        && typst.join("skills/typst/SKILL.md").is_file()
-        && typst
-            .join("skills/experiment-report-writer/SKILL.md")
-            .is_file()
-        && typst.join("templates/main.typ").is_file()
-        && typst.join("themes/mplts.typ").is_file()
+    for (repo, files) in repos() {
+        let Some(manifest) = load_manifest(home, &repo) else {
+            return false;
+        };
+        if manifest.sha != repo.sha || manifest.signature != repo_signature(&files) {
+            return false;
+        }
+        for dest in &manifest.dests {
+            if !home.join(dest).is_file() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
-/// Fetch both repositories' content into the global cache. Network errors
-/// are recorded in the report rather than propagated, so a missing network
-/// degrades gracefully to the existing cache.
+/// Fetch every repo's content into the global cache. Network errors are recorded
+/// per-file rather than propagated, so a missing network degrades gracefully to
+/// the existing cache. Repos run concurrently; files within a repo run in order.
 pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
     let client = reqwest::Client::builder()
         .timeout(timeout)
@@ -164,246 +438,178 @@ pub async fn sync_all(home: &Path, timeout: std::time::Duration) -> SyncReport {
         .unwrap_or_else(|_| reqwest::Client::new());
 
     let mut report = SyncReport::default();
-    let staging = home
-        .join(".sync-staging")
-        .join(uuid::Uuid::new_v4().to_string());
-    let staging_preset_dir = staging.join("external/providers/cc-switch/src/config");
-    let staging_skills = staging.join("resources/latex/skills");
-    let staging_typst = staging.join("resources/typst");
-    let _ = std::fs::create_dir_all(&staging_preset_dir);
-    let _ = std::fs::create_dir_all(&staging_skills);
-    let _ = std::fs::create_dir_all(staging_typst.join("themes"));
-    let _ = std::fs::create_dir_all(staging_typst.join("templates"));
-    let _ = std::fs::create_dir_all(staging_typst.join("skills/typst"));
-    let typst_writer = staging_typst.join("skills/experiment-report-writer/SKILL.md");
-    if let Err(e) = atomic_write(
-        &typst_writer,
-        include_str!("../../../templates/typst/skills/experiment-report-writer/SKILL.md"),
-    ) {
-        report
-            .errors
-            .push(format!("write bundled Typst writer skill: {e}"));
+
+    // One pass over the legacy layout so old installs migrate cleanly.
+    if let Err(e) = remove_legacy_managed_dirs(home) {
+        report.errors.push(format!("legacy cache cleanup: {e}"));
     }
 
-    // 1) cc-switch presets.
-    let preset_dir = staging_preset_dir.clone();
-    for file in PRESET_FILES {
-        let url = format!("{CC_SWITCH_RAW}/src/config/{file}");
-        let dest = preset_dir.join(file);
-        match fetch_text(&client, &url).await {
-            Ok(body) => {
-                if let Err(e) = atomic_write(&dest, &body) {
-                    report.errors.push(format!("write {file}: {e}"));
-                } else {
-                    report.presets_fetched += 1;
-                    log::debug!("synced preset {file}");
-                }
-            }
-            Err(e) => report.errors.push(format!("preset {file}: {e}")),
-        }
-    }
+    let specs = repos();
 
-    // 2) skills repo.
-    let skills = staging_skills.clone();
-    let _ = std::fs::create_dir_all(&skills);
-    for (name, repo_path) in SKILL_FILES {
-        let url = format!("{SKILLS_RAW}/{repo_path}");
-        match fetch_text(&client, &url).await {
-            Ok(body) => {
-                if let Err(e) = validate_skill_text(&body) {
-                    report.errors.push(format!("skill {name}: {e}"));
-                    continue;
-                }
-                let skill_dir = skills.join(name);
-                let _ = std::fs::create_dir_all(&skill_dir);
-                let dest = skill_dir.join("SKILL.md");
-                if let Err(e) = atomic_write(&dest, &body) {
-                    report.errors.push(format!("write skill {name}: {e}"));
-                } else {
-                    report.skills_fetched.push(name.to_string());
-                    log::debug!("synced skill {name}");
-                }
-            }
-            Err(e) => report.errors.push(format!("skill {name}: {e}")),
-        }
-    }
-
-    for (source, target) in TYPST_FILES {
-        match fetch_text(&client, &format!("{PKUMPL_TYPST_RAW}/{source}")).await {
-            Ok(body) => {
-                let body = if *target == "templates/main.typ" {
-                    body.replace(
-                        "#import \"@preview/unofficial-pku-mpl:0.1.0\": *",
-                        "#import \"mplts.typ\": *",
-                    )
-                } else {
-                    body
-                };
-                if let Err(e) = atomic_write(&staging_typst.join(target), &body) {
-                    report.errors.push(format!("write Typst {target}: {e}"));
-                }
-            }
-            Err(e) => report.errors.push(format!("Typst {target}: {e}")),
-        }
-    }
-    match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/skills/typst/SKILL.md")).await {
-        Ok(body) => {
-            let body = body
-                .replace("(examples/package-example/)", "(package.md)")
-                // The application ships its own report templates; keep the
-                // upstream skill's package/example fixtures out of the cache
-                // and remove the corresponding stale links from its index.
-                .replace("| [basic-document.typ](examples/basic-document.typ)   | A short note or memo                     | [basics.md](basics.md), [styling.md](styling.md) |\n", "")
-                .replace("| [styled-document.typ](examples/styled-document.typ) | A multi-section report with page styling | [styling.md](styling.md), [tables.md](tables.md) |\n", "")
-                .replace("| [template-report.typ](examples/template-report.typ) | A reusable template for a series         | [template.md](template.md)                       |\n", "")
-                .replace("| [tables-showcase.typ](examples/tables-showcase.typ) | A data-heavy doc (tables, CSV/JSON)      | [tables.md](tables.md), [types.md](types.md) |\n", "")
-                .replace("| [academic-paper.typ](examples/academic-paper.typ)   | A paper with citations, theorems, math   | [academic.md](academic.md)                       |\n", "")
-                .replace("| [query-export.typ](examples/query-export.typ)       | Metadata export or multi-pass builds     | [query.md](query.md)                             |\n", "");
-            if let Err(e) = validate_skill_text(&body) {
-                report.errors.push(format!("Typst skill: {e}"));
-            } else if let Err(e) = atomic_write(&staging_typst.join("skills/typst/SKILL.md"), &body)
-            {
-                report.errors.push(format!("write Typst skill: {e}"));
-            }
-        }
-        Err(e) => report.errors.push(format!("Typst skill: {e}")),
-    }
-    for file in TYPST_SKILL_FILES {
-        match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/skills/typst/{file}")).await {
-            Ok(body) => {
-                let body = body
-                    .replace("**Complete example**: See [examples/package-example/](examples/package-example/) for a minimal publishable package with submodules.", "**Complete example**: This bundled report skill omits package-development fixtures; use the package patterns in this document.")
-                    .replace("See [package search](scripts/search-packages.py) for alternatives.", "consult the Typst package documentation when selecting alternatives.");
-                if let Err(e) =
-                    atomic_write(&staging_typst.join(format!("skills/typst/{file}")), &body)
-                {
-                    report
-                        .errors
-                        .push(format!("write Typst reference {file}: {e}"));
-                }
-            }
-            Err(e) => report.errors.push(format!("Typst reference {file}: {e}")),
-        }
-    }
-    match fetch_text(&client, &format!("{TYPST_SKILL_RAW}/LICENSE")).await {
-        Ok(body) => {
-            if let Err(e) = atomic_write(&staging_typst.join("skills/typst/LICENSE"), &body) {
-                report
-                    .errors
-                    .push(format!("write Typst skill LICENSE: {e}"));
-            }
-        }
-        Err(e) => report.errors.push(format!("Typst skill LICENSE: {e}")),
-    }
-
-    if report.errors.is_empty() {
-        if let Err(e) =
-            validate_relative_markdown_links(&staging_typst.join("skills/typst/SKILL.md"))
-        {
-            report.errors.push(format!("Typst skill links: {e}"));
-        }
-        for file in TYPST_SKILL_FILES
+    // Phase 1 — fetch all repos concurrently (sequential files within each).
+    let results = join_all(
+        specs
             .iter()
-            .filter(|file| file.ends_with(".md"))
-        {
-            if let Err(e) = validate_relative_markdown_links(
-                &staging_typst.join(format!("skills/typst/{file}")),
-            ) {
-                report
-                    .errors
-                    .push(format!("Typst reference links {file}: {e}"));
+            .map(|(repo, files)| sync_repo(&client, *repo, files, home)),
+    )
+    .await;
+
+    // Phase 2 — fold per-repo results into one report + persist manifests.
+    for (result, (repo, _files)) in results.into_iter().zip(specs.iter()) {
+        report.presets_fetched += result.presets_fetched;
+        report.skills_fetched.extend(result.skills_fetched);
+        report.errors.extend(result.errors);
+        if let Some(manifest) = result.manifest {
+            save_manifest(home, repo, &manifest);
+        }
+    }
+    report
+}
+
+/// Per-repo fetch outcome.
+struct RepoResult {
+    presets_fetched: usize,
+    skills_fetched: Vec<String>,
+    errors: Vec<String>,
+    /// `Some` when the tree was fetched this run (to be cached); `None` when the
+    /// tree fetch failed and we left any existing manifest untouched.
+    manifest: Option<Manifest>,
+}
+
+/// Fetch one repo's tree (cached-by-SHA), then fetch only the managed files that
+/// are present remotely and missing locally. Files are written directly to their
+/// final destinations, so a per-file failure never blocks the others.
+async fn sync_repo(
+    client: &reqwest::Client,
+    repo: Repo,
+    files: &[FileRule],
+    home: &Path,
+) -> RepoResult {
+    let mut out = RepoResult {
+        presets_fetched: 0,
+        skills_fetched: Vec::new(),
+        errors: Vec::new(),
+        manifest: None,
+    };
+
+    // 1) Resolve the remote paths that actually exist at this SHA.
+    let remote_paths: BTreeSet<String> = match fetch_tree(client, &repo.tree_url()).await {
+        Ok(paths) => {
+            out.manifest = Some(Manifest {
+                sha: repo.sha.to_string(),
+                signature: repo_signature(files),
+                dests: dests_for_remote(files, &paths),
+            });
+            paths
+        }
+        Err(e) => {
+            // Tree fetch failed (offline / rate-limited). Best-effort: assume all
+            // managed files exist remotely so we still try to fetch the missing
+            // ones, reusing the existing cache where files are already present.
+            out.errors.push(format!("{} tree: {e}", repo.name));
+            files.iter().map(|r| r.remote.clone()).collect()
+        }
+    };
+
+    // 2) Fetch each managed file present remotely that is missing locally.
+    for rule in files {
+        if !remote_paths.contains(&rule.remote) {
+            // Removed upstream (or curated but absent at this SHA): not required,
+            // never a 404-loop trigger. Skip silently.
+            continue;
+        }
+        let needed = rule.dests.iter().any(|dest| !home.join(dest).is_file());
+        if !needed {
+            continue;
+        }
+        let body = match fetch_text(client, &format!("{}/{}", repo.raw_base(), rule.remote)).await {
+            Ok(body) => body,
+            Err(e) => {
+                out.errors
+                    .push(format!("{} {}: {e}", repo.name, rule.remote));
+                continue;
+            }
+        };
+        let body = (rule.transform)(&body);
+        if rule.dests.iter().any(|d| d.ends_with("SKILL.md")) {
+            if let Err(e) = validate_skill_text(&body) {
+                out.errors
+                    .push(format!("{} {}: {e}", repo.name, rule.remote));
+                continue;
+            }
+        }
+        for dest in &rule.dests {
+            if let Err(e) = validate_managed_target(home, Path::new(dest)) {
+                out.errors.push(format!("unsafe target {}: {e}", dest));
+                continue;
+            }
+            let target = home.join(dest);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = atomic_write(&target, &body) {
+                out.errors
+                    .push(format!("write {} {}: {e}", repo.name, dest));
+            } else if repo.name == "cc-switch" {
+                out.presets_fetched += 1;
+            } else {
+                out.skills_fetched.push(dest.clone());
             }
         }
     }
 
-    if report.errors.is_empty() {
-        let published_preset = external_dir(home).join("providers/cc-switch/src/config");
-        let published_skills = skills_dir(home).join("latex/skills");
-        let published_typst = skills_dir(home).join("typst");
-        for target in [
-            published_preset.parent().unwrap(),
-            published_skills.as_path(),
-            published_typst.as_path(),
-        ] {
-            if let Err(e) = validate_managed_target(home, target) {
-                report
-                    .errors
-                    .push(format!("unsafe sync target {}: {e}", target.display()));
-            }
-        }
-        if !report.errors.is_empty() {
-            let _ = std::fs::remove_dir_all(&staging);
-            return report;
-        }
-        let _ = std::fs::create_dir_all(published_preset.parent().unwrap());
-        let _ = std::fs::create_dir_all(published_skills.parent().unwrap());
-        let backup = home
-            .join(".sync-staging")
-            .join(format!("backup-{}", uuid::Uuid::new_v4()));
-        let old_preset = published_preset.parent().unwrap().to_path_buf();
-        let old_skills = published_skills.clone();
-        let old_typst = published_typst.clone();
-        let backup_preset = backup.join("cc-switch");
-        let backup_skills = backup.join("skills");
-        let backup_typst = backup.join("typst");
-        let _ = std::fs::create_dir_all(&backup);
-        let mut moved_old_preset = false;
-        let mut moved_old_skills = false;
-        let mut moved_old_typst = false;
-        if old_preset.exists() {
-            moved_old_preset = std::fs::rename(&old_preset, &backup_preset).is_ok();
-        }
-        if old_skills.exists() {
-            moved_old_skills = std::fs::rename(&old_skills, &backup_skills).is_ok();
-        }
-        if old_typst.exists() {
-            moved_old_typst = std::fs::rename(&old_typst, &backup_typst).is_ok();
-        }
-        let publish_preset =
-            std::fs::rename(staging.join("external/providers/cc-switch"), &old_preset);
-        let publish_skills = std::fs::rename(staging.join("resources/latex/skills"), &old_skills);
-        let publish_typst = std::fs::rename(staging.join("resources/typst"), &old_typst);
-        let published_preset_ok = publish_preset.is_ok();
-        let published_skills_ok = publish_skills.is_ok();
-        let published_typst_ok = publish_typst.is_ok();
-        if let Err(e) = publish_preset {
-            report.errors.push(format!("publish presets: {e}"));
-        }
-        if let Err(e) = publish_skills {
-            report.errors.push(format!("publish skills: {e}"));
-        }
-        if let Err(e) = publish_typst {
-            report.errors.push(format!("publish Typst resources: {e}"));
-        }
-        if !report.errors.is_empty() {
-            if published_preset_ok {
-                let _ = std::fs::remove_dir_all(&old_preset);
-            }
-            if published_skills_ok {
-                let _ = std::fs::remove_dir_all(&old_skills);
-            }
-            if published_typst_ok {
-                let _ = std::fs::remove_dir_all(&old_typst);
-            }
-            if moved_old_preset {
-                let _ = std::fs::rename(&backup_preset, &old_preset);
-            }
-            if moved_old_skills {
-                let _ = std::fs::rename(&backup_skills, &old_skills);
-            }
-            if moved_old_typst {
-                let _ = std::fs::rename(&backup_typst, &old_typst);
-            }
-        }
-        let _ = std::fs::remove_dir_all(&backup);
-        if report.errors.is_empty() {
-            if let Err(e) = remove_legacy_managed_dirs(home) {
-                report.errors.push(format!("legacy cache cleanup: {e}"));
+    // 3) Soft-check internal markdown links for the Typst skill (warn only).
+    for rule in files {
+        if rule
+            .dests
+            .iter()
+            .any(|d| d.starts_with("resources/typst/skills/typst/") && d.ends_with(".md"))
+        {
+            if let Err(e) = validate_relative_markdown_links(&home.join(&rule.dests[0])) {
+                log::warn!("{} link check: {e}", rule.dests[0]);
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&staging);
-    report
+
+    out
+}
+
+/// Extract the git tree blob paths from the GitHub trees API response.
+async fn fetch_tree(client: &reqwest::Client, tree_url: &str) -> Result<BTreeSet<String>> {
+    let resp = client
+        .get(tree_url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {}", resp.status());
+    }
+    let body = resp.text().await?;
+    let v: serde_json::Value = serde_json::from_str(&body).context("parsing tree JSON")?;
+    let mut paths = BTreeSet::new();
+    if let Some(arr) = v.get("tree").and_then(|t| t.as_array()) {
+        for entry in arr {
+            if entry.get("type").and_then(|t| t.as_str()) == Some("blob") {
+                if let Some(path) = entry.get("path").and_then(|p| p.as_str()) {
+                    paths.insert(path.to_string());
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
+/// Map the remote paths that exist onto the full set of dests we should manage.
+fn dests_for_remote(files: &[FileRule], remote_paths: &BTreeSet<String>) -> Vec<String> {
+    let mut dests = Vec::new();
+    for rule in files {
+        if remote_paths.contains(&rule.remote) {
+            dests.extend(rule.dests.iter().cloned());
+        }
+    }
+    dests.sort();
+    dests.dedup();
+    dests
 }
 
 /// Replace a cache file in the same directory so readers never observe a
@@ -490,16 +696,34 @@ fn validate_managed_target(home: &Path, target: &Path) -> Result<()> {
     let home = home
         .canonicalize()
         .context("canonicalizing AutoReport home")?;
+    // Join `target` onto `home` BEFORE canonicalizing. At the call site `target`
+    // is a repo-relative dest (e.g. `resources/latex/skills/.../SKILL.md`); if we
+    // canonicalized it directly the relative parent would resolve against the
+    // process CWD (the workspace), not `~/.autoreport`, and fail on a fresh
+    // install — rejecting every managed dest as "unsafe target" and blocking all
+    // preset/skill writes. Mirrors `remove_legacy_managed_dirs`, which already
+    // does `home.join(relative)`.
+    let target = home.join(target);
     let parent = target
         .parent()
         .ok_or_else(|| anyhow::anyhow!("target has no parent"))?;
-    let parent = parent
+    // The parent dir may not exist yet on a fresh install (the caller creates it
+    // *after* validation succeeds), so walk up to the nearest existing ancestor
+    // and canonicalize that. The not-yet-created tail is safe because it is
+    // joined onto an already-canonical `home`.
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("managed target escapes home"))?;
+    }
+    let canonical = ancestor
         .canonicalize()
         .context("canonicalizing managed target parent")?;
-    if !parent.starts_with(&home) {
+    if canonical != home && !canonical.starts_with(&home) {
         anyhow::bail!("target escapes AutoReport home");
     }
-    if target.exists() && std::fs::symlink_metadata(target)?.file_type().is_symlink() {
+    if target.exists() && std::fs::symlink_metadata(&target)?.file_type().is_symlink() {
         anyhow::bail!("target is a symlink");
     }
     Ok(())
@@ -1101,5 +1325,292 @@ mod tests {
         validate_relative_markdown_links(&root.join("SKILL.md")).unwrap();
         std::fs::write(root.join("bad.md"), "[missing](examples/nope/)").unwrap();
         assert!(validate_relative_markdown_links(&root.join("bad.md")).is_err());
+    }
+
+    // ---- new manifest / warmth / repo-spec tests ----
+
+    #[test]
+    fn dests_for_remote_includes_only_present_files() {
+        let files = vec![
+            FileRule {
+                remote: "a/SKILL.md".to_string(),
+                dests: vec!["resources/a/SKILL.md".to_string()],
+                transform: noop,
+            },
+            FileRule {
+                remote: "b/SKILL.md".to_string(),
+                dests: vec!["resources/b1.md".to_string(), "resources/b2.md".to_string()],
+                transform: noop,
+            },
+        ];
+        let remote: BTreeSet<String> = ["a/SKILL.md".to_string()].into_iter().collect();
+        let dests = dests_for_remote(&files, &remote);
+        assert_eq!(dests, vec!["resources/a/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn cache_is_warm_false_without_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!cache_is_warm(dir.path()));
+    }
+
+    #[test]
+    fn cache_is_warm_true_when_manifest_matches_and_files_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // Build a manifest for the skills repo whose dest set covers its rules,
+        // then materialize exactly those files.
+        let specs = repos();
+        let (repo, files): (Repo, Vec<FileRule>) = specs
+            .iter()
+            .find(|(r, _)| r.name == "skills")
+            .map(|(r, f)| (*r, f.clone()))
+            .unwrap();
+        let dests: Vec<String> = files.iter().flat_map(|r| r.dests.clone()).collect();
+        for dest in &dests {
+            let target = home.join(dest);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(&target, "x").unwrap();
+        }
+        let manifest = Manifest {
+            sha: repo.sha.to_string(),
+            signature: repo_signature(&files),
+            dests: dests.clone(),
+        };
+        save_manifest(home, &repo, &manifest);
+        // Skills repo alone is warm for itself, but other repos lack manifests →
+        // overall still false. Confirm this specific repo's dests are satisfied.
+        let loaded = load_manifest(home, &repo).unwrap();
+        assert_eq!(loaded.signature, repo_signature(&files));
+        assert!(loaded.dests.iter().all(|d| home.join(d).is_file()));
+    }
+
+    #[test]
+    fn cache_is_warm_false_when_signature_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let manifest = Manifest {
+            sha: SKILLS.sha.to_string(),
+            signature: "stale-signature".to_string(),
+            dests: vec![],
+        };
+        save_manifest(home, &SKILLS, &manifest);
+        // Signature mismatch with current rules → not warm (would force a re-sync
+        // to regenerate the manifest).
+        let specs = repos();
+        let (repo, files) = specs
+            .iter()
+            .find(|(r, _)| r.name == "skills")
+            .map(|(r, f)| (*r, f.clone()))
+            .unwrap();
+        let loaded = load_manifest(home, &repo).unwrap();
+        assert_ne!(loaded.signature, repo_signature(&files));
+    }
+
+    #[test]
+    fn manifest_round_trips_through_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let manifest = Manifest {
+            sha: "abc".to_string(),
+            signature: "sig".to_string(),
+            dests: vec!["a".to_string(), "b".to_string()],
+        };
+        save_manifest(home, &SKILLS, &manifest);
+        let loaded = load_manifest(home, &SKILLS).expect("manifest saved");
+        assert_eq!(loaded.sha, "abc");
+        assert_eq!(loaded.signature, "sig");
+        assert_eq!(loaded.dests, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn rewrite_typst_main_import_swaps_preview_import() {
+        let body = "#import \"@preview/unofficial-pku-mpl:0.1.0\": *\nrest";
+        assert_eq!(
+            rewrite_typst_main_import(body),
+            "#import \"mplts.typ\": *\nrest"
+        );
+    }
+
+    #[test]
+    fn rewrite_typst_skill_index_drops_example_table_rows() {
+        let body = "| [basic-document.typ](examples/basic-document.typ)   | A short note or memo                     | [basics.md](basics.md), [styling.md](styling.md) |\nkept line\n";
+        let out = rewrite_typst_skill_index(body);
+        assert!(!out.contains("basic-document.typ"));
+        assert!(out.contains("kept line"));
+    }
+
+    #[test]
+    fn repos_spec_writes_writer_skill_to_both_language_roots() {
+        let specs = repos();
+        let skills = specs
+            .iter()
+            .find(|(r, _)| r.name == "skills")
+            .map(|(_, f)| f)
+            .unwrap();
+        let writer = skills
+            .iter()
+            .find(|r| r.remote == "experiment-report-writer/SKILL.md")
+            .unwrap();
+        assert_eq!(writer.dests.len(), 2);
+        assert!(
+            writer
+                .dests
+                .iter()
+                .any(|d| d.starts_with("resources/latex/skills/"))
+        );
+        assert!(
+            writer
+                .dests
+                .iter()
+                .any(|d| d.starts_with("resources/typst/skills/"))
+        );
+    }
+
+    #[test]
+    fn repo_signature_changes_when_a_rule_changes() {
+        let a = vec![FileRule {
+            remote: "x".to_string(),
+            dests: vec!["a".to_string()],
+            transform: noop,
+        }];
+        let b = vec![FileRule {
+            remote: "x".to_string(),
+            dests: vec!["a".to_string(), "b".to_string()],
+            transform: noop,
+        }];
+        assert_ne!(repo_signature(&a), repo_signature(&b));
+    }
+
+    /// Live end-to-end check: fetch all four real trees, confirm the managed
+    /// files exist remotely. Run with
+    /// `cargo test fetch_live_trees -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_live_trees() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .user_agent(concat!("autoreport/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap();
+        for (repo, files) in repos() {
+            let paths = fetch_tree(&client, &repo.tree_url()).await.unwrap();
+            eprintln!("{}: {} blobs", repo.name, paths.len());
+            for rule in files {
+                assert!(
+                    paths.contains(&rule.remote),
+                    "{} missing remote path {}",
+                    repo.name,
+                    rule.remote
+                );
+            }
+        }
+    }
+
+    // ---- Bug 1: validate_managed_target must resolve relative dests against
+    // ---- `home`, not the process CWD, and must tolerate a not-yet-created
+    // ---- parent (fresh-install dir layout). ----
+
+    /// Regression for the critical bug where `validate_managed_target`
+    /// canonicalized the *relative* dest's parent against the process CWD. On a
+    /// fresh install the parent doesn't exist under CWD, so `canonicalize()`
+    /// errored and every managed dest was rejected as "unsafe target" — blocking
+    /// all preset/skill writes.
+    ///
+    /// Here the home's deep parent dir is intentionally NOT created (the sync
+    /// caller creates dirs only after validation passes), so a correct impl must
+    /// resolve the relative path against `home`, not CWD. Before the fix this
+    /// returned an error ("canonicalizing managed target parent").
+    #[test]
+    fn validate_managed_target_accepts_relative_dest_with_nonexistent_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let dest = Path::new("resources/latex/skills/latex-compile/SKILL.md");
+        validate_managed_target(home, dest)
+            .expect("relative dest under home with a not-yet-created parent must validate");
+    }
+
+    /// An escape via `..` components must still be rejected once the path is
+    /// joined onto home.
+    #[test]
+    fn validate_managed_target_rejects_path_escaping_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // `home.join` keeps the `..` lexically; walking up to an existing
+        // ancestor canonicalizes outside home.
+        let dest = Path::new("../../etc/passwd");
+        assert!(validate_managed_target(home, dest).is_err());
+    }
+
+    /// The symlink guard must still fire on the joined path: a target that is a
+    /// symlink pointing outside home is rejected.
+    #[test]
+    fn validate_managed_target_rejects_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let dest_rel = "resources/latex/skills/latex-compile/SKILL.md";
+        std::fs::create_dir_all(home.join("resources/latex/skills/latex-compile")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = dir.path().join("outside-secret.txt");
+            std::fs::write(&outside, "secret").unwrap();
+            symlink(&outside, home.join(dest_rel)).unwrap();
+            let err = validate_managed_target(home, Path::new(dest_rel)).unwrap_err();
+            assert!(
+                format!("{err}").contains("symlink"),
+                "unexpected err: {err}"
+            );
+        }
+    }
+
+    // ---- Bug 2: save_manifest must garbage-collect stale same-repo manifests. ----
+
+    #[test]
+    fn save_manifest_garbage_collects_stale_shas_for_same_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        std::fs::create_dir_all(manifest_dir(home)).unwrap();
+        // A manifest from a previous SHA for the SAME repo — should be removed.
+        let stale = manifest_dir(home).join(format!("{}-stalesha000000.json", SKILLS.name));
+        std::fs::write(&stale, "{}").unwrap();
+        // A manifest for a DIFFERENT repo — must be left untouched.
+        let other = manifest_dir(home).join(format!("{}-othersha.json", CC_SWITCH.name));
+        std::fs::write(&other, "{}").unwrap();
+        // Write the current manifest for SKILLS.
+        save_manifest(
+            home,
+            &SKILLS,
+            &Manifest {
+                sha: SKILLS.sha.to_string(),
+                signature: "sig".to_string(),
+                dests: vec![],
+            },
+        );
+        assert!(
+            !stale.exists(),
+            "stale same-repo manifest should be removed"
+        );
+        assert!(
+            manifest_path(home, &SKILLS).exists(),
+            "current manifest must exist"
+        );
+        assert!(other.exists(), "other-repo manifest must not be touched");
+    }
+
+    // ---- Bug 3: repo_signature must fold in the transform version. ----
+
+    #[test]
+    fn repo_signature_includes_transform_version() {
+        let files = vec![FileRule {
+            remote: "x".to_string(),
+            dests: vec!["a".to_string()],
+            transform: noop,
+        }];
+        let sig = repo_signature(&files);
+        assert!(
+            sig.contains(&format!("tx={TRANSFORM_VERSION}")),
+            "signature must include transform version, got: {sig}"
+        );
     }
 }

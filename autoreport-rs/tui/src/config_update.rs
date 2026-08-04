@@ -6,8 +6,8 @@
 
 use crate::custom_terminal::Frame;
 use crate::custom_terminal::Terminal;
+use autoreport_core::config::resolve_api_key;
 use autoreport_core::config::schema::{ProviderConfig, Settings};
-use autoreport_core::config::{resolve_api_key, save_settings};
 use autoreport_core::sync::PresetProvider;
 use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
@@ -15,7 +15,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
 };
 use std::io;
 use std::path::PathBuf;
@@ -25,15 +25,35 @@ use std::path::PathBuf;
 pub enum Outcome {
     Saved,
     Cancelled,
+    /// Exit the whole configuration flow without treating the current page's
+    /// `Esc` behavior as a request to go back one level.
+    Quit,
+    Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     Select,
     Add,
+    Configured,
     Edit,
     Preview,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectAction {
+    Continue,
+    UseConfigured,
+    AddFromPreset,
+    AddCustom,
+}
+
+const SELECT_ACTION_ORDER: [SelectAction; 4] = [
+    SelectAction::UseConfigured,
+    SelectAction::Continue,
+    SelectAction::AddFromPreset,
+    SelectAction::AddCustom,
+];
 
 /// Editable form field. `Save`/`Cancel` are pseudo-fields rendered as actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +110,10 @@ struct ProviderGroup {
     keys: Vec<String>,
 }
 
+/// A row in the grouped preset catalog. `None` is a non-selectable group
+/// heading; `Some(index)` is an entry in `presets`.
+type PresetRow = (Option<usize>, String);
+
 fn kind_rank(kind: &str) -> usize {
     match kind {
         "anthropic" => 0,
@@ -119,6 +143,13 @@ fn provider_groups(settings: &Settings) -> Vec<ProviderGroup> {
     let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     for (key, provider) in &settings.providers {
+        // Older releases persisted every synced preset into config.toml. Keep
+        // those stale, unresolved entries out of the normal selector while
+        // retaining providers that have a usable key or were explicitly added
+        // through the current UI (which assigns an alias).
+        if resolve_api_key(provider).is_err() && provider.alias.is_none() {
+            continue;
+        }
         grouped
             .entry(provider.kind.clone())
             .or_default()
@@ -147,6 +178,9 @@ pub struct ConfigScreen {
     pub group_selected: usize,
     pub selected_in_group: usize,
     pub preset_selected: usize,
+    /// Selected row in the small action menu or configured-provider picker.
+    picker_selected: usize,
+    preset_search: String,
     provider_scroll_offset: usize,
     preset_scroll_offset: usize,
     pub step: Step,
@@ -190,6 +224,8 @@ impl ConfigScreen {
             group_selected,
             selected_in_group,
             preset_selected: 0,
+            picker_selected: 0,
+            preset_search: String::new(),
             provider_scroll_offset: 0,
             preset_scroll_offset: 0,
             step: Step::Select,
@@ -217,6 +253,15 @@ impl ConfigScreen {
     pub fn selected_provider_mut(&mut self) -> Option<&mut ProviderConfig> {
         let key = self.selected_key().map(String::from)?;
         self.settings.providers.get_mut(&key)
+    }
+
+    /// Replace the draft after returning from model assignment while retaining
+    /// the provider list's local selection and scroll state.
+    pub fn replace_settings(&mut self, settings: Settings) {
+        let selected = self.selected_key().map(str::to_string);
+        self.settings = settings;
+        self.select_provider_key(selected.as_deref());
+        self.picker_selected = 0;
     }
 
     fn provider_label(&self, key: &str) -> String {
@@ -270,6 +315,83 @@ impl ConfigScreen {
         self.provider_scroll_offset = 0;
     }
 
+    fn provider_picker_keys(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(|group| group.keys.iter().cloned())
+            .collect()
+    }
+
+    fn selected_select_action(&self) -> SelectAction {
+        SELECT_ACTION_ORDER
+            .get(self.picker_selected)
+            .copied()
+            .unwrap_or(SelectAction::Continue)
+    }
+
+    fn select_picker_row(&mut self, row: usize) {
+        let keys = self.provider_picker_keys();
+        self.picker_selected = row.min(keys.len().saturating_sub(1));
+        if let Some(key) = keys.get(self.picker_selected) {
+            let key = key.clone();
+            self.select_provider_key(Some(&key));
+        }
+    }
+
+    /// Bind the selected configured provider to both runtime roles. The model
+    /// page edits names only; provider ownership is decided here.
+    pub fn activate_selected_provider(&mut self) -> bool {
+        let Some(key) = self.selected_key().map(str::to_string) else {
+            return false;
+        };
+        self.settings.models.main.provider = key.clone();
+        self.settings.models.sub.provider = key;
+        true
+    }
+
+    fn filtered_presets(&self) -> Vec<usize> {
+        let query = self.preset_search.trim().to_ascii_lowercase();
+        let mut indices = self
+            .presets
+            .iter()
+            .enumerate()
+            .filter(|(_, preset)| {
+                query.is_empty()
+                    || format!("{} {} {}", preset.name, preset.kind, preset.base_url)
+                        .to_ascii_lowercase()
+                        .contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        indices.sort_by(|left, right| {
+            let a = &self.presets[*left];
+            let b = &self.presets[*right];
+            kind_rank(&a.kind)
+                .cmp(&kind_rank(&b.kind))
+                .then_with(|| kind_label(&a.kind).cmp(&kind_label(&b.kind)))
+                .then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                })
+        });
+        indices
+    }
+
+    fn preset_rows(&self) -> Vec<PresetRow> {
+        let mut rows = Vec::new();
+        let mut previous_kind: Option<&str> = None;
+        for index in self.filtered_presets() {
+            let preset = &self.presets[index];
+            if previous_kind != Some(preset.kind.as_str()) {
+                rows.push((None, kind_label(&preset.kind)));
+                previous_kind = Some(preset.kind.as_str());
+            }
+            rows.push((Some(index), preset.name.clone()));
+        }
+        rows
+    }
+
     /// Add an OpenAI-compatible API entry so first-run setup remains usable
     /// even when preset sync did not provide any provider entries.
     pub fn add_custom_api(&mut self) {
@@ -298,6 +420,8 @@ impl ConfigScreen {
             },
         );
         self.select_provider_key(Some(&key));
+        self.settings.models.main.provider = key.clone();
+        self.settings.models.sub.provider = key;
         self.step = Step::Edit;
         self.field = Field::Alias;
         self.error = None;
@@ -308,6 +432,7 @@ impl ConfigScreen {
             self.error = Some("no preset selected".into());
             return;
         };
+        let preset_models = preset.models.clone();
         let base_key = preset.name.trim();
         let base_key = if base_key.is_empty() {
             "custom"
@@ -339,8 +464,16 @@ impl ConfigScreen {
             },
         );
         self.select_provider_key(Some(&key));
-        self.step = Step::Edit;
-        self.field = Field::Alias;
+        self.settings.models.main.provider = key.clone();
+        self.settings.models.sub.provider = key;
+        if let Some(model) = preset_models.first().filter(|model| !model.is_empty()) {
+            if self.settings.models.main.model.is_empty() {
+                self.settings.models.main.model = model.clone();
+            }
+            if self.settings.models.sub.model.is_empty() {
+                self.settings.models.sub.model = model.clone();
+            }
+        }
         self.error = None;
     }
 
@@ -376,8 +509,21 @@ impl ConfigScreen {
         let area = f.area();
         f.render_widget(Clear, area);
 
+        // The picker deliberately owns the full frame. The setup wizard is a
+        // destination, not a dialog, so surrounding it with another large box
+        // makes the menu feel both cramped and visually noisy.
+        if matches!(self.step, Step::Select | Step::Add | Step::Configured) {
+            match self.step {
+                Step::Select => self.draw_select(f, area),
+                Step::Add => self.draw_add(f, area),
+                Step::Configured => self.draw_configured(f, area),
+                _ => unreachable!(),
+            }
+            return;
+        }
+
         let dialog = centered_rect(area, 92, 82);
-        let title = " AutoReportCLI · API configuration ";
+        let title = " AutoReportCLI · Providers 1/2 ";
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -407,6 +553,7 @@ impl ConfigScreen {
         match self.step {
             Step::Select => self.draw_select(f, body),
             Step::Add => self.draw_add(f, body),
+            Step::Configured => self.draw_configured(f, body),
             Step::Edit => self.draw_edit(f, body),
             Step::Preview => self.draw_preview(f, body),
         }
@@ -433,218 +580,248 @@ impl ConfigScreen {
     }
 
     fn draw_select(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let chrome = Rect::new(
+            area.x.saturating_add(2),
+            area.y,
+            area.width.saturating_sub(4),
+            area.height,
+        );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(3)])
-            .split(area);
-        self.draw_group_tabs(f, chunks[0]);
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(2),
+            ])
+            .split(chrome);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Configure providers · 1/2",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    "Choose how to select the provider shared by Main and Sub agents",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            chunks[0],
+        );
 
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-            .split(chunks[1]);
-
-        let group_keys = self
-            .current_group()
-            .map(|g| g.keys.clone())
-            .unwrap_or_default();
-        let items: Vec<ListItem> = group_keys
-            .iter()
-            .enumerate()
-            .map(|(_, k)| {
-                let ok = self
-                    .settings
-                    .providers
-                    .get(k)
-                    .map(|p| resolve_api_key(p).is_ok())
-                    .unwrap_or(false);
-                let key_icon = if ok { "key" } else { "no-key" };
-                let key_style = if ok {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                };
-                let name_style = Style::default().add_modifier(Modifier::BOLD);
-                let mut spans = vec![Span::styled(
-                    format!("{:<20}", self.provider_label(k)),
-                    name_style,
-                )];
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(format!("{key_icon:>8}"), key_style));
-                let line = Line::from(spans);
-                ListItem::new(line)
-            })
-            .collect();
+        let items = vec![
+            ListItem::new(Line::from(vec![
+                Span::styled("◉  ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    "Use configured provider",
+                    Style::default().fg(if self.provider_picker_keys().is_empty() {
+                        Color::DarkGray
+                    } else {
+                        Color::White
+                    }),
+                ),
+                Span::styled(
+                    "  Choose from providers already added",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            ListItem::new(Line::from(vec![
+                Span::styled("→  ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    "Continue to model assignment",
+                    Style::default().fg(Color::White),
+                ),
+            ])),
+            ListItem::new(Line::from(vec![
+                Span::styled("+  ", Style::default().fg(Color::Cyan)),
+                Span::styled("Add from preset", Style::default().fg(Color::White)),
+                Span::styled(
+                    "  Browse grouped provider presets",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            ListItem::new(Line::from(vec![
+                Span::styled("+  ", Style::default().fg(Color::Cyan)),
+                Span::styled("Add custom provider", Style::default().fg(Color::White)),
+                Span::styled(
+                    "  OpenAI-compatible endpoint",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+        ];
         let mut state = ListState::default().with_offset(self.provider_scroll_offset);
-        state.select(Some(self.selected_in_group));
-        let list = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .block(Block::default().borders(Borders::ALL).title(Span::styled(
-                format!(" {} ", self.group_summary()),
-                Style::default().fg(Color::Cyan),
-            )));
-        f.render_stateful_widget(list, columns[0], &mut state);
+        state.select(Some(self.picker_selected));
+        let list = List::new(items).highlight_symbol("› ").highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+        f.render_stateful_widget(list, chunks[1], &mut state);
         self.provider_scroll_offset = state.offset();
-
-        self.draw_provider_details(f, columns[1]);
+        self.draw_footer(f, chunks[2]);
     }
 
-    fn draw_add(&mut self, f: &mut Frame<'_>, area: Rect) {
-        let items = if self.presets.is_empty() {
+    fn draw_configured(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let chrome = Rect::new(
+            area.x.saturating_add(2),
+            area.y,
+            area.width.saturating_sub(4),
+            area.height,
+        );
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(2),
+            ])
+            .split(chrome);
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Use configured provider",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(
+                    "Only providers already added to config are shown",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            chunks[0],
+        );
+
+        let keys = self.provider_picker_keys();
+        let items = if keys.is_empty() {
             vec![ListItem::new(Line::styled(
-                "No preset templates available; press Esc",
+                "No configured providers — go back and add one",
                 Style::default().fg(Color::Yellow),
             ))]
         } else {
-            self.presets
-                .iter()
-                .map(|preset| {
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{:<24}", preset.name),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            format!("{:<12}", preset.kind),
-                            Style::default().fg(Color::Gray),
-                        ),
-                        Span::styled(
-                            if preset.base_url.is_empty() {
-                                "default endpoint"
-                            } else {
-                                preset.base_url.as_str()
-                            },
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]))
+            keys.iter()
+                .map(|key| {
+                    ListItem::new(Line::from(Span::styled(
+                        self.provider_label(key),
+                        Style::default().fg(Color::White),
+                    )))
                 })
                 .collect()
         };
-        let mut state = ListState::default().with_offset(self.preset_scroll_offset);
-        state.select((!self.presets.is_empty()).then_some(self.preset_selected));
+        let mut state = ListState::default().with_offset(self.provider_scroll_offset);
+        state.select((!keys.is_empty()).then_some(self.picker_selected));
         f.render_stateful_widget(
             List::new(items)
+                .highlight_spacing(HighlightSpacing::Always)
+                .highlight_symbol("› ")
                 .highlight_style(
                     Style::default()
                         .bg(Color::DarkGray)
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
-                )
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Add provider from preset template "),
                 ),
-            area,
+            chunks[1],
+            &mut state,
+        );
+        self.provider_scroll_offset = state.offset();
+        self.draw_footer(f, chunks[2]);
+    }
+
+    fn draw_add(&mut self, f: &mut Frame<'_>, area: Rect) {
+        let chrome = Rect::new(
+            area.x.saturating_add(2),
+            area.y,
+            area.width.saturating_sub(4),
+            area.height,
+        );
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(3),
+                Constraint::Length(2),
+            ])
+            .split(chrome);
+        let prompt = if self.preset_search.is_empty() {
+            "Search presets…".to_string()
+        } else {
+            format!("Search presets: {}", self.preset_search)
+        };
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "Add from preset",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::styled(prompt, Style::default().fg(Color::DarkGray)),
+            ]),
+            chunks[0],
+        );
+        let matching = self.filtered_presets();
+        let rows = self.preset_rows();
+        let items = if rows.is_empty() {
+            vec![ListItem::new(Line::styled(
+                "No matching presets",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            let name_width = matching
+                .iter()
+                .map(|&index| self.presets[index].name.chars().count())
+                .max()
+                .unwrap_or(1)
+                .min(32);
+            rows.iter()
+                .map(|(preset_index, label)| match preset_index {
+                    None => ListItem::new(Line::from(Span::styled(
+                        format!("  {label}"),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))),
+                    Some(index) => {
+                        let preset = &self.presets[*index];
+                        let endpoint = if preset.base_url.is_empty() {
+                            "default endpoint"
+                        } else {
+                            preset.base_url.as_str()
+                        };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(
+                                format!("  {:<name_width$}  ", preset.name),
+                                Style::default().fg(Color::White),
+                            ),
+                            Span::styled(endpoint, Style::default().fg(Color::DarkGray)),
+                        ]))
+                    }
+                })
+                .collect()
+        };
+        let mut state = ListState::default().with_offset(self.preset_scroll_offset);
+        let selected = rows
+            .iter()
+            .position(|(index, _)| *index == Some(self.preset_selected))
+            .unwrap_or(0);
+        state.select((!rows.is_empty()).then_some(selected));
+        f.render_stateful_widget(
+            List::new(items)
+                .highlight_spacing(HighlightSpacing::Always)
+                .highlight_symbol("› ")
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            chunks[1],
             &mut state,
         );
         self.preset_scroll_offset = state.offset();
-    }
-
-    fn draw_group_tabs(&self, f: &mut Frame<'_>, area: Rect) {
-        let mut spans = vec![Span::styled("tabs  ", Style::default().fg(Color::DarkGray))];
-        for (idx, group) in self.groups.iter().enumerate() {
-            if idx == self.group_selected {
-                spans.push(Span::styled(
-                    "[",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    format!("{} ({})", group.label, group.keys.len()),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    "]",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    format!("{} ({})", group.label, group.keys.len()),
-                    Style::default().fg(Color::Gray),
-                ));
-            }
-            spans.push(Span::raw(" "));
-        }
-        let para = Paragraph::new(Line::from(spans)).block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .title(Span::styled(" Groups ", Style::default().fg(Color::Cyan))),
-        );
-        f.render_widget(para, area);
-    }
-
-    fn draw_provider_details(&self, f: &mut Frame<'_>, area: Rect) {
-        let Some(provider) = self.selected_provider() else {
-            return;
-        };
-        let key_name = self.selected_key().unwrap_or("-");
-        let display_name = self.provider_label(key_name);
-        let alias = display_name.clone();
-        let api_key_env = provider
-            .api_key_env
-            .clone()
-            .or_else(|| provider.env_key().map(ToString::to_string))
-            .unwrap_or_else(|| "-".to_string());
-        let api_base = provider.api_base.as_deref().unwrap_or("(default)");
-        let key_state = if self.key_resolvable() {
-            "resolved"
-        } else if provider.api_key.is_some() {
-            "inline only"
-        } else {
-            "missing"
-        };
-        let lines = vec![
-            Line::from(Span::styled(
-                display_name,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::raw(""),
-            detail_line("kind", &provider.kind),
-            detail_line("alias", &alias),
-            detail_line("api_base", api_base),
-            detail_line("api_key_env", &api_key_env),
-            detail_line("key", key_state),
-            Line::raw(""),
-            Line::from(vec![
-                Span::styled("Enter", Style::default().fg(Color::White)),
-                Span::styled(" to edit selected API", Style::default().fg(Color::Gray)),
-            ]),
-            Line::from(vec![
-                Span::styled("a", Style::default().fg(Color::White)),
-                Span::styled(
-                    " to add a provider from a preset template",
-                    Style::default().fg(Color::Gray),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("n", Style::default().fg(Color::White)),
-                Span::styled(
-                    " to add a custom OpenAI-compatible API",
-                    Style::default().fg(Color::Gray),
-                ),
-            ]),
-        ];
-        let para = Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(" Details ", Style::default().fg(Color::Cyan))),
-            )
-            .wrap(Wrap { trim: false });
-        f.render_widget(para, area);
+        self.draw_footer(f, chunks[2]);
     }
 
     fn draw_edit(&mut self, f: &mut Frame<'_>, area: Rect) {
@@ -824,15 +1001,18 @@ impl ConfigScreen {
     fn draw_footer(&self, f: &mut Frame<'_>, area: Rect) {
         let hint = match (self.step, self.editing) {
             (_, true) => " Enter: confirm field   Esc: cancel edit".to_string(),
-            (Step::Select, _) => " h/l or ←/→: group   j/k or ↑/↓: API   a: add preset   n: custom API   Enter: edit   Esc: cancel".to_string(),
-            (Step::Add, _) => " ↑/↓: template   Enter: add & edit   Esc: back".to_string(),
-            (Step::Edit, _) => " ↑/↓: field   Enter: edit/action   Esc: back".to_string(),
-            (Step::Preview, _) => " Enter: save & finish   Esc: back to edit".to_string(),
+            (Step::Select, _) => "↑/↓ move  Enter select  Esc cancel  q quit".to_string(),
+            (Step::Add, _) => "Type to search  ↑/↓ move  Enter add  Esc back".to_string(),
+            (Step::Configured, _) => "↑/↓ move  Enter use  Esc back  q quit".to_string(),
+            (Step::Edit, _) => " ↑/↓: field   Enter: edit/action   Esc: back  q quit".to_string(),
+            (Step::Preview, _) => " Enter: save & finish   Esc: back to edit  q quit".to_string(),
         };
         let mut text = hint;
         if let Some(err) = &self.error {
             text = format!("{text}   ⚠ {err}");
         }
+        let max_width = area.width.saturating_sub(1) as usize;
+        let text: String = text.chars().take(max_width).collect();
         let para = Paragraph::new(text)
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Left);
@@ -852,9 +1032,17 @@ impl ConfigScreen {
             return self.handle_editing_key(key);
         }
 
+        // `q` is deliberately reserved only outside text-entry states. The
+        // preset picker uses its own search input, so it must keep accepting
+        // a literal `q` as well.
+        if self.step != Step::Add && key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
+            return Some(Outcome::Quit);
+        }
+
         match self.step {
             Step::Select => self.handle_select_key(key),
             Step::Add => self.handle_add_key(key),
+            Step::Configured => self.handle_configured_key(key),
             Step::Edit => self.handle_edit_key(key),
             Step::Preview => self.handle_preview_key(key),
         }
@@ -877,41 +1065,50 @@ impl ConfigScreen {
                 self.add_custom_api();
                 None
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if self.group_selected > 0 {
-                    self.group_selected -= 1;
-                    self.provider_scroll_offset = 0;
-                    let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
-                    self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
-                }
-                None
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if self.group_selected + 1 < self.groups.len() {
-                    self.group_selected += 1;
-                    self.provider_scroll_offset = 0;
-                    let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
-                    self.selected_in_group = self.selected_in_group.min(len.saturating_sub(1));
-                }
-                None
-            }
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.selected_in_group > 0 {
-                    self.selected_in_group -= 1;
-                }
+                self.picker_selected = self.picker_selected.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let len = self.current_group().map(|g| g.keys.len()).unwrap_or(0);
-                if self.selected_in_group + 1 < len {
-                    self.selected_in_group += 1;
-                }
+                self.picker_selected =
+                    (self.picker_selected + 1).min(SELECT_ACTION_ORDER.len().saturating_sub(1));
                 None
             }
             KeyCode::Enter => {
-                self.step = Step::Edit;
-                self.field = Field::ApiBase;
+                match self.selected_select_action() {
+                    SelectAction::AddFromPreset => {
+                        if self.presets.is_empty() {
+                            self.error = Some("no preset templates available".into());
+                        } else {
+                            self.preset_search.clear();
+                            self.preset_selected = 0;
+                            self.preset_scroll_offset = 0;
+                            self.step = Step::Add;
+                            self.error = None;
+                        }
+                    }
+                    SelectAction::AddCustom => self.add_custom_api(),
+                    SelectAction::UseConfigured => {
+                        if self.provider_picker_keys().is_empty() {
+                            self.error = Some("no configured provider available".into());
+                        } else {
+                            self.picker_selected = 0;
+                            self.provider_scroll_offset = 0;
+                            self.step = Step::Configured;
+                            self.error = None;
+                        }
+                    }
+                    SelectAction::Continue => return Some(Outcome::Continue),
+                }
                 None
+            }
+            KeyCode::Char('c') => {
+                if self.activate_selected_provider() {
+                    Some(Outcome::Continue)
+                } else {
+                    self.error = Some("select a provider before continuing".into());
+                    None
+                }
             }
             KeyCode::Esc => Some(Outcome::Cancelled),
             _ => None,
@@ -921,14 +1118,83 @@ impl ConfigScreen {
     fn handle_add_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                self.preset_selected = self.preset_selected.saturating_sub(1);
+                let matching = self.filtered_presets();
+                let current = matching
+                    .iter()
+                    .position(|&index| index == self.preset_selected)
+                    .unwrap_or(0);
+                if let Some(&index) = matching.get(current.saturating_sub(1)) {
+                    self.preset_selected = index;
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.preset_selected =
-                    (self.preset_selected + 1).min(self.presets.len().saturating_sub(1));
+                let matching = self.filtered_presets();
+                let current = matching
+                    .iter()
+                    .position(|&index| index == self.preset_selected)
+                    .unwrap_or(0);
+                if let Some(&index) =
+                    matching.get((current + 1).min(matching.len().saturating_sub(1)))
+                {
+                    self.preset_selected = index;
+                }
             }
-            KeyCode::Enter => self.add_selected_preset(),
-            KeyCode::Esc => self.step = Step::Select,
+            KeyCode::Enter => {
+                if self.filtered_presets().contains(&self.preset_selected) {
+                    self.add_selected_preset();
+                    return Some(Outcome::Continue);
+                }
+            }
+            KeyCode::Backspace => {
+                self.preset_search.pop();
+                self.preset_scroll_offset = 0;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.preset_search.push(c);
+                self.preset_scroll_offset = 0;
+                if let Some(index) = self.filtered_presets().first().copied() {
+                    self.preset_selected = index;
+                }
+            }
+            KeyCode::Esc => {
+                self.preset_search.clear();
+                self.step = Step::Select;
+                self.picker_selected = 0;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn handle_configured_key(&mut self, key: KeyEvent) -> Option<Outcome> {
+        let keys = self.provider_picker_keys();
+        if keys.is_empty() {
+            if matches!(key.code, KeyCode::Esc) {
+                self.step = Step::Select;
+                self.picker_selected = 0;
+                self.error = None;
+            }
+            return None;
+        }
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.select_picker_row(self.picker_selected.saturating_sub(1));
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.select_picker_row(
+                    (self.picker_selected + 1).min(keys.len().saturating_sub(1)),
+                );
+            }
+            KeyCode::Enter => {
+                if self.activate_selected_provider() {
+                    return Some(Outcome::Continue);
+                }
+            }
+            KeyCode::Esc => {
+                self.step = Step::Select;
+                self.picker_selected = 0;
+                self.error = None;
+            }
             _ => {}
         }
         None
@@ -965,6 +1231,7 @@ impl ConfigScreen {
             },
             KeyCode::Esc => {
                 self.step = Step::Select;
+                self.picker_selected = 0;
                 None
             }
             _ => None,
@@ -973,13 +1240,10 @@ impl ConfigScreen {
 
     fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         match key.code {
-            KeyCode::Enter => match save_settings(&self.home, &self.settings) {
-                Ok(()) => Some(Outcome::Saved),
-                Err(e) => {
-                    self.error = Some(format!("save failed: {e}"));
-                    None
-                }
-            },
+            KeyCode::Enter => {
+                self.activate_selected_provider();
+                Some(Outcome::Saved)
+            }
             KeyCode::Esc => {
                 self.step = Step::Edit;
                 None
@@ -1173,6 +1437,31 @@ mod tests {
     }
 
     #[test]
+    fn hides_legacy_unconfigured_preset_entries() {
+        let mut s = settings_with("ready", provider());
+        let mut stale = provider();
+        stale.kind = "legacy".into();
+        stale.api_key = None;
+        stale.api_base = Some("https://legacy.example".into());
+        stale.alias = None;
+        s.providers.insert("stale-preset".into(), stale);
+
+        let mut added = s.providers["stale-preset"].clone();
+        added.alias = Some("Added provider".into());
+        s.providers.insert("added".into(), added);
+
+        let screen = ConfigScreen::new(s, PathBuf::from("/tmp/ws"));
+        let visible: Vec<&str> = screen
+            .groups
+            .iter()
+            .flat_map(|group| group.keys.iter().map(String::as_str))
+            .collect();
+        assert!(visible.contains(&"ready"));
+        assert!(visible.contains(&"added"));
+        assert!(!visible.contains(&"stale-preset"));
+    }
+
+    #[test]
     fn provider_list_keeps_scroll_offset_when_selection_moves() {
         let mut settings = Settings::default();
         for index in 0..30 {
@@ -1181,7 +1470,8 @@ mod tests {
                 .insert(format!("provider-{index:02}"), provider());
         }
         let mut screen = ConfigScreen::new(settings, PathBuf::from("/tmp/ws"));
-        screen.selected_in_group = 20;
+        screen.step = Step::Configured;
+        screen.select_picker_row(29);
         let backend = WritableTestBackend::new(100, 30);
         let mut terminal = Terminal::with_options(backend).unwrap();
 
@@ -1189,11 +1479,11 @@ mod tests {
         assert!(screen.provider_scroll_offset > 0);
         let offset_after_first_draw = screen.provider_scroll_offset;
 
-        screen.selected_in_group = 21;
+        screen.select_picker_row(30);
         terminal.draw(|frame| screen.draw(frame)).unwrap();
         assert!(screen.provider_scroll_offset >= offset_after_first_draw);
 
-        screen.selected_in_group = 0;
+        screen.select_picker_row(3);
         terminal.draw(|frame| screen.draw(frame)).unwrap();
         assert_eq!(screen.provider_scroll_offset, 0);
     }
@@ -1212,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn save_flow_persists_api_key_to_private_auth_file() {
+    fn provider_review_defers_persistence_to_the_outer_flow() {
         let dir = tempfile::tempdir().unwrap();
         let mut screen = ConfigScreen::new(
             settings_with(
@@ -1232,10 +1522,8 @@ mod tests {
             screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(Outcome::Saved)
         );
-        let auth = std::fs::read_to_string(dir.path().join("auth.json")).unwrap();
-        assert!(auth.contains("\"a\": \"sk-saved\""));
-        let public_config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
-        assert!(!public_config.contains("sk-saved"));
+        assert!(!dir.path().join("auth.json").exists());
+        assert!(!dir.path().join("config.toml").exists());
     }
 
     #[test]
@@ -1262,10 +1550,15 @@ mod tests {
             vec![preset.clone()],
         );
         screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(screen.step, Step::Edit);
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Outcome::Continue)
+        );
         assert_eq!(screen.settings.providers.len(), 1);
         assert_eq!(screen.selected_key(), Some("OpenAI Gateway"));
+        assert_eq!(screen.settings.models.main.provider, "OpenAI Gateway");
+        assert_eq!(screen.settings.models.sub.provider, "OpenAI Gateway");
+        assert_eq!(screen.settings.models.main.model, "gpt-test");
         assert_eq!(
             screen.settings.providers["OpenAI Gateway"].alias.as_deref(),
             Some("OpenAI Gateway")
@@ -1276,7 +1569,10 @@ mod tests {
 
         screen.step = Step::Select;
         screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Outcome::Continue)
+        );
         assert_eq!(screen.settings.providers.len(), 2);
         assert!(
             screen
@@ -1291,6 +1587,115 @@ mod tests {
                 .as_deref(),
             Some("OpenAI Gateway")
         );
+    }
+
+    #[test]
+    fn picker_actions_follow_the_requested_order() {
+        let mut screen = ConfigScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        assert_eq!(screen.picker_selected, 0);
+        assert_eq!(screen.selected_select_action(), SelectAction::UseConfigured);
+        screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(screen.picker_selected, 1);
+        assert_eq!(screen.selected_select_action(), SelectAction::Continue);
+        screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(screen.picker_selected, 2);
+        assert_eq!(screen.selected_select_action(), SelectAction::AddFromPreset);
+        screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(screen.picker_selected, 3);
+        assert_eq!(screen.selected_select_action(), SelectAction::AddCustom);
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.step, Step::Edit);
+    }
+
+    #[test]
+    fn q_quits_from_provider_selection_without_advancing_the_flow() {
+        let mut screen = ConfigScreen::new(Settings::default(), PathBuf::from("/tmp/ws"));
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(Outcome::Quit)
+        );
+        assert_eq!(screen.step, Step::Select);
+    }
+
+    #[test]
+    fn q_remains_available_as_preset_search_input() {
+        let preset = PresetProvider {
+            name: "Qdrant Gateway".into(),
+            kind: "openai".into(),
+            base_url: "https://example.test/v1".into(),
+            models: vec![],
+            env_key: None,
+        };
+        let mut screen = ConfigScreen::new_with_presets(
+            Settings::default(),
+            PathBuf::from("/tmp/ws"),
+            vec![preset],
+        );
+        screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(screen.step, Step::Add);
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(screen.preset_search, "q");
+    }
+
+    #[test]
+    fn configured_provider_picker_shows_only_added_provider_names() {
+        let mut settings = Settings::default();
+        let mut cfg = provider();
+        cfg.alias = Some("Team API".into());
+        settings.providers.insert("team".into(), cfg);
+        let preset = PresetProvider {
+            name: "Catalog API".into(),
+            kind: "openai".into(),
+            base_url: "https://example.test/v1".into(),
+            models: vec![],
+            env_key: None,
+        };
+        let mut screen =
+            ConfigScreen::new_with_presets(settings, PathBuf::from("/tmp/ws"), vec![preset]);
+        screen.picker_selected = 0;
+        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(screen.step, Step::Configured);
+        assert_eq!(screen.provider_picker_keys(), vec!["team"]);
+        assert_eq!(
+            screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Outcome::Continue)
+        );
+        assert_eq!(screen.settings.models.main.provider, "team");
+        assert_eq!(screen.settings.models.sub.provider, "team");
+    }
+
+    #[test]
+    fn preset_catalog_filters_without_losing_the_original_preset_index() {
+        let presets = vec![
+            PresetProvider {
+                name: "Alpha".into(),
+                kind: "openai".into(),
+                base_url: String::new(),
+                models: vec![],
+                env_key: None,
+            },
+            PresetProvider {
+                name: "Beta".into(),
+                kind: "anthropic".into(),
+                base_url: String::new(),
+                models: vec![],
+                env_key: None,
+            },
+        ];
+        let mut screen =
+            ConfigScreen::new_with_presets(Settings::default(), PathBuf::from("/tmp/ws"), presets);
+        screen.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        screen.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(screen.filtered_presets(), vec![1]);
+        assert_eq!(screen.preset_selected, 1);
+        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(screen.selected_key(), Some("Beta"));
     }
 
     #[test]

@@ -26,7 +26,7 @@ mod separators;
 mod session;
 pub(crate) use crate::terminal_hyperlinks::HyperlinkLine;
 pub(crate) use messages::split_reasoning_summary_parts;
-pub(crate) use session::SessionHeaderHistoryCell;
+pub(crate) use session::{SessionHeaderHistoryCell, format_directory_display};
 
 /// Strip styling from lines, keeping only their text content. Ported from
 /// Codex's `history_cell::plain_lines`.
@@ -202,26 +202,60 @@ pub(crate) fn render_history_lines_for_agent(
     focused: autoreport_core::types::AgentType,
     width: u16,
 ) -> Vec<Line<'static>> {
-    cells
-        .iter()
-        .filter(|cell| belongs_to_agent(cell, focused))
-        .flat_map(|cell| cell.display_lines(width))
-        .collect()
+    let mut out = Vec::new();
+    let mut previous_has_trailing_blank = false;
+    for cell in cells.iter().filter(|cell| belongs_to_agent(cell, focused)) {
+        let lines = cell.display_lines(width);
+        if lines.is_empty() {
+            continue;
+        }
+        // Codex owns spacing at the history-cell boundary. Do not infer that
+        // boundary from rendered text: a tool may legitimately end with an
+        // empty output line, which must not swallow the separator before the
+        // next tool call.
+        if !out.is_empty() && !previous_has_trailing_blank && !cell_has_leading_blank(cell) {
+            out.push(Line::from(""));
+        }
+        out.extend(lines);
+        previous_has_trailing_blank = cell_has_trailing_blank(cell);
+    }
+    out
 }
 
 /// Hyperlink-aware counterpart of [`render_history_lines_for_agent`]: same
-/// cells/order, but each cell contributes its `display_hyperlink_lines` so web
-/// URLs can be marked as OSC 8 links over the rendered transcript area.
+/// cells/order and the same separator structure, so OSC 8 link annotations stay
+/// row-aligned with the rendered transcript.
 pub(crate) fn render_history_hyperlink_lines_for_agent(
     cells: &[Cell],
     focused: autoreport_core::types::AgentType,
     width: u16,
 ) -> Vec<HyperlinkLine> {
-    cells
-        .iter()
-        .filter(|cell| belongs_to_agent(cell, focused))
-        .flat_map(|cell| cell.display_hyperlink_lines(width))
-        .collect()
+    let mut out = Vec::new();
+    let mut previous_has_trailing_blank = false;
+    for cell in cells.iter().filter(|cell| belongs_to_agent(cell, focused)) {
+        let lines = cell.display_hyperlink_lines(width);
+        if lines.is_empty() {
+            continue;
+        }
+        if !out.is_empty() && !previous_has_trailing_blank && !cell_has_leading_blank(cell) {
+            out.push(HyperlinkLine::from(""));
+        }
+        out.extend(lines);
+        previous_has_trailing_blank = cell_has_trailing_blank(cell);
+    }
+    out
+}
+
+/// User-message cells intentionally paint a leading and trailing surface row,
+/// just like Codex's `UserHistoryCell`. Other cells rely on the transcript
+/// boundary to insert one separator row. Keep this semantic rather than
+/// inspecting rendered text, because tool output may itself contain blanks.
+pub(crate) fn cell_has_leading_blank(cell: &Cell) -> bool {
+    matches!(cell, Cell::User { .. })
+}
+
+pub(crate) fn cell_has_trailing_blank(cell: &Cell) -> bool {
+    matches!(cell, Cell::User { .. })
 }
 
 pub(crate) fn render_raw_history_lines_for_agent(
@@ -290,7 +324,13 @@ fn render_cell_lines(cell: &Cell, width: u16) -> Vec<Line<'static>> {
             out.extend(prefix_lines(details.clone(), "  └ ".dim(), "    ".into()));
         }
         Cell::ToolGroup { agent, items } => {
-            for item in items {
+            for (i, item) in items.iter().enumerate() {
+                // Codex renders each tool call as its own cell with one blank
+                // breathing row before it. Grouped calls get the same separator
+                // between items so two adjacent tools are not jammed together.
+                if i > 0 {
+                    out.push(Line::from(""));
+                }
                 out.extend(render_tool_call_lines(agent.label(), item, width));
             }
         }
@@ -358,7 +398,7 @@ fn render_tool_call_lines(
 mod tests {
     use super::{Cell, HistoryCell};
     use autoreport_core::types::AgentType;
-    use ratatui::style::Stylize;
+    use ratatui::style::{Color, Modifier, Stylize};
     use ratatui::text::Line;
 
     fn plain_lines(cell: &Cell) -> Vec<String> {
@@ -586,5 +626,269 @@ mod tests {
         .collect::<String>();
         assert!(text.contains("••••••"));
         assert!(!text.contains("secret"));
+    }
+
+    fn plain_lines_at(cell: &Cell, width: u16) -> Vec<String> {
+        cell.display_lines(width)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect()
+            })
+            .map(|line: String| line.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn two_tool_calls_in_a_group_are_separated_by_a_blank_line() {
+        // Codex renders each tool call with one blank breathing row before it;
+        // grouped calls now get the same separator instead of being jammed
+        // together.
+        let cell = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![
+                crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "echo one"}),
+                    result: Some(serde_json::json!({
+                        "stdout": "one\n",
+                        "stderr": "",
+                        "returncode": 0
+                    })),
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                },
+                crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "echo two"}),
+                    result: Some(serde_json::json!({
+                        "stdout": "two\n",
+                        "stderr": "",
+                        "returncode": 0
+                    })),
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                },
+            ],
+        };
+        let lines = plain_lines_at(&cell, 80);
+        let one = lines
+            .iter()
+            .position(|l| l.contains("echo one"))
+            .expect("first command rendered");
+        let two = lines
+            .iter()
+            .rposition(|l| l.contains("echo two"))
+            .expect("second command rendered");
+        assert!(two > one);
+        assert!(
+            lines[one..two].iter().any(|l| l.trim().is_empty()),
+            "expected a blank separator between adjacent tool calls, got: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_tool_cells_get_a_blank_separator() {
+        let cells = vec![
+            Cell::ToolGroup {
+                agent: AgentType::Main,
+                items: vec![crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "echo first"}),
+                    result: None,
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                }],
+            },
+            Cell::ToolGroup {
+                agent: AgentType::Main,
+                items: vec![crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "echo second"}),
+                    result: None,
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                }],
+            },
+        ];
+        let lines: Vec<String> = super::render_history_lines_for_agent(&cells, AgentType::Main, 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+        let first = lines
+            .iter()
+            .position(|l| l.contains("echo first"))
+            .expect("first tool rendered");
+        let second = lines
+            .iter()
+            .rposition(|l| l.contains("echo second"))
+            .expect("second tool rendered");
+        assert!(second > first);
+        assert!(
+            lines[first..second].iter().any(|l| l.trim().is_empty()),
+            "expected a blank separator between adjacent tool cells, got: {lines:?}"
+        );
+        assert_eq!(
+            lines[first..second]
+                .iter()
+                .filter(|line| line.trim().is_empty())
+                .count(),
+            1,
+            "Codex uses exactly one breathing row between tool cells: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn empty_tool_output_does_not_swallow_the_next_tool_separator() {
+        let cells = vec![
+            Cell::ToolGroup {
+                agent: AgentType::Main,
+                items: vec![crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "printf '\\n'"}),
+                    result: Some(serde_json::json!({
+                        "stdout": "\n",
+                        "stderr": "",
+                        "returncode": 0
+                    })),
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                }],
+            },
+            Cell::ToolGroup {
+                agent: AgentType::Main,
+                items: vec![crate::app_state::ToolEntry {
+                    name: "exec".into(),
+                    args: serde_json::json!({"command": "echo next"}),
+                    result: Some(serde_json::json!({
+                        "stdout": "next\n",
+                        "stderr": "",
+                        "returncode": 0
+                    })),
+                    error: None,
+                    call_id: None,
+                    started_at: None,
+                }],
+            },
+        ];
+        let lines: Vec<String> = super::render_history_lines_for_agent(&cells, AgentType::Main, 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect();
+        let next = lines
+            .iter()
+            .position(|line| line.contains("echo next"))
+            .expect("next tool rendered");
+        assert!(
+            lines[..next].iter().any(|line| line.trim().is_empty()),
+            "the separator must remain present after blank tool output: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tool_status_colors_survive_history_rendering() {
+        let success = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "exec".into(),
+                args: serde_json::json!({"command": "true"}),
+                result: Some(serde_json::json!({"stdout": "ok\n", "returncode": 0})),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        };
+        let failure = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "exec".into(),
+                args: serde_json::json!({"command": "false"}),
+                result: Some(serde_json::json!({
+                    "stdout": "",
+                    "stderr": "failed\n",
+                    "returncode": 1
+                })),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        };
+        let success_line = success
+            .display_lines(80)
+            .into_iter()
+            .next()
+            .expect("success row");
+        let failure_line = failure
+            .display_lines(80)
+            .into_iter()
+            .next()
+            .expect("failure row");
+        assert_eq!(success_line.spans[0].style.fg, Some(Color::Green));
+        assert!(
+            success_line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        assert_eq!(failure_line.spans[0].style.fg, Some(Color::Red));
+        assert!(
+            failure_line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn wrapped_command_rows_use_the_pipe_gutter() {
+        // Codex's EXEC_DISPLAY_LAYOUT prefixes wrapped command rows with `│`.
+        let cell = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "exec".into(),
+                args: serde_json::json!({"command": "echo a-very-long-command-token-that-must-wrap-now"}),
+                result: None,
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        };
+        let lines = plain_lines_at(&cell, 24);
+        assert!(
+            lines.iter().any(|l| l.contains('│')),
+            "expected a `│` continuation gutter for a wrapped command, got: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn finished_call_with_no_output_shows_placeholder() {
+        // Codex renders "(no output)" for a finished call that captured nothing.
+        let cell = Cell::ToolGroup {
+            agent: AgentType::Main,
+            items: vec![crate::app_state::ToolEntry {
+                name: "exec".into(),
+                args: serde_json::json!({"command": "true"}),
+                result: Some(serde_json::json!({
+                    "stdout": "",
+                    "stderr": "",
+                    "returncode": 0
+                })),
+                error: None,
+                call_id: None,
+                started_at: None,
+            }],
+        };
+        let lines = plain_lines_at(&cell, 80);
+        assert!(
+            lines.iter().any(|l| l.contains("(no output)")),
+            "expected a (no output) placeholder, got: {lines:?}"
+        );
     }
 }

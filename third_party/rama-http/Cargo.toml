@@ -221,7 +221,20 @@ version = "3.23"
 
 [dev-dependencies.tokio]
 version = "1.48"
-features = ["full"]
+features = [
+    "fs",
+    "io-std",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "test-util",
+    "time",
+    "tracing",
+]
 
 [dev-dependencies.tokio-stream]
 version = "0.1"

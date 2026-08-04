@@ -247,7 +247,8 @@ where
     fn with_screen_size_and_cursor_position(
         backend: B,
         // Deliberately unused: we start at `Size::ZERO` so the first `autoresize`
-        // (rather than codex's external `set_viewport_area` call) sizes the buffers.
+        // can initialize standalone fullscreen screens; the chat app sets its
+        // inline viewport explicitly before its first draw.
         _screen_size: Size,
         cursor_pos: Position,
     ) -> Self {
@@ -262,9 +263,9 @@ where
                 /*width*/ 0,
                 /*height*/ 0,
             ),
-            // Start at ZERO so the first `autoresize` detects a change and
-            // sizes the buffers via `set_viewport_area` (codex's app calls
-            // set_viewport_area externally; we rely on autoresize instead).
+            // Start at ZERO so the first `autoresize` detects a change. An
+            // empty viewport is then initialized fullscreen by `resize`, while
+            // the chat app replaces it with its content-driven inline area.
             last_known_screen_size: Size::ZERO,
             last_known_cursor_pos: cursor_pos,
             visible_history_rows: 0,
@@ -340,22 +341,21 @@ where
         draw(&mut self.backend, updates.into_iter())
     }
 
-    /// Updates the Terminal so that internal buffers match the requested area.
+    /// Record the physical terminal size without changing the inline viewport.
     ///
-    /// Requested area will be saved to remain consistent when rendering. This leads to a full clear
-    /// of the screen.
+    /// Codex owns the viewport separately from the backend screen size. The app
+    /// recalculates and applies that viewport before each chat draw; resizing the
+    /// buffers here to `screen_size.height` would silently turn the inline chat
+    /// surface into a full-screen surface and clip the top of the transcript.
+    ///
+    /// The standalone startup/configuration screens are the one local
+    /// exception: they call `draw` directly, so an empty viewport is initialized
+    /// to the full physical screen on their first autoresize.
     pub fn resize(&mut self, screen_size: Size) -> io::Result<()> {
         self.last_known_screen_size = screen_size;
-        // codex's app computes the viewport externally and calls
-        // `set_viewport_area`; our full-screen TUI uses the whole backend size,
-        // so resize the buffers + viewport here to keep `autoresize` sufficient.
-        let area = Rect::new(
-            self.viewport_area.x,
-            self.viewport_area.y,
-            screen_size.width,
-            screen_size.height,
-        );
-        self.set_viewport_area(area);
+        if self.viewport_area.is_empty() {
+            self.set_viewport_area(Rect::new(0, 0, screen_size.width, screen_size.height));
+        }
         Ok(())
     }
 
@@ -983,6 +983,39 @@ mod tests {
             actual.contains(&expected),
             "expected terminal output to contain cursor style {expected:?}, got {actual:?}"
         );
+    }
+
+    #[test]
+    fn resize_preserves_the_app_owned_inline_viewport() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 80, /*height*/ 30))
+                .expect("terminal");
+        let viewport = Rect::new(0, 11, 80, 19);
+        terminal.set_viewport_area(viewport);
+
+        terminal
+            .resize(Size::new(100, 40))
+            .expect("resize should only update the physical screen size");
+
+        assert_eq!(terminal.viewport_area, viewport);
+        assert_eq!(terminal.current_buffer().area, viewport);
+        assert_eq!(terminal.previous_buffer().area, viewport);
+    }
+
+    #[test]
+    fn resize_initializes_an_empty_viewport_for_standalone_fullscreen_screens() {
+        let mut terminal =
+            Terminal::with_options(CaptureBackend::new(/*width*/ 80, /*height*/ 30))
+                .expect("terminal");
+
+        terminal
+            .resize(Size::new(80, 30))
+            .expect("resize should initialize the first fullscreen frame");
+
+        let fullscreen = Rect::new(0, 0, 80, 30);
+        assert_eq!(terminal.viewport_area, fullscreen);
+        assert_eq!(terminal.current_buffer().area, fullscreen);
+        assert_eq!(terminal.previous_buffer().area, fullscreen);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Pure application helpers shared by the app event and chat widgets.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
@@ -64,16 +64,33 @@ pub(crate) fn read_capped(path: &Path, cap: usize) -> Option<String> {
 }
 
 /// Pull `@rel/path` tokens out of arbitrary text (for expansion).
+///
+/// File completions containing whitespace are written as `@"rel/path with
+/// spaces"`, matching Codex's convention of quoting whitespace-containing
+/// file selections as one unit.
 pub(crate) fn extract_mentions(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '@'
-            && i + 1 < chars.len()
-            && is_mention_char(chars[i + 1])
-            && (i == 0 || chars[i - 1].is_whitespace())
-        {
+        if chars[i] == '@' && i + 1 < chars.len() && (i == 0 || chars[i - 1].is_whitespace()) {
+            if chars[i + 1] == '"' {
+                let mut run = String::new();
+                let mut j = i + 2;
+                while j < chars.len() && chars[j] != '"' {
+                    run.push(chars[j]);
+                    j += 1;
+                }
+                if j < chars.len() && !run.is_empty() {
+                    out.push(run);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            if !is_mention_char(chars[i + 1]) {
+                i += 1;
+                continue;
+            }
             let mut run = String::new();
             let mut j = i + 1;
             while j < chars.len() && is_mention_char(chars[j]) {
@@ -147,9 +164,11 @@ pub(crate) fn render_tool_result_lines(
         return err
             .lines()
             .map(|l| {
+                // Codex dims tool errors (it does not color them red); match
+                // that and our own exec cell, which dims stderr.
                 Line::from(Span::styled(
                     format!("Error: {l}"),
-                    Style::default().fg(Color::Red),
+                    Style::default().add_modifier(Modifier::DIM),
                 ))
             })
             .collect();
@@ -169,7 +188,7 @@ pub(crate) fn render_tool_result_lines(
         .map(|l| {
             Line::from(Span::styled(
                 l.to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().add_modifier(Modifier::DIM),
             ))
         })
         .collect()

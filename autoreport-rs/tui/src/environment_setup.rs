@@ -16,6 +16,7 @@ use std::io;
 use std::path::PathBuf;
 
 use crate::config_update::Outcome;
+use crate::highlight::foreground_style_for_scopes;
 use crate::render::renderable::{ColumnRenderable, Renderable};
 use crate::selection_list::{plain_selection_option_row, selection_option_row_indented};
 use autoreport_core::project::{
@@ -147,11 +148,7 @@ impl EnvironmentScreen {
                 } else {
                     "LaTeX ·"
                 },
-                Style::default().fg(if status.latex.ready {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
+                local_tool_status_style(status.latex.ready),
             ),
             Span::raw("  "),
             Span::styled(
@@ -160,11 +157,7 @@ impl EnvironmentScreen {
                 } else {
                     "Typst ·"
                 },
-                Style::default().fg(if status.typst.ready {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
+                local_tool_status_style(status.typst.ready),
             ),
             Span::raw("  "),
             Span::styled(
@@ -173,11 +166,7 @@ impl EnvironmentScreen {
                 } else {
                     "MinerU ·"
                 },
-                Style::default().fg(if status.mineru.ready {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
+                local_tool_status_style(status.mineru.ready),
             ),
         ]);
         match self.step {
@@ -529,6 +518,26 @@ impl EnvironmentScreen {
     }
 }
 
+/// Match Codex's progress/success status accent: prefer the active syntax
+/// theme's inserted/progress color so the result does not depend on a terminal
+/// profile's ANSI-green palette entry.
+fn local_tool_status_style(ready: bool) -> Style {
+    if ready {
+        foreground_style_for_scopes(&["markup.inserted", "constant.numeric"])
+            .filter(|style| !is_neutral_foreground(style.fg))
+            .unwrap_or_else(|| Style::default().green())
+    } else {
+        Style::default().dark_gray()
+    }
+}
+
+fn is_neutral_foreground(foreground: Option<Color>) -> bool {
+    matches!(
+        foreground,
+        None | Some(Color::Reset | Color::Black | Color::DarkGray | Color::Gray | Color::White)
+    )
+}
+
 fn centered_content_area(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -611,5 +620,23 @@ mod tests {
             .unwrap();
         assert!(first_content.0 > 0);
         assert!(first_content.1 > 0);
+    }
+
+    #[test]
+    fn ready_local_tools_use_the_theme_progress_accent() {
+        let expected = foreground_style_for_scopes(&["markup.inserted", "constant.numeric"])
+            .filter(|style| !is_neutral_foreground(style.fg))
+            .unwrap_or_else(|| Style::default().green());
+
+        assert_eq!(local_tool_status_style(true).fg, expected.fg);
+        assert_ne!(local_tool_status_style(true).fg, None);
+        assert_eq!(local_tool_status_style(false).fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn neutral_theme_colors_do_not_erase_ready_tool_color() {
+        assert!(is_neutral_foreground(Some(Color::White)));
+        assert!(is_neutral_foreground(Some(Color::Gray)));
+        assert!(!is_neutral_foreground(Some(Color::Green)));
     }
 }

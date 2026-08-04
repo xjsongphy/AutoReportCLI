@@ -65,20 +65,32 @@ Build from source:
 
 ```bash
 git clone <this-repo> AutoReportCLI && cd AutoReportCLI
-cargo build --release
+cargo build --locked --release
 ```
+
+For the fastest development loop, use `cargo run -p autoreport-cli` or
+`cargo build -p autoreport-cli`. Formal release payloads use the separate
+`dist` profile:
+
+```bash
+cargo build --locked --profile dist -p autoreport-cli
+```
+
+To inspect compilation time by crate, add `--timings`; Cargo writes the report
+to `target/cargo-timings/cargo-timing.html`. Avoid running `cargo clean` before
+every build, because that removes the cache the next build would reuse.
 
 Install globally if you want `autoreport` available from any directory:
 
 ```bash
-cargo install --path autoreport-rs/cli
+cargo install --locked --path autoreport-rs/cli
 ```
 
 On Linux, install the companion sandbox launcher into the same Cargo bin
 directory as well. Restricted `exec` commands fail closed if it is absent:
 
 ```bash
-cargo install --path autoreport-rs/linux-sandbox
+cargo install --locked --path autoreport-rs/linux-sandbox
 ```
 
 Or run the built binary directly:
@@ -181,13 +193,14 @@ autoreport-rs/
 Run tests with:
 
 ```bash
-cargo test
+cargo test --locked
 ```
 
-CI (`/.github/workflows`) runs `cargo fmt --check`, `cargo clippy --workspace
---all-targets`, and the workspace test suite on Ubuntu and macOS; the
-`linux-sandbox`, `macos-sandbox`, and `windows-sandbox` workflows build and
-stage the per-OS native sandbox artifacts.
+CI (`/.github/workflows/ci.yml`) uses one platform matrix: pull requests run
+formatting, Linux lint/tests, and native macOS/Windows checks. Pushes to `main`,
+version tags, and manual runs additionally build and verify the Linux musl,
+macOS, and Windows npm payloads. Release packaging is therefore not part of
+the pull-request path.
 
 Build an npm package with a native binary for the current Rust target:
 
