@@ -1,22 +1,22 @@
 //! Prompt loading. Each agent's identity + full instructions live in
-//! `templates/agents/*.md` (compiled into the binary). Users may override any
-//! of them globally under `$AUTOREPORT_HOME/agents/`; explicit project
-//! overrides in `References/agents/` are also read, matching Codex's user and
-//! project instruction layers.
+//! `templates/agents/*.md` (read from the source tree in debug builds and
+//! embedded in release-like builds). Users may override any of them globally
+//! under `$AUTOREPORT_HOME/agents/`; explicit project overrides in
+//! `References/agents/` are also read, matching Codex's user and project
+//! instruction layers.
 
 use crate::environment;
 use crate::project::{ReportLanguage, selected_report_language};
+use crate::resources;
 use crate::skills::SkillLoader;
 use crate::types::AgentType;
 use std::path::{Path, PathBuf};
 
-// Built-in templates (compile-time embedded).
-const COMMON: &str = include_str!("../../../../templates/agents/Common.md");
-const MAIN: &str = include_str!("../../../../templates/agents/main_agent.md");
-const DATA_ANALYSIS: &str = include_str!("../../../../templates/agents/data_analysis_agent.md");
-const PLOTTING: &str = include_str!("../../../../templates/agents/plotting_agent.md");
-const THEORY: &str = include_str!("../../../../templates/agents/theory_agent.md");
-const REPORT: &str = include_str!("../../../../templates/agents/report_agent.md");
+fn default_text(source: &'static str) -> String {
+    resources::load(source)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .into_owned()
+}
 
 struct ReportLanguageProfile {
     display_name: &'static str,
@@ -79,24 +79,34 @@ impl PromptLoader {
         p.exists().then_some(p)
     }
 
-    fn read(&self, file: &str, default: &str) -> String {
+    fn read(&self, file: &str, default: impl FnOnce() -> String) -> String {
         match self.override_path(file) {
-            Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|_| default.to_string()),
-            None => default.to_string(),
+            Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|_| default()),
+            None => default(),
         }
     }
 
     pub fn common(&self) -> String {
-        self.read("Common.md", COMMON)
+        self.read("Common.md", || default_text("templates/agents/Common.md"))
     }
 
     pub fn agent_prompt(&self, agent: AgentType) -> String {
         match agent {
-            AgentType::Main => self.read("main_agent.md", MAIN),
-            AgentType::DataAnalysis => self.read("data_analysis_agent.md", DATA_ANALYSIS),
-            AgentType::Plotting => self.read("plotting_agent.md", PLOTTING),
-            AgentType::Theory => self.read("theory_agent.md", THEORY),
-            AgentType::Report => self.read("report_agent.md", REPORT),
+            AgentType::Main => self.read("main_agent.md", || {
+                default_text("templates/agents/main_agent.md")
+            }),
+            AgentType::DataAnalysis => self.read("data_analysis_agent.md", || {
+                default_text("templates/agents/data_analysis_agent.md")
+            }),
+            AgentType::Plotting => self.read("plotting_agent.md", || {
+                default_text("templates/agents/plotting_agent.md")
+            }),
+            AgentType::Theory => self.read("theory_agent.md", || {
+                default_text("templates/agents/theory_agent.md")
+            }),
+            AgentType::Report => self.read("report_agent.md", || {
+                default_text("templates/agents/report_agent.md")
+            }),
         }
     }
 
@@ -112,18 +122,15 @@ impl PromptLoader {
         parts.push(self.common());
         let mut agent_prompt = self.agent_prompt(agent);
         if agent == AgentType::Report {
-            let fragment = match selected_report_language(&self.home, &self.workspace)
+            let source = match selected_report_language(&self.home, &self.workspace)
                 .unwrap_or(ReportLanguage::Latex)
             {
-                ReportLanguage::Latex => {
-                    include_str!("../../../../templates/report-languages/latex.md")
-                }
-                ReportLanguage::Typst => {
-                    include_str!("../../../../templates/report-languages/typst.md")
-                }
+                ReportLanguage::Latex => "templates/report-languages/latex.md",
+                ReportLanguage::Typst => "templates/report-languages/typst.md",
             };
+            let fragment = default_text(source);
             agent_prompt.push_str("\n\n");
-            agent_prompt.push_str(fragment);
+            agent_prompt.push_str(&fragment);
         }
         parts.push(agent_prompt);
         let write_scope = match agent.write_dir() {

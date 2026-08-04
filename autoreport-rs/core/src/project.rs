@@ -268,6 +268,27 @@ mod tests {
     }
 
     #[test]
+    fn latex_resource_preparation_uses_bundled_cjk_theme() {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        crate::bundled::materialize(home.path());
+
+        let report = prepare_report_resources(
+            workspace.path(),
+            home.path(),
+            ReportLanguage::Latex,
+            MaterializePolicy::CreateMissingOnly,
+        )
+        .unwrap();
+
+        assert!(report.failed.is_empty());
+        let tex = workspace.path().join("Report");
+        let main = std::fs::read_to_string(tex.join("main.tex")).unwrap();
+        assert!(main.contains(r"\documentclass[font=macos]{mpltx}"));
+        assert!(tex.join("mpltx.cls").is_file());
+    }
+
+    #[test]
     fn resource_preparation_does_not_overwrite_after_planning() {
         let home = tempdir().unwrap();
         let workspace = tempdir().unwrap();

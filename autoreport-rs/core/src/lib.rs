@@ -10,6 +10,7 @@ pub mod project;
 pub mod prompts;
 pub mod provider;
 pub mod request_user_input;
+pub(crate) mod resources;
 pub mod skills;
 pub mod sync;
 pub mod taskboard;
