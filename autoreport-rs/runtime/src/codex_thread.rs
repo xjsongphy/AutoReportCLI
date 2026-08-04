@@ -231,9 +231,9 @@ impl AgentLoop {
         };
         match rollout::read(&path) {
             Ok(entries) => {
-                let items = truncate_at_last_compaction(normalize_retracted_items(
-                    rollout::items(&entries),
-                ));
+                let items = truncate_at_last_compaction(normalize_retracted_items(rollout::items(
+                    &entries,
+                )));
                 if !items.is_empty() {
                     log::info!(
                         "{}: resumed {} items from {}",
@@ -1636,15 +1636,15 @@ mod tests {
 
     #[tokio::test]
     async fn exhaustion_records_report_on_board_even_with_no_bus_subscriber() {
+        use autoreport_core::bus::Bus;
         use autoreport_core::config::AgentDefaults;
         use autoreport_core::exec_policy::ExecPolicyManager;
         use autoreport_core::prompts::PromptLoader;
         use autoreport_core::skills::SkillLoader;
         use autoreport_core::taskboard::TaskBoard;
         use autoreport_core::types::{AgentType, MessageSource};
-        use autoreport_core::bus::Bus;
-        use autoreport_tools::manifest::ManifestStore;
         use autoreport_tools::ToolRegistry;
+        use autoreport_tools::manifest::ManifestStore;
         use std::path::PathBuf;
         use std::sync::Arc;
 

@@ -997,9 +997,7 @@ fn picker_digit_index(c: char, len: usize) -> Option<usize> {
     let d = c.to_digit(10)?;
     // `.then` (not `then_some`) so `(d - 1)` is only evaluated when `d >= 1`,
     // avoiding a debug underflow panic / release wrap for `'0'`.
-    (1..=len)
-        .contains(&(d as usize))
-        .then(|| (d - 1) as usize)
+    (1..=len).contains(&(d as usize)).then(|| (d - 1) as usize)
 }
 
 #[cfg(test)]

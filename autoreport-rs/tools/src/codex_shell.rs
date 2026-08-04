@@ -231,23 +231,19 @@ impl CodexShell {
             let (a, b) = tokio::join!(
                 async {
                     match stdout_pipe.as_mut() {
-                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES)
-                            .await
-                            .map(|v| {
-                                stdout_buf = v;
-                                0
-                            }),
+                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES).await.map(|v| {
+                            stdout_buf = v;
+                            0
+                        }),
                         None => Ok(0),
                     }
                 },
                 async {
                     match stderr_pipe.as_mut() {
-                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES)
-                            .await
-                            .map(|v| {
-                                stderr_buf = v;
-                                0
-                            }),
+                        Some(p) => read_capped(p, EXEC_OUTPUT_MAX_BYTES).await.map(|v| {
+                            stderr_buf = v;
+                            0
+                        }),
                         None => Ok(0),
                     }
                 },

@@ -90,7 +90,7 @@ pub fn parse(patch: &str) -> Result<Vec<Hunk>, String> {
             if let Some(second) = body.get(1) {
                 if second.trim().starts_with(ENVIRONMENT_ID_MARKER) {
                     return Err(
-                        "apply_patch environment_id cannot be specified more than once".into()
+                        "apply_patch environment_id cannot be specified more than once".into(),
                     );
                 }
             }
@@ -794,10 +794,9 @@ impl PreparedChange {
     /// the apply loop writes the combined contents exactly once.
     fn pending_contents(&self) -> Option<&str> {
         match self {
-            Self::Add { contents, .. } | Self::Update { contents, .. } | Self::Move {
-                contents,
-                ..
-            } => Some(contents),
+            Self::Add { contents, .. }
+            | Self::Update { contents, .. }
+            | Self::Move { contents, .. } => Some(contents),
             Self::Delete { .. } => None,
         }
     }
@@ -1088,7 +1087,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ap-trim-{}", stamp()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "alpha\n").unwrap();
-        let patch = "\n*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+ALPHA\n*** End Patch\n\n";
+        let patch =
+            "\n*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+ALPHA\n*** End Patch\n\n";
         apply(patch, &ctx(&dir)).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.join("a.txt")).unwrap(),

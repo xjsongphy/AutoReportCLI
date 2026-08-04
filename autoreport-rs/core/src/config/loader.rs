@@ -581,11 +581,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "auth file must keep 0o600 after atomic write");
         }
     }
@@ -623,11 +619,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&auth_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
+            let mode = std::fs::metadata(&auth_path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "auth.json must be 0o600");
         }
     }

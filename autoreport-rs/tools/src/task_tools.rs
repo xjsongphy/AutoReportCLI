@@ -1035,11 +1035,15 @@ mod tests {
 
         // First wait resolves via the broadcast arm (not the board fallback).
         match wait_for_report(&mut rx, &board, AgentType::Theory, &task.task_id, 120).await {
-            WaitOutcome::Report { summary, content, .. } => {
+            WaitOutcome::Report {
+                summary, content, ..
+            } => {
                 assert_eq!(summary, "first reply");
                 assert_eq!(content, "first content");
             }
-            _ => panic!("first wait should resolve on the broadcast Report, got a non-Report outcome"),
+            _ => panic!(
+                "first wait should resolve on the broadcast Report, got a non-Report outcome"
+            ),
         }
 
         // The drain is the fix: the board record is gone after the broadcast

@@ -1526,9 +1526,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let dest = Path::new("resources/latex/skills/latex-compile/SKILL.md");
-        validate_managed_target(home, dest).expect(
-            "relative dest under home with a not-yet-created parent must validate",
-        );
+        validate_managed_target(home, dest)
+            .expect("relative dest under home with a not-yet-created parent must validate");
     }
 
     /// An escape via `..` components must still be rejected once the path is
@@ -1550,10 +1549,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let dest_rel = "resources/latex/skills/latex-compile/SKILL.md";
-        std::fs::create_dir_all(
-            home.join("resources/latex/skills/latex-compile"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(home.join("resources/latex/skills/latex-compile")).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -1561,7 +1557,10 @@ mod tests {
             std::fs::write(&outside, "secret").unwrap();
             symlink(&outside, home.join(dest_rel)).unwrap();
             let err = validate_managed_target(home, Path::new(dest_rel)).unwrap_err();
-            assert!(format!("{err}").contains("symlink"), "unexpected err: {err}");
+            assert!(
+                format!("{err}").contains("symlink"),
+                "unexpected err: {err}"
+            );
         }
     }
 
@@ -1573,12 +1572,10 @@ mod tests {
         let home = dir.path();
         std::fs::create_dir_all(manifest_dir(home)).unwrap();
         // A manifest from a previous SHA for the SAME repo — should be removed.
-        let stale =
-            manifest_dir(home).join(format!("{}-stalesha000000.json", SKILLS.name));
+        let stale = manifest_dir(home).join(format!("{}-stalesha000000.json", SKILLS.name));
         std::fs::write(&stale, "{}").unwrap();
         // A manifest for a DIFFERENT repo — must be left untouched.
-        let other =
-            manifest_dir(home).join(format!("{}-othersha.json", CC_SWITCH.name));
+        let other = manifest_dir(home).join(format!("{}-othersha.json", CC_SWITCH.name));
         std::fs::write(&other, "{}").unwrap();
         // Write the current manifest for SKILLS.
         save_manifest(
@@ -1590,7 +1587,10 @@ mod tests {
                 dests: vec![],
             },
         );
-        assert!(!stale.exists(), "stale same-repo manifest should be removed");
+        assert!(
+            !stale.exists(),
+            "stale same-repo manifest should be removed"
+        );
         assert!(
             manifest_path(home, &SKILLS).exists(),
             "current manifest must exist"

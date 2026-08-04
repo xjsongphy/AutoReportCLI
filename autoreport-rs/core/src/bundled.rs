@@ -125,7 +125,10 @@ mod tests {
         std::fs::write(&target, "this is much longer than the replacement").unwrap();
         atomic_write(&target, b"short").expect("atomic write succeeds");
         let read_back = std::fs::read_to_string(&target).unwrap();
-        assert_eq!(read_back, "short", "target should hold only the new content");
+        assert_eq!(
+            read_back, "short",
+            "target should hold only the new content"
+        );
         // The temp file must not be left behind in the directory.
         let remaining: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()

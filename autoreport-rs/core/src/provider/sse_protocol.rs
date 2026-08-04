@@ -179,11 +179,7 @@ mod tests {
 
     async fn collect_payloads(chunks: Vec<Bytes>) -> Vec<String> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        let stream = stream::iter(
-            chunks
-                .into_iter()
-                .map(|b| Ok::<Bytes, std::io::Error>(b)),
-        );
+        let stream = stream::iter(chunks.into_iter().map(|b| Ok::<Bytes, std::io::Error>(b)));
         drive_stream(stream, tx, CaptureProtocol)
             .await
             .expect("drive_stream");

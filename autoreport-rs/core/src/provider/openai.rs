@@ -408,8 +408,7 @@ mod tests {
         let m = &msgs[0];
         assert_eq!(m["role"], "assistant");
         assert_eq!(
-            m["content"],
-            "Let me check the weather for you.",
+            m["content"], "Let me check the weather for you.",
             "assistant text must be preserved alongside tool_calls"
         );
         assert!(

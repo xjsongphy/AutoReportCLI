@@ -306,7 +306,9 @@ mod tests {
             "main",
         )
         .unwrap();
-        rec.append(&ResponseItem::user_message("hello")).await.unwrap();
+        rec.append(&ResponseItem::user_message("hello"))
+            .await
+            .unwrap();
         rec.append(&ResponseItem::assistant_message("hi there"))
             .await
             .unwrap();
@@ -320,7 +322,9 @@ mod tests {
         rec.append(&ResponseItem::function_call_output("c1", "ok"))
             .await
             .unwrap();
-        rec.append(&ResponseItem::reasoning("thinking")).await.unwrap();
+        rec.append(&ResponseItem::reasoning("thinking"))
+            .await
+            .unwrap();
         rec.flush().await.unwrap();
 
         let entries = read(rec.path()).unwrap();
@@ -400,7 +404,9 @@ mod tests {
             "main",
         )
         .unwrap();
-        rec.append(&ResponseItem::user_message("first")).await.unwrap();
+        rec.append(&ResponseItem::user_message("first"))
+            .await
+            .unwrap();
         rec.flush().await.unwrap();
 
         // Simulate a restart: reopen the same path and append a new item.
@@ -526,7 +532,11 @@ mod tests {
         rec.flush().await.unwrap();
 
         let items = items(&read(rec.path()).unwrap());
-        assert_eq!(items.len(), n, "every item must persist through backpressure");
+        assert_eq!(
+            items.len(),
+            n,
+            "every item must persist through backpressure"
+        );
         for (i, item) in items.iter().enumerate() {
             assert_eq!(
                 item.text().unwrap(),
