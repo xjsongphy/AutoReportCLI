@@ -53,6 +53,14 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Install the panic hook before anything else so it is in place for every
+    // fullscreen wizard helper below (`run_wizard`, `run_environment_wizard`,
+    // `run_workspace_confirmation`). Each of those enables raw mode and enters
+    // the alt screen; if anything panics while those are active the terminal
+    // would otherwise be left broken (raw mode on, alt buffer). The hook does
+    // best-effort restore and then delegates to the default hook so the panic
+    // message still prints normally. Mirrors codex's TUI entry.
+    install_panic_hook();
     // Apply OS-level process hardening as the very first thing (mirrors codex's
     // `responses-api-proxy`): deny debugger attach (PT_DENY_ATTACH on macOS),
     // scrub DYLD_* env, drop core dumps. Our binary holds API keys in memory,
@@ -80,6 +88,23 @@ fn dispatch_windows_sandbox_wrapper() {
 
 #[cfg(not(target_os = "windows"))]
 fn dispatch_windows_sandbox_wrapper() {}
+
+/// Install a panic hook that restores the terminal (raw mode off, leave alt
+/// screen) before delegating to the default hook. This covers panics that occur
+/// while a fullscreen wizard helper has the terminal in raw mode + alt screen;
+/// without it the terminal is left broken and the panic message is written
+/// into the discarded alt buffer. Best-effort and infallible: all restore
+/// errors are ignored via `let _ =` so they never mask the original panic.
+/// `disable_raw_mode` is a no-op when raw mode isn't active, so this is harmless
+/// in the normal TUI run path.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        default(info);
+    }));
+}
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
