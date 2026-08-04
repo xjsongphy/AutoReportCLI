@@ -1,5 +1,5 @@
 /target
-Cargo.lock
+/third_party/rama-http/Cargo.lock
 *.swp
 .DS_Store
 __pycache__/
@@ -12,3 +12,4 @@ templates/external/
 
 TODO.md
 *.tmp
+image**.png
